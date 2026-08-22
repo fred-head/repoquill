@@ -120,6 +120,6 @@ docker run --rm \
   --volume "${volume_name}:/data:ro" \
   --entrypoint /bin/sh \
   "${image}" \
-  -c 'test -f "/data/repos/Release check.md" && test ! -s "/data/repos/Release check.md"'
+  -c 'test -f "/data/repos/Release check.md" && grep -Fx "# Release check" "/data/repos/Release check.md" >/dev/null'
 
 echo "Container security, health, and persistence checks passed."
