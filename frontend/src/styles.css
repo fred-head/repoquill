@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+/* Present one global notebook-navigation control without duplicating the active tree root. */
+header button[aria-haspopup="menu"] {
+  position: relative;
+  margin-top: 0.5rem;
+}
+
+header button[aria-haspopup="menu"]::before {
+  content: "Notebooks";
+  color: inherit;
+  font: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+header button[aria-haspopup="menu"] > span:first-child {
+  display: none;
+}
+
+header button[aria-haspopup="menu"] > span:last-child {
+  color: rgb(161 161 170);
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color-scheme: dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+body { margin: 0; min-width: 320px; }
+
+@supports (padding: env(safe-area-inset-top)) {
+  body { padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+}
+
+[aria-label="Editor toolbars"] {
+  position: sticky;
+  top: 55px;
+  z-index: 9;
+  background-color: rgb(9 9 11 / 92%);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 12%);
+  backdrop-filter: blur(10px);
+}
+
+.theme-light body { background: #fafafa; }
+.theme-light [class~="bg-zinc-950"] { background-color: #fafafa !important; }
+.theme-light [class~="bg-zinc-950/90"] { background-color: rgb(250 250 250 / 90%) !important; }
+.theme-light [class~="bg-zinc-900"] { background-color: #fff !important; }
+.theme-light [class~="bg-zinc-900/60"] { background-color: rgb(255 255 255 / 75%) !important; }
+.theme-light [class~="bg-zinc-800"] { background-color: #e4e4e7 !important; }
+.theme-light [class~="border-zinc-800"] { border-color: #e4e4e7 !important; }
+.theme-light [class~="border-zinc-700"] { border-color: #d4d4d8 !important; }
+.theme-light [class~="text-zinc-100"] { color: #18181b !important; }
+.theme-light [class~="text-zinc-200"] { color: #27272a !important; }
+.theme-light [class~="text-zinc-300"] { color: #3f3f46 !important; }
+.theme-light [class~="text-zinc-400"] { color: #52525b !important; }
+.theme-light [class~="text-zinc-500"] { color: #71717a !important; }
+.theme-light [class~="text-amber-200"] { color: #92400e !important; }
+.theme-light [class~="text-amber-300"], .theme-light [class~="text-amber-400"] { color: #b45309 !important; }
+.theme-light [class~="text-red-200"], .theme-light [class~="text-red-300"], .theme-light [class~="text-red-400"] { color: #b91c1c !important; }
+.theme-light [class~="bg-red-950/30"], .theme-light [class~="bg-red-950"] { background-color: #fef2f2 !important; }
+.theme-light [class~="border-red-900/70"] { border-color: #fecaca !important; }
+.theme-light [class~="hover:bg-zinc-800"]:hover { background-color: #e4e4e7 !important; }
+.theme-light [class~="hover:text-white"]:hover { color: #18181b !important; }
+.theme-light [aria-label="Editor toolbars"] { background-color: rgb(250 250 250 / 92%) !important; }
+
+.milkdown {
+  min-height: 60vh;
+}
+
+.repoquill-editor {
+  min-height: 60vh;
+  min-width: 0;
+  outline: none;
+  color: #e4e4e7;
+  font-size: 1rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.repoquill-editor > :first-child { margin-top: 0; }
+.repoquill-editor h1 { margin: 1.8rem 0 1rem; font-size: 2.25rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.025em; }
+.repoquill-editor h2 { margin: 1.6rem 0 0.8rem; font-size: 1.75rem; font-weight: 650; line-height: 1.3; }
+.repoquill-editor h3 { margin: 1.4rem 0 0.7rem; font-size: 1.35rem; font-weight: 650; }
+.repoquill-editor p { margin: 0.35rem 0; }
+.repoquill-editor ul { margin: 0.75rem 0; list-style: disc; padding-left: 1.75rem; }
+.repoquill-editor ol { margin: 0.75rem 0; list-style: decimal; padding-left: 1.75rem; }
+.repoquill-editor li[data-item-type="task"] { position: relative; list-style: none; }
+.repoquill-editor li[data-item-type="task"]::before { position: absolute; left: -1.4rem; content: "☐"; color: #a1a1aa; }
+.repoquill-editor li[data-item-type="task"][data-checked="true"]::before { content: "☑"; color: #34d399; }
+.repoquill-editor blockquote { margin: 1rem 0; border-left: 3px solid #f59e0b; padding-left: 1rem; color: #a1a1aa; }
+.repoquill-editor code { border-radius: 0.3rem; background: #27272a; padding: 0.15rem 0.35rem; color: #fde68a; font-family: ui-monospace, monospace; font-size: 0.9em; }
+.repoquill-editor pre { margin: 1rem 0; overflow-x: auto; border: 1px solid #3f3f46; border-radius: 0.65rem; background: #18181b; padding: 1rem; line-height: 1.45; overflow-wrap: normal; word-break: normal; }
+.repoquill-editor pre code { display: block; background: transparent; padding: 0; color: #e4e4e7; line-height: 1.35; }
+.repoquill-editor a { color: #fbbf24; text-decoration: underline; text-underline-offset: 3px; }
+.repoquill-editor hr { margin: 2rem 0; border-color: #3f3f46; }
+.repoquill-editor strong { font-weight: 700; color: #fafafa; }
+.repoquill-editor .ProseMirror-selectednode { outline: 2px solid #f59e0b; outline-offset: 3px; }
+.repoquill-editor img, milkdown-image-inline img { display: block; max-width: 100%; height: auto; border-radius: 0.65rem; }
+.repoquill-editor .tableWrapper { max-width: 100%; margin: 1rem 0; overflow-x: auto; }
+.repoquill-editor table { width: 100%; min-width: max-content; margin: 0; border-collapse: collapse; }
+.repoquill-editor th, .repoquill-editor td { min-width: 7rem; border: 1px solid #3f3f46; padding: 0.55rem 0.7rem; text-align: left; vertical-align: top; }
+.repoquill-editor th { background: #27272a; font-weight: 650; color: #fafafa; }
+.repoquill-editor table:focus-within { outline: 1px solid rgb(245 158 11 / 55%); outline-offset: 2px; }
+milkdown-image-inline { display: inline-block; max-width: 100%; vertical-align: middle; }
+
+.theme-light .repoquill-editor { color: #27272a; }
+.theme-light .repoquill-editor strong { color: #18181b; }
+.theme-light .repoquill-editor blockquote { color: #52525b; }
+.theme-light .repoquill-editor code { background: #e4e4e7; color: #92400e; }
+.theme-light .repoquill-editor pre { border-color: #d4d4d8; background: #f4f4f5; }
+.theme-light .repoquill-editor pre code { background: transparent; color: #27272a; }
+.theme-light .repoquill-editor a { color: #b45309; }
+.theme-light .repoquill-editor hr { border-color: #d4d4d8; }
+.theme-light .repoquill-editor th, .theme-light .repoquill-editor td { border-color: #d4d4d8; }
+.theme-light .repoquill-editor th { background: #e4e4e7; color: #18181b; }

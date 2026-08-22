@@ -1,0 +1,496 @@
+package app
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestHealth(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", recorder.Code)
+	}
+	if got := strings.TrimSpace(recorder.Body.String()); got != `{"status":"ok","version":"dev"}` {
+		t.Fatalf("unexpected body: %s", got)
+	}
+}
+
+func TestSecurityHeadersAndSameOriginProtection(t *testing.T) {
+	root := t.TempDir()
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	for _, header := range []string{"Content-Security-Policy", "Referrer-Policy", "Permissions-Policy", "X-Content-Type-Options", "X-Frame-Options"} {
+		if health.Header().Get(header) == "" {
+			t.Errorf("security header %s is missing", header)
+		}
+	}
+	if health.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("API cache policy is unsafe: %q", health.Header().Get("Cache-Control"))
+	}
+
+	crossSite := httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil)
+	crossSite.Header.Set("Origin", "https://attacker.example")
+	crossSite.Header.Set("Sec-Fetch-Site", "cross-site")
+	blocked := httptest.NewRecorder()
+	handler.ServeHTTP(blocked, crossSite)
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("cross-site mutation was not rejected: %d", blocked.Code)
+	}
+
+	sameSite := httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil)
+	sameSite.Host = "notes.example.test"
+	sameSite.Header.Set("Origin", "https://notes.example.test")
+	allowed := httptest.NewRecorder()
+	handler.ServeHTTP(allowed, sameSite)
+	if allowed.Code == http.StatusForbidden {
+		t.Fatal("same-origin mutation was rejected")
+	}
+}
+
+func TestUnknownAPIAndTrailingJSONDoNotFallThrough(t *testing.T) {
+	root := t.TempDir()
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := httptest.NewRecorder()
+	handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodGet, "/api/does-not-exist", nil))
+	if unknown.Code != http.StatusNotFound || !strings.Contains(unknown.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("unknown API fell through to the SPA: %d %q", unknown.Code, unknown.Header().Get("Content-Type"))
+	}
+
+	trailing := httptest.NewRecorder()
+	body := strings.NewReader(`{"path":"Note.md","type":"file"}{"extra":true}`)
+	handler.ServeHTTP(trailing, httptest.NewRequest(http.MethodPost, "/api/repository/entries", body))
+	if trailing.Code != http.StatusBadRequest {
+		t.Fatalf("request with trailing JSON was accepted: %d", trailing.Code)
+	}
+}
+
+func TestRepositoryAPI(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Welcome.md"), []byte("# Welcome"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	treeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(treeRecorder, httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil))
+	if treeRecorder.Code != http.StatusOK || !strings.Contains(treeRecorder.Body.String(), "Welcome.md") {
+		t.Fatalf("unexpected tree response: %d %s", treeRecorder.Code, treeRecorder.Body.String())
+	}
+
+	searchRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(searchRecorder, httptest.NewRequest(http.MethodGet, "/api/repository/search?q=welcome", nil))
+	if searchRecorder.Code != http.StatusOK || !strings.Contains(searchRecorder.Body.String(), `"type":"file"`) || !strings.Contains(searchRecorder.Body.String(), `"type":"content"`) {
+		t.Fatalf("unexpected search response: %d %s", searchRecorder.Code, searchRecorder.Body.String())
+	}
+
+	fileRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(fileRecorder, httptest.NewRequest(http.MethodGet, "/api/repository/file?path=Welcome.md", nil))
+	if fileRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected file status: %d", fileRecorder.Code)
+	}
+	var file struct {
+		Content string `json:"content"`
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(fileRecorder.Body).Decode(&file); err != nil {
+		t.Fatal(err)
+	}
+	if file.Content != "# Welcome" {
+		t.Fatalf("unexpected file content: %q", file.Content)
+	}
+
+	requestBody, err := json.Marshal(map[string]string{"content": "# Updated", "version": file.Version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(writeRecorder, httptest.NewRequest(http.MethodPut, "/api/repository/file?path=Welcome.md", bytes.NewReader(requestBody)))
+	if writeRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected write response: %d %s", writeRecorder.Code, writeRecorder.Body.String())
+	}
+	written, err := os.ReadFile(filepath.Join(root, "Welcome.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(written) != "# Updated" {
+		t.Fatalf("unexpected saved content: %q", written)
+	}
+
+	conflictRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(conflictRecorder, httptest.NewRequest(http.MethodPut, "/api/repository/file?path=Welcome.md", bytes.NewReader(requestBody)))
+	if conflictRecorder.Code != http.StatusConflict {
+		t.Fatalf("expected stale write conflict, got %d %s", conflictRecorder.Code, conflictRecorder.Body.String())
+	}
+}
+
+func TestRepositoryAPIRequiresConfiguration(t *testing.T) {
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d", recorder.Code)
+	}
+}
+
+func TestRepositoryMutationAPI(t *testing.T) {
+	root := t.TempDir()
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requestJSON := func(method, target string, body map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(method, target, bytes.NewReader(encoded)))
+		return recorder
+	}
+
+	createdFolder := requestJSON(http.MethodPost, "/api/repository/entries", map[string]string{"path": "Folder", "type": "directory"})
+	if createdFolder.Code != http.StatusCreated {
+		t.Fatalf("create folder failed: %d %s", createdFolder.Code, createdFolder.Body.String())
+	}
+	createdNote := requestJSON(http.MethodPost, "/api/repository/entries", map[string]string{"path": "Folder/Note.md", "type": "file"})
+	if createdNote.Code != http.StatusCreated {
+		t.Fatalf("create note failed: %d %s", createdNote.Code, createdNote.Body.String())
+	}
+	moved := requestJSON(http.MethodPost, "/api/repository/move", map[string]string{"source": "Folder/Note.md", "target": "Moved.md"})
+	if moved.Code != http.StatusOK {
+		t.Fatalf("move note failed: %d %s", moved.Code, moved.Body.String())
+	}
+
+	deleted := httptest.NewRecorder()
+	handler.ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete, "/api/repository/entry?path=Moved.md", nil))
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete note failed: %d %s", deleted.Code, deleted.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "Moved.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted note still exists: %v", err)
+	}
+}
+
+func TestRepositoryAssetAPI(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Note.md"), []byte("# Note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 32)...)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "screenshot.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(png); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	uploadRequest := httptest.NewRequest(http.MethodPost, "/api/repository/assets?note=Note.md", &body)
+	uploadRequest.Header.Set("Content-Type", writer.FormDataContentType())
+	uploadRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(uploadRecorder, uploadRequest)
+	if uploadRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected upload response: %d %s", uploadRecorder.Code, uploadRecorder.Body.String())
+	}
+	var uploaded struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(uploadRecorder.Body).Decode(&uploaded); err != nil {
+		t.Fatal(err)
+	}
+
+	assetRecorder := httptest.NewRecorder()
+	assetURL := "/api/repository/asset?note=Note.md&path=" + url.QueryEscape(uploaded.Path)
+	handler.ServeHTTP(assetRecorder, httptest.NewRequest(http.MethodGet, assetURL, nil))
+	if assetRecorder.Code != http.StatusOK || assetRecorder.Header().Get("Content-Type") != "image/png" || !bytes.Equal(assetRecorder.Body.Bytes(), png) {
+		t.Fatalf("unexpected asset response: %d %s", assetRecorder.Code, assetRecorder.Body.String())
+	}
+}
+
+func TestRepositoryAssetCleanupAPI(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Note.md"), []byte("# Note"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "Note.assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Note.assets", "unused.png"), []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scan := httptest.NewRecorder()
+	handler.ServeHTTP(scan, httptest.NewRequest(http.MethodGet, "/api/repository/assets/unreferenced", nil))
+	if scan.Code != http.StatusOK || !strings.Contains(scan.Body.String(), "Note.assets/unused.png") {
+		t.Fatalf("unexpected cleanup scan: %d %s", scan.Code, scan.Body.String())
+	}
+
+	body := bytes.NewBufferString(`{"paths":["Note.assets/unused.png"]}`)
+	cleanup := httptest.NewRecorder()
+	handler.ServeHTTP(cleanup, httptest.NewRequest(http.MethodPost, "/api/repository/assets/cleanup", body))
+	if cleanup.Code != http.StatusOK || !strings.Contains(cleanup.Body.String(), "Note.assets/unused.png") {
+		t.Fatalf("unexpected cleanup response: %d %s", cleanup.Code, cleanup.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "Note.assets", "unused.png")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleanup did not delete asset: %v", err)
+	}
+}
+
+func TestCloneAndActivateNotebookAPI(t *testing.T) {
+	t.Setenv("REPOQUILL_ALLOW_LOCAL_REMOTES", "true")
+	base := t.TempDir()
+	remote := filepath.Join(base, "remote.git")
+	seed := filepath.Join(base, "seed")
+	runGitTest(t, "init", "--bare", "--initial-branch=main", remote)
+	runGitTest(t, "init", "--initial-branch=main", seed)
+	runGitTest(t, "-C", seed, "config", "user.name", "Test")
+	runGitTest(t, "-C", seed, "config", "user.email", "test@example.test")
+	if err := os.WriteFile(filepath.Join(seed, "Cloned.md"), []byte("# Cloned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, "-C", seed, "add", "--all")
+	runGitTest(t, "-C", seed, "commit", "-m", "Initial")
+	runGitTest(t, "-C", seed, "remote", "add", "origin", remote)
+	runGitTest(t, "-C", seed, "push", "origin", "main")
+
+	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", filepath.Join(base, "notebooks"))
+	metadata := filepath.Join(base, "app", "notebooks.json")
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := bytes.NewBufferString(`{"name":"Private","repositoryUrl":"` + remote + `","branch":"main"}`)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/notebooks", body))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("clone failed: %d %s", response.Code, response.Body.String())
+	}
+	tree := httptest.NewRecorder()
+	handler.ServeHTTP(tree, httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil))
+	if tree.Code != http.StatusOK || !strings.Contains(tree.Body.String(), "Cloned.md") {
+		t.Fatalf("cloned notebook not active: %d %s", tree.Code, tree.Body.String())
+	}
+	if _, err := os.Stat(metadata); err != nil {
+		t.Fatalf("notebook metadata was not persisted: %v", err)
+	}
+}
+
+func TestManagedSSHKeyAPINeverReturnsPrivateMaterial(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("REPOQUILL_KEYS_DIR", filepath.Join(base, "keys"))
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/notebooks/ssh-key", nil))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("key generation failed: %d %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "PRIVATE KEY") || strings.Contains(strings.ToLower(response.Body.String()), "privatekey") {
+		t.Fatalf("API exposed private material: %s", response.Body.String())
+	}
+	var key struct {
+		KeyID     string `json:"keyId"`
+		PublicKey string `json:"publicKey"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&key); err != nil {
+		t.Fatal(err)
+	}
+	private, err := os.Stat(filepath.Join(base, "keys", key.KeyID, "id_ed25519"))
+	if err != nil || private.Mode().Perm() != 0o600 || !strings.HasPrefix(key.PublicKey, "ssh-ed25519 ") {
+		t.Fatalf("unexpected persisted key: %v, %v", private, err)
+	}
+}
+
+func TestActiveNotebookNameAPIUsesConfiguredName(t *testing.T) {
+	t.Setenv("REPOQUILL_NOTEBOOK_NAME", "Personal Notes")
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/notebook", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"Personal Notes"`) {
+		t.Fatalf("unexpected notebook info: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestBackgroundGitSyncIsAcceptedWithoutBrowserRequestLifetime(t *testing.T) {
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/repository/git/sync-background", nil))
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"status":"accepted"`) {
+		t.Fatalf("unexpected background sync response: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestNotebookRegistryPreservesEntriesAndChangesActiveNotebook(t *testing.T) {
+	base := t.TempDir()
+	metadata := filepath.Join(base, "notebooks.json")
+	firstPath := filepath.Join(base, "first")
+	secondPath := filepath.Join(base, "second")
+	if err := os.MkdirAll(firstPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(secondPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerActiveNotebook(metadata, notebookRecord{ID: "first", Name: "Private", LocalPath: firstPath}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerActiveNotebook(metadata, notebookRecord{ID: "second", Name: "Work", LocalPath: secondPath, RemoteURL: "git@example.test:work.git", Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := loadNotebookRegistry(metadata)
+	if err != nil || len(registry.Entries) != 2 || registry.ActiveID != "second" {
+		t.Fatalf("registry did not preserve notebooks: %#v, %v", registry, err)
+	}
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/notebooks/first/activate", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("activate notebook: %d %s", response.Code, response.Body.String())
+	}
+	registry, _ = loadNotebookRegistry(metadata)
+	if registry.ActiveID != "first" {
+		t.Fatalf("active notebook = %q", registry.ActiveID)
+	}
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/notebooks", nil))
+	if !strings.Contains(list.Body.String(), `"name":"Private"`) || !strings.Contains(list.Body.String(), `"name":"Work"`) || strings.Contains(list.Body.String(), firstPath) {
+		t.Fatalf("unsafe/incomplete notebook list: %s", list.Body.String())
+	}
+}
+
+func TestManagedSSHKeyManagementProtectsAssignedKeys(t *testing.T) {
+	base := t.TempDir()
+	keysDirectory := filepath.Join(base, "keys")
+	metadata := filepath.Join(base, "app", "notebooks.json")
+	t.Setenv("REPOQUILL_KEYS_DIR", keysDirectory)
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	generate := func() string {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/notebooks/ssh-key", nil))
+		var key struct {
+			KeyID string `json:"keyId"`
+		}
+		if response.Code != http.StatusCreated || json.NewDecoder(response.Body).Decode(&key) != nil {
+			t.Fatalf("generate managed key: %d %s", response.Code, response.Body.String())
+		}
+		return key.KeyID
+	}
+	assignedID := generate()
+	unusedID := generate()
+	if err := registerActiveNotebook(metadata, notebookRecord{ID: "notebook", Name: "Private", LocalPath: base, AuthType: "managed-ssh", KeyID: assignedID}); err != nil {
+		t.Fatal(err)
+	}
+
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/notebooks/ssh-keys", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"notebookName":"Private"`) || strings.Contains(list.Body.String(), "PRIVATE KEY") {
+		t.Fatalf("unexpected key list: %d %s", list.Code, list.Body.String())
+	}
+	assignedDelete := httptest.NewRecorder()
+	handler.ServeHTTP(assignedDelete, httptest.NewRequest(http.MethodDelete, "/api/notebooks/ssh-keys/"+assignedID, nil))
+	if assignedDelete.Code != http.StatusConflict {
+		t.Fatalf("assigned key deletion status = %d: %s", assignedDelete.Code, assignedDelete.Body.String())
+	}
+	unusedDelete := httptest.NewRecorder()
+	handler.ServeHTTP(unusedDelete, httptest.NewRequest(http.MethodDelete, "/api/notebooks/ssh-keys/"+unusedID, nil))
+	if unusedDelete.Code != http.StatusOK {
+		t.Fatalf("unused key deletion status = %d: %s", unusedDelete.Code, unusedDelete.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(keysDirectory, unusedID)); !os.IsNotExist(err) {
+		t.Fatal("unused managed key was not deleted")
+	}
+	if _, err := os.Stat(filepath.Join(keysDirectory, assignedID, "id_ed25519")); err != nil {
+		t.Fatal("assigned private key was deleted")
+	}
+}
+
+func runGitTest(t *testing.T, arguments ...string) {
+	t.Helper()
+	command := exec.Command("git", arguments...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", arguments, err, output)
+	}
+}
+
+func TestFrontendFallback(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/notes/welcome", nil)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "RepoQuill") {
+		t.Fatal("expected embedded frontend")
+	}
+}

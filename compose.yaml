@@ -1,0 +1,31 @@
+services:
+  repoquill:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${REPOQUILL_PUBLISH_ADDR:-127.0.0.1}:8080:8080"
+    volumes:
+      - repoquill-data:/data
+    environment:
+      REPOQUILL_REPOSITORY: /data/repos
+      REPOQUILL_NOTEBOOKS_DIR: /data/notebooks
+      REPOQUILL_NOTEBOOK_METADATA: /data/app/notebooks.json
+      REPOQUILL_KEYS_DIR: /data/keys
+      REPOQUILL_SSH_KNOWN_HOSTS: /data/keys/known_hosts
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  repoquill-data:
