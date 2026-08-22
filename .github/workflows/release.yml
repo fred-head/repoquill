@@ -214,9 +214,12 @@ jobs:
           version_manifest="${RUNNER_TEMP}/repoquill-version-manifest.json"
           sha_manifest="${RUNNER_TEMP}/repoquill-sha-manifest.json"
           channel_manifest="${RUNNER_TEMP}/repoquill-channel-manifest.json"
-          docker buildx imagetools inspect --raw +            "${IMAGE_NAME}:${{ needs.verify.outputs.version }}" > "${version_manifest}"
-          docker buildx imagetools inspect --raw +            "${IMAGE_NAME}:${{ needs.verify.outputs.sha_tag }}" > "${sha_manifest}"
-          docker buildx imagetools inspect --raw +            "${IMAGE_NAME}:${{ needs.verify.outputs.channel }}" > "${channel_manifest}"
+          docker buildx imagetools inspect --raw \
+            "${IMAGE_NAME}:${{ needs.verify.outputs.version }}" > "${version_manifest}"
+          docker buildx imagetools inspect --raw \
+            "${IMAGE_NAME}:${{ needs.verify.outputs.sha_tag }}" > "${sha_manifest}"
+          docker buildx imagetools inspect --raw \
+            "${IMAGE_NAME}:${{ needs.verify.outputs.channel }}" > "${channel_manifest}"
           cmp "${version_manifest}" "${sha_manifest}"
           cmp "${version_manifest}" "${channel_manifest}"
           node - "${version_manifest}" <<'NODE'
