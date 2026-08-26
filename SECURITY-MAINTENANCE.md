@@ -90,6 +90,20 @@ immediate priority. High and Critical findings fail source/image gates unless a
 time-limited exception is reviewed and documented. A scanner outage never
 qualifies for an exception that marks a release clean.
 
+### Static-analysis classification requirements
+
+A CodeQL dismissal is permitted only after the complete reported source-to-sink
+flow and all intervening checks have been reviewed. The audit comment must name
+the concrete control that makes the flow safe. For RepoQuill filesystem flows,
+that means confirming normalization, absolute/parent rejection, reserved-name
+rejection where applicable, resolved-parent or resolved-target symlink checks,
+root containment, expected file type, and a destructive-operation revalidation.
+For Git process flows, confirm direct process arguments, an option terminator,
+strict URL/ref validation, fixed executable and subcommand, disabled hooks, and
+an application-generated destination. A shared validator's tests must cover the
+rejected attacker inputs. Never dismiss a finding merely because it is noisy or
+because another scanner is green.
+
 ## Time-limited exceptions
 
 An exception is a last resort when a finding is demonstrably unreachable or

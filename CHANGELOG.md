@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Request logging now strips control characters and limits attacker-controlled
+  fields, while all user-facing filesystem paths reject control characters in
+  addition to traversal, absolute paths, reserved directories, and symlinks.
+- GitHub-owned setup/checkout actions and Gitleaks now use their Node 24-capable
+  release lines, and every workflow action remains pinned to an immutable SHA.
 - Security maintenance now includes daily source, dependency, secret, freshly
   built image, immutable release image, and moving-channel image surveillance.
 - Alpha publishing verifies immutable image aliases before moving the channel

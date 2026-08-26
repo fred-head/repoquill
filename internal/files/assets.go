@@ -102,7 +102,7 @@ func (r *Repository) ReadAsset(noteRelative, assetRelative string) (Asset, error
 		return Asset{}, err
 	}
 	expectedDirectoryName := noteBase(notePath) + ".assets"
-	if path.IsAbs(assetRelative) || path.Clean(assetRelative) != assetRelative || strings.Contains(assetRelative, `\`) {
+	if hasControlCharacter(assetRelative) || path.IsAbs(assetRelative) || path.Clean(assetRelative) != assetRelative || strings.Contains(assetRelative, `\`) {
 		return Asset{}, ErrInvalidPath
 	}
 	parts := strings.Split(assetRelative, "/")

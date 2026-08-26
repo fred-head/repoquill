@@ -193,7 +193,7 @@ func (r *Repository) validateRelative(relative string, markdown bool) error {
 	if !r.Configured() {
 		return ErrNotConfigured
 	}
-	if relative == "" || strings.Contains(relative, `\`) || path.IsAbs(relative) || path.Clean(relative) != relative || relative == "." {
+	if relative == "" || hasControlCharacter(relative) || strings.Contains(relative, `\`) || path.IsAbs(relative) || path.Clean(relative) != relative || relative == "." {
 		return ErrInvalidPath
 	}
 	for _, part := range strings.Split(relative, "/") {

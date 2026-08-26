@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/fred-head/repoquill/internal/files"
 	gitrepo "github.com/fred-head/repoquill/internal/git"
@@ -688,7 +690,29 @@ func validateNotebookRemoteURL(remoteURL string) error {
 
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger.Info("http request", "method", r.Method, "path", r.URL.Path)
+		method := strings.ReplaceAll(r.Method, "\n", "")
+		method = strings.ReplaceAll(method, "\r", "")
+		requestPath := strings.ReplaceAll(r.URL.Path, "\n", "")
+		requestPath = strings.ReplaceAll(requestPath, "\r", "")
+		logger.Info("http request", "method", sanitizeLogValue(method), "path", sanitizeLogValue(requestPath))
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sanitizeLogValue keeps attacker-controlled request fields on one structured
+// log record and removes terminal/control sequences. The limit also prevents a
+// request target from creating disproportionate log volume.
+func sanitizeLogValue(value string) string {
+	const maxRunes = 1024
+	clean := strings.Map(func(character rune) rune {
+		if unicode.IsControl(character) || character == utf8.RuneError {
+			return '�'
+		}
+		return character
+	}, value)
+	characters := []rune(clean)
+	if len(characters) > maxRunes {
+		return string(characters[:maxRunes]) + "…"
+	}
+	return clean
 }

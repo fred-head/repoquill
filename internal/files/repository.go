@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 const maxMarkdownSize = 10 << 20
@@ -183,7 +184,7 @@ func (r *Repository) resolveMarkdown(relative string) (string, os.FileInfo, erro
 	if !r.Configured() {
 		return "", nil, ErrNotConfigured
 	}
-	if relative == "" || filepath.IsAbs(relative) || filepath.Clean(relative) != relative || relative == ".." || strings.HasPrefix(relative, "../") {
+	if relative == "" || hasControlCharacter(relative) || filepath.IsAbs(relative) || filepath.Clean(relative) != relative || relative == ".." || strings.HasPrefix(relative, "../") {
 		return "", nil, ErrInvalidPath
 	}
 	if strings.Contains(relative, `\`) || !strings.EqualFold(filepath.Ext(relative), ".md") {
@@ -209,6 +210,10 @@ func (r *Repository) resolveMarkdown(relative string) (string, os.FileInfo, erro
 		return "", nil, ErrFileTooLarge
 	}
 	return resolved, info, nil
+}
+
+func hasControlCharacter(value string) bool {
+	return strings.IndexFunc(value, unicode.IsControl) >= 0
 }
 
 func contentVersion(content []byte) string {

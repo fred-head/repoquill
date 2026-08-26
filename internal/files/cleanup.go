@@ -253,7 +253,7 @@ func resolveAssetReference(noteRelative, destination string) (string, string, bo
 }
 
 func validCleanupPath(relative string) bool {
-	if relative == "" || relative == ".." || strings.HasPrefix(relative, "../") || path.IsAbs(relative) || path.Clean(relative) != relative || strings.Contains(relative, `\`) {
+	if relative == "" || hasControlCharacter(relative) || relative == ".." || strings.HasPrefix(relative, "../") || path.IsAbs(relative) || path.Clean(relative) != relative || strings.Contains(relative, `\`) {
 		return false
 	}
 	parts := strings.Split(relative, "/")
