@@ -27,6 +27,29 @@ The supplied Compose configuration publishes port 8080 on `127.0.0.1` by default
 
 `REPOQUILL_ALLOW_LOCAL_REMOTES=true` exists only for isolated automated tests. Do not enable it in a deployed instance.
 
+## Repository security controls
+
+The public source repository uses layered controls for proposed changes:
+
+- GitHub Actions may run only GitHub-owned actions and the explicitly allowed
+  Docker, Aqua Security, and Gitleaks actions. Every action reference must use a
+  full commit SHA.
+- Pull requests targeting `main` must pass the backend, frontend, repository
+  secret, and hardened container gates against the current branch state.
+- CodeQL default setup scans Go, JavaScript/TypeScript, and GitHub Actions on
+  pull requests, protected-branch changes, and its weekly schedule. The Extended
+  query suite is enabled, and new High or Critical security findings block
+  merging.
+- Secret scanning, push protection, Dependabot alerts, and Dependabot security
+  update proposals are enabled. Dependency pull requests are never merged or
+  deployed automatically.
+- Force-pushes and deletion of `main` are blocked. Review conversations must be
+  resolved before merging, and the ruleset has no bypass actor.
+
+Scanner findings are triaged with their data flow and existing validation in
+view. Alerts are not bulk-suppressed merely to make a check pass; any dismissal
+must retain a specific technical justification in GitHub's audit trail.
+
 ## Operator responsibilities
 
 - Protect and back up the complete `/data` volume. It contains working trees, notebook registration, trusted SSH hosts, and managed private keys.
