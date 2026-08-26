@@ -50,6 +50,10 @@ Scanner findings are triaged with their data flow and existing validation in
 view. Alerts are not bulk-suppressed merely to make a check pass; any dismissal
 must retain a specific technical justification in GitHub's audit trail.
 
+The complete dependency-review, exception, remediation, credential-rotation,
+and coordinated-disclosure process is documented in
+[SECURITY-MAINTENANCE.md](SECURITY-MAINTENANCE.md).
+
 ## Operator responsibilities
 
 - Protect and back up the complete `/data` volume. It contains working trees, notebook registration, trusted SSH hosts, and managed private keys.

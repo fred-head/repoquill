@@ -175,6 +175,7 @@ and private vulnerability reporting process.
 
 - [Known alpha limitations](KNOWN-LIMITATIONS.md)
 - [Security policy](SECURITY.md)
+- [Security maintenance and vulnerability response](SECURITY-MAINTENANCE.md)
 - [Alpha release and recovery guide](ALPHA-RELEASE.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)

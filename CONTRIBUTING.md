@@ -36,6 +36,13 @@ principles are welcome.
 6. Explain the user-facing outcome, safety implications, and verification in the
    pull-request description.
 
+Dependency pull requests additionally follow
+[SECURITY-MAINTENANCE.md](SECURITY-MAINTENANCE.md). Automated updates are
+untrusted changes: do not enable auto-merge, combine unrelated major upgrades,
+or accept a production/security-sensitive update based only on a green check.
+Review its release notes, advisory context, transitive changes, lockfile, and
+focused runtime behavior before merging.
+
 Do not include generated runtime data, test notebooks, private images, keys,
 tokens, or real repository configuration. Unless explicitly stated otherwise,
 contributions intentionally submitted for inclusion are accepted under the

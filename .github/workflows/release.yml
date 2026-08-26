@@ -148,6 +148,8 @@ jobs:
     name: Publish multi-architecture image
     runs-on: ubuntu-latest
     needs: [verify, secrets, validate-image]
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -201,27 +203,22 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.version }}
             ${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.sha_tag }}
-            ${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.channel }}
           build-args: |
             VERSION=${{ needs.verify.outputs.version }}
             VCS_REF=${{ github.sha }}
           provenance: mode=max
           sbom: true
 
-      - name: Verify published aliases and architectures
+      - name: Verify immutable aliases and architectures
         shell: bash
         run: |
           version_manifest="${RUNNER_TEMP}/repoquill-version-manifest.json"
           sha_manifest="${RUNNER_TEMP}/repoquill-sha-manifest.json"
-          channel_manifest="${RUNNER_TEMP}/repoquill-channel-manifest.json"
           docker buildx imagetools inspect --raw \
             "${IMAGE_NAME}:${{ needs.verify.outputs.version }}" > "${version_manifest}"
           docker buildx imagetools inspect --raw \
             "${IMAGE_NAME}:${{ needs.verify.outputs.sha_tag }}" > "${sha_manifest}"
-          docker buildx imagetools inspect --raw \
-            "${IMAGE_NAME}:${{ needs.verify.outputs.channel }}" > "${channel_manifest}"
           cmp "${version_manifest}" "${sha_manifest}"
-          cmp "${version_manifest}" "${channel_manifest}"
           node - "${version_manifest}" <<'NODE'
           const fs = require('node:fs')
           const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
@@ -245,6 +242,18 @@ jobs:
           subject-version: ${{ needs.verify.outputs.version }}
           push-to-registry: true
 
+      - name: Move Alpha channel to verified immutable image
+        shell: bash
+        run: |
+          version_manifest="${RUNNER_TEMP}/repoquill-version-manifest.json"
+          channel_manifest="${RUNNER_TEMP}/repoquill-channel-manifest.json"
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${{ needs.verify.outputs.channel }}" \
+            "${IMAGE_NAME}:${{ needs.verify.outputs.version }}"
+          docker buildx imagetools inspect --raw \
+            "${IMAGE_NAME}:${{ needs.verify.outputs.channel }}" > "${channel_manifest}"
+          cmp "${version_manifest}" "${channel_manifest}"
+
       - name: Summarize published image
         shell: bash
         run: |
@@ -258,3 +267,60 @@ jobs:
             echo "- Architectures: \`linux/amd64\`, \`linux/arm64\`"
             echo "- Digest: \`${{ steps.push.outputs.digest }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  release-record:
+    name: Publish immutable Alpha release record
+    runs-on: ubuntu-latest
+    needs: [verify, publish]
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Create prerelease with security and recovery evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          CHANNEL: ${{ needs.verify.outputs.channel }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        shell: bash
+        run: |
+          notes="${RUNNER_TEMP}/repoquill-release-notes.md"
+          {
+            echo "## RepoQuill ${VERSION}"
+            echo
+            echo "RepoQuill is Alpha software. Back up the complete persistent \`/data\` directory and review the linked limitations before upgrading important notebooks."
+            echo
+            echo "### Container"
+            echo
+            echo "- Immutable image: \`${IMAGE_NAME}:${VERSION}\`"
+            echo "- Moving Alpha channel: \`${IMAGE_NAME}:${CHANNEL}\`"
+            echo "- Architectures: \`linux/amd64\`, \`linux/arm64\`"
+            echo "- Manifest digest: \`${DIGEST}\`"
+            echo
+            echo "The published OCI artifact includes a generated SBOM and signed GitHub provenance attestation. Verify it with GitHub's artifact-attestation tooling before deployment."
+            echo
+            echo "### Upgrade and migration"
+            echo
+            echo "1. Back up \`/data\`, including app metadata, keys, trusted hosts, and notebook working trees."
+            echo "2. Read the [Alpha release guide](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/ALPHA-RELEASE.md) and [known limitations](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/KNOWN-LIMITATIONS.md)."
+            echo "3. Pull and deploy the immutable version tag, then complete the documented operator smoke test before relying on it."
+            echo
+            echo "Canonical notes and assets require no proprietary migration; they remain ordinary Git-backed Markdown files. Any application-metadata migration or special limitation must be documented in the release guide before this tag is created."
+            echo
+            echo "### Rollback"
+            echo
+            echo "Stop RepoQuill, preserve the failed-state volume for diagnosis, restore the pre-upgrade \`/data\` backup when metadata compatibility requires it, and deploy the previous immutable image tag. Never move or overwrite this release tag to perform a rollback."
+            echo
+            echo "Security issues must be reported through [private vulnerability reporting](https://github.com/${GITHUB_REPOSITORY}/security/advisories/new), not a public issue."
+          } > "${notes}"
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "RepoQuill ${VERSION}" \
+            --notes-file "${notes}" \
+            --prerelease \
+            --latest=false \
+            --verify-tag

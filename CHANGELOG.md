@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Security maintenance now includes daily source, dependency, secret, freshly
+  built image, immutable release image, and moving-channel image surveillance.
+- Alpha publishing verifies immutable image aliases before moving the channel
+  tag and creates a prerelease record with digest, SBOM/provenance, migration,
+  and rollback guidance.
+- Dependency updates follow an explicit human-review policy with complete
+  functional, runtime, and security gates and no automatic merge or deployment.
 - Notes can be opened in a session-scoped tab strip using the context menu,
   Ctrl/Cmd-click, or middle-click while retaining a single conflict-safe editor
   instance. Tabs follow note moves and close safely when their files are deleted.
