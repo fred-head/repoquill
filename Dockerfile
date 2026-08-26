@@ -38,6 +38,7 @@ RUN apk upgrade --no-cache \
     && chown -R repoquill:repoquill /data
 COPY --from=backend /out/repoquill /usr/local/bin/repoquill
 COPY LICENSE /usr/share/licenses/repoquill/LICENSE
+COPY THIRD-PARTY-NOTICES.md /usr/share/licenses/repoquill/THIRD-PARTY-NOTICES.md
 USER repoquill
 VOLUME ["/data"]
 EXPOSE 8080
