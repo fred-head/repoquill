@@ -25,7 +25,7 @@ describe('Git synchronization UI', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url === '/api/health') return Response.json({ status: 'ok' })
-      if (url === '/api/notebook') return Response.json({ name: 'Private' })
+      if (url === '/api/notebook') return Response.json({ name: 'Private', configured: true })
       if (url === '/api/repository/tree') return Response.json({ entries: [{ name: 'Note.md', path: 'Note.md', type: 'file' }] })
       if (url === '/api/repository/git/status') return Response.json(synchronized ? { state: 'synced', branch: 'main', lastSyncedAt: new Date().toISOString() } : { state: 'local_changes', branch: 'main' })
       if (url.startsWith('/api/repository/file?')) return Response.json({ path: 'Note.md', content: 'Saved note', version: 'v1' })
@@ -55,7 +55,7 @@ describe('Git synchronization UI', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url === '/api/health') return Response.json({ status: 'ok' })
-      if (url === '/api/notebook') return Response.json({ name: 'Private' })
+      if (url === '/api/notebook') return Response.json({ name: 'Private', configured: true })
       if (url === '/api/notebooks') return Response.json({ activeId: 'private', notebooks: [{ id: 'private', name: 'Private' }] })
       if (url === '/api/repository/tree') return Response.json({ entries: [{ name: 'First.md', path: 'First.md', type: 'file' }, { name: 'Second.md', path: 'Second.md', type: 'file' }] })
       if (url === '/api/repository/git/status') return Response.json(synchronized ? { state: 'synced', branch: 'main', lastSyncedAt: new Date().toISOString() } : { state: 'local_changes', branch: 'main' })

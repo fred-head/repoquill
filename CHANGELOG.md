@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Notes can be opened in a session-scoped tab strip using the context menu,
+  Ctrl/Cmd-click, or middle-click while retaining a single conflict-safe editor
+  instance. Tabs follow note moves and close safely when their files are deleted.
+- Fresh Docker installations now start with explicit notebook onboarding instead
+  of registering a synthetic local `repos` notebook. Existing explicitly
+  configured notebooks remain supported and unchanged.
+- Inactive legacy local notebook registrations can be removed from Manage
+  Notebooks without deleting their files.
+
+### Fixed
+
+- The browser-provided PWA installation suggestion can now be dismissed, and
+  the choice is retained in that browser.
+
 ## [0.1.0-alpha.1] - 2026-08-22
 
 ### Added

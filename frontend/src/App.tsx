@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { AutoLockController, autoLockOptions, loadAutoLockPreference, parseAutoLockMinutes, saveAutoLockPreference, type AutoLockMinutes } from './app/autoLock'
 import { documentStats } from './app/documentStats'
 import { defaultSyncPreferences, loadSyncPreferences, saveSyncPreferences, type SyncPreferences } from './app/syncPreferences'
@@ -23,9 +23,11 @@ type HostTrustDiscovery = { state: string; message: string; requestId?: string; 
 type ManagedSSHKey = { keyId: string; publicKey: string; createdAt: string; fingerprint?: string; assigned: boolean; notebookName?: string }
 type NotebookInfo = { id: string; name: string; remoteUrl?: string; branch?: string; authType?: GitAuthType; keyId?: string }
 type SearchResult = { path: string; type: 'directory' | 'file' | 'content'; line?: number; excerpt?: string }
+type NoteTab = { path: string; readOnly: boolean }
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }
 const expandedFoldersStorageKey = 'repoquill.expanded-folders'
 const themeStorageKey = 'repoquill.theme'
+const installPromptDismissedStorageKey = 'repoquill.install-prompt-dismissed'
 const noteSwitchSyncFreshnessMs = 45_000
 
 function loadTheme(): Theme {
@@ -85,6 +87,7 @@ export function App() {
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
   const [browserOnline, setBrowserOnline] = useState(() => navigator.onLine)
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent>()
+  const [installPromptDismissed, setInstallPromptDismissed] = useState(() => localStorage.getItem(installPromptDismissedStorageKey) === 'true')
   const [addNotebookOpen, setAddNotebookOpen] = useState(false)
   const [manageNotebooksOpen, setManageNotebooksOpen] = useState(false)
   const [notebooks, setNotebooks] = useState<NotebookInfo[]>([])
@@ -92,10 +95,12 @@ export function App() {
   const [readOnly, setReadOnly] = useState(false)
   const [health, setHealth] = useState<Health>('checking')
   const [notebookName, setNotebookName] = useState('Notebook')
+  const [notebookConfigured, setNotebookConfigured] = useState<boolean>()
   const [entries, setEntries] = useState<TreeNode[]>([])
   const [treeLoading, setTreeLoading] = useState(true)
   const [treeError, setTreeError] = useState<string>()
   const [selectedPath, setSelectedPath] = useState<string>()
+  const [tabs, setTabs] = useState<NoteTab[]>([])
   const [note, setNote] = useState<FileResponse>()
   const [noteLoading, setNoteLoading] = useState(false)
   const [noteError, setNoteError] = useState<string>()
@@ -140,7 +145,7 @@ export function App() {
     const handleOffline = () => setBrowserOnline(false)
     const handleInstallPrompt = (event: Event) => {
       event.preventDefault()
-      setInstallPrompt(event as InstallPromptEvent)
+      if (!installPromptDismissed) setInstallPrompt(event as InstallPromptEvent)
     }
     const handleInstalled = () => setInstallPrompt(undefined)
     window.addEventListener('online', handleOnline)
@@ -153,7 +158,7 @@ export function App() {
       window.removeEventListener('beforeinstallprompt', handleInstallPrompt)
       window.removeEventListener('appinstalled', handleInstalled)
     }
-  }, [])
+  }, [installPromptDismissed])
 
   useEffect(() => {
     const query = searchQuery.trim()
@@ -185,15 +190,23 @@ export function App() {
       const response = await fetch('/api/repository/tree')
       const data = await responseJSON<{ entries: TreeNode[] }>(response)
       setEntries(data.entries)
+      setNotebookConfigured(true)
       setHealth('online')
     } catch (error) {
       setTreeError(messageFrom(error))
+      if (messageFrom(error) === 'repository is not configured') setNotebookConfigured(false)
     } finally {
       setTreeLoading(false)
     }
   }, [])
 
   const refreshGitStatus = useCallback(async () => {
+    if (notebookConfigured !== true) {
+      const status: GitStatus = { state: 'invalid', message: notebookConfigured === false ? 'Add a notebook to enable synchronization.' : 'Checking notebook configuration…' }
+      gitStatusRef.current = status
+      setGitStatus(status)
+      return
+    }
     try {
       const response = await fetch('/api/repository/git/status')
       const status = await responseJSON<GitStatus>(response)
@@ -205,13 +218,14 @@ export function App() {
       gitStatusRef.current = status
       setGitStatus(status)
     }
-  }, [])
+  }, [notebookConfigured])
 
   const loadNotebookInfo = useCallback(async () => {
     try {
       const response = await fetch('/api/notebook')
-      const data = await responseJSON<{ name: string }>(response)
-      setNotebookName(data.name || 'Notebook')
+      const data = await responseJSON<{ name: string; configured: boolean }>(response)
+      setNotebookConfigured(data.configured)
+      setNotebookName(data.configured ? data.name || 'Notebook' : 'Notebooks')
     } catch {
       setNotebookName('Notebook')
     }
@@ -237,9 +251,10 @@ export function App() {
     }).catch(() => setHealth('offline'))
     fetch('/api/repository/tree').then(responseJSON<{ entries: TreeNode[] }>).then((data) => {
       setEntries(data.entries)
+      setNotebookConfigured(true)
       setHealth('online')
-    }).catch((error: unknown) => setTreeError(messageFrom(error))).finally(() => setTreeLoading(false))
-    fetch('/api/notebook').then(responseJSON<{ name: string }>).then((data) => setNotebookName(data.name || 'Notebook')).catch(() => setNotebookName('Notebook'))
+    }).catch((error: unknown) => { const message = messageFrom(error); setTreeError(message); if (message === 'repository is not configured') setNotebookConfigured(false) }).finally(() => setTreeLoading(false))
+    fetch('/api/notebook').then(responseJSON<{ name: string; configured: boolean }>).then((data) => { setNotebookConfigured(data.configured); setNotebookName(data.configured ? data.name || 'Notebook' : 'Notebooks') }).catch(() => setNotebookName('Notebook'))
     fetch('/api/notebooks').then(responseJSON<{ activeId: string; notebooks: NotebookInfo[] }>).then((data) => { setNotebooks(data.notebooks); setActiveNotebookID(data.activeId); const active = data.notebooks.find((notebook) => notebook.id === data.activeId); if (active) setNotebookName(active.name) }).catch(() => undefined)
 
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -353,6 +368,7 @@ export function App() {
   }
 
   async function syncRepository(): Promise<boolean> {
+    if (notebookConfigured !== true) return false
     if (syncPromise.current) return syncPromise.current
     const operation = (async () => {
       setGitSyncing(true)
@@ -412,7 +428,6 @@ export function App() {
   })
 
   useEffect(() => {
-    if (syncPreferencesRef.current.syncOnStartup) void syncRepositoryRef.current()
     const syncAfterFocus = () => {
       if (!syncPreferencesRef.current.syncOnFocus || document.visibilityState === 'hidden') return
       const now = Date.now()
@@ -428,8 +443,13 @@ export function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (notebookConfigured && syncPreferencesRef.current.syncOnStartup) void syncRepositoryRef.current()
+  }, [notebookConfigured])
+
   async function activateClonedNotebook() {
     activeDraft.current = undefined
+    setTabs([])
     setSelectedPath(undefined)
     setSelectedItem(undefined)
     setNote(undefined)
@@ -454,6 +474,7 @@ export function App() {
       const response = await fetch(`/api/notebooks/${encodeURIComponent(notebook.id)}/activate`, { method: 'POST' })
       await responseJSON<NotebookInfo>(response)
       activeDraft.current = undefined
+      setTabs([])
       setSelectedPath(undefined)
       setSelectedItem(undefined)
       setNote(undefined)
@@ -472,7 +493,7 @@ export function App() {
     }
   }
 
-  async function openNote(path: string) {
+  async function openNote(path: string, disposition: 'current' | 'new' = 'current') {
     if (path === selectedPath) return
     if (!(await saveDraft())) return
     setNoteLoading(true)
@@ -481,10 +502,28 @@ export function App() {
     try {
       const response = await fetch(`/api/repository/file?path=${encodeURIComponent(path)}`)
       const loaded = await responseJSON<FileResponse>(response)
+      const existingTab = tabs.find((tab) => tab.path === path)
+      setTabs((current) => {
+        if (current.some((tab) => tab.path === path)) return current
+        const nextTab = { path, readOnly: false }
+        if (disposition === 'new' || !selectedPath || current.length === 0) return [...current, nextTab]
+        return current.map((tab) => tab.path === selectedPath ? nextTab : tab)
+      })
       activeDraft.current = { ...loaded, savedContent: loaded.content }
       setNote(loaded)
       setSelectedPath(path)
-      setReadOnly(false)
+      const treeEntry = findTreeNode(entries, path)
+      if (treeEntry) setSelectedItem(treeEntry)
+      setExpandedFolders((current) => {
+        const next = new Set(current)
+        let folder = parentPath(path)
+        while (folder) {
+          next.add(folder)
+          folder = parentPath(folder)
+        }
+        return next
+      })
+      updateReadOnly(existingTab?.readOnly ?? false, path)
       setSaveStatus('saved')
       if (syncPreferences.syncBeforeOpeningNote) requestNoteSwitchSync()
     } catch (error) {
@@ -492,6 +531,29 @@ export function App() {
     } finally {
       setNoteLoading(false)
     }
+  }
+
+  async function closeTab(path: string) {
+    const index = tabs.findIndex((tab) => tab.path === path)
+    if (index < 0) return
+    if (path !== selectedPath) {
+      setTabs((current) => current.filter((tab) => tab.path !== path))
+      return
+    }
+    if (!(await saveDraft())) return
+    const remaining = tabs.filter((tab) => tab.path !== path)
+    const next = remaining[Math.min(index, remaining.length - 1)]
+    setTabs(remaining)
+    activeDraft.current = undefined
+    setNote(undefined)
+    setSelectedPath(undefined)
+    setSaveStatus('saved')
+    setSaveError(undefined)
+    if (next) await openNote(next.path)
+  }
+
+  async function activateTab(path: string) {
+    if (path !== selectedPath) await openNote(path)
   }
 
   function updateDraft(markdown: string) {
@@ -550,6 +612,10 @@ export function App() {
       const affectedPath = selectedPath === entry.path || selectedPath?.startsWith(`${entry.path}/`)
         ? target + selectedPath.slice(entry.path.length)
         : undefined
+      const affectedReadOnly = affectedPath ? tabs.find((tab) => tab.path === selectedPath)?.readOnly : undefined
+      setTabs((current) => current.map((tab) => tab.path === entry.path || tab.path.startsWith(`${entry.path}/`)
+        ? { ...tab, path: target + tab.path.slice(entry.path.length) }
+        : tab))
       if (selectedItem && (selectedItem.path === entry.path || selectedItem.path.startsWith(`${entry.path}/`))) {
         const movedSelectionPath = target + selectedItem.path.slice(entry.path.length)
         setSelectedItem({ ...selectedItem, path: movedSelectionPath, name: baseName(movedSelectionPath) })
@@ -567,7 +633,10 @@ export function App() {
         setSelectedPath(undefined)
       }
       await loadTree()
-      if (affectedPath) await openNote(affectedPath)
+      if (affectedPath) {
+        await openNote(affectedPath)
+        updateReadOnly(affectedReadOnly ?? false, affectedPath)
+      }
     } catch (error) {
       setOperationError(messageFrom(error))
     } finally {
@@ -620,7 +689,11 @@ export function App() {
     try {
       const response = await fetch(`/api/repository/entry?path=${encodeURIComponent(entry.path)}`, { method: 'DELETE' })
       if (!response.ok) await responseJSON<never>(response)
-      if (selectedPath === entry.path || selectedPath?.startsWith(`${entry.path}/`)) {
+      const activeDeleted = selectedPath === entry.path || selectedPath?.startsWith(`${entry.path}/`)
+      const activeIndex = tabs.findIndex((tab) => tab.path === selectedPath)
+      const remainingTabs = tabs.filter((tab) => tab.path !== entry.path && !tab.path.startsWith(`${entry.path}/`))
+      setTabs(remainingTabs)
+      if (activeDeleted) {
         activeDraft.current = undefined
         setNote(undefined)
         setSelectedPath(undefined)
@@ -630,6 +703,10 @@ export function App() {
       if (selectedItem?.path === entry.path || selectedItem?.path.startsWith(`${entry.path}/`)) setSelectedItem(undefined)
       setExpandedFolders((current) => new Set([...current].filter((folder) => folder !== entry.path && !folder.startsWith(`${entry.path}/`))))
       await loadTree()
+      if (activeDeleted && remainingTabs.length > 0) {
+        const next = remainingTabs[Math.min(Math.max(activeIndex, 0), remainingTabs.length - 1)]
+        await openNote(next.path)
+      }
     } catch (error) {
       setOperationError(messageFrom(error))
     } finally {
@@ -637,12 +714,12 @@ export function App() {
     }
   }
 
-  function selectEntry(entry: TreeNode) {
+  function selectEntry(entry: TreeNode, disposition: 'current' | 'new' = 'current') {
     setSelectedItem(entry)
     setOverflowOpen(false)
     if (entry.type === 'file') {
       setMobileNavigationOpen(false)
-      void openNote(entry.path)
+      void openNote(entry.path, disposition)
     }
   }
 
@@ -684,6 +761,14 @@ export function App() {
     setContextMenu({ entry, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 176)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 132)) })
   }
 
+  function openEntryInNewTab(entry: TreeNode) {
+    setContextMenu(undefined)
+    setOverflowOpen(false)
+    setSelectedItem(entry)
+    setMobileNavigationOpen(false)
+    void openNote(entry.path, 'new')
+  }
+
   function toggleFolder(path: string) {
     setExpandedFolders((current) => {
       const next = new Set(current)
@@ -699,7 +784,7 @@ export function App() {
       const activity = editorActivity.current
       if (!path || readOnly) return
       void saveDraft().then((saved) => {
-        if (saved && activeDraft.current?.path === path && editorActivity.current === activity) setReadOnly(true)
+        if (saved && activeDraft.current?.path === path && editorActivity.current === activity) updateReadOnly(true, path)
       })
     }
   })
@@ -714,12 +799,35 @@ export function App() {
     autoLockController.current?.update(autoLockMinutes, Boolean(selectedPath) && !readOnly)
   }, [autoLockMinutes, readOnly, selectedPath])
 
+  useEffect(() => {
+    const handleTabKeys = (event: globalThis.KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'w' && selectedPath) {
+        event.preventDefault()
+        void closeTab(selectedPath)
+        return
+      }
+      if (!event.ctrlKey || event.key !== 'Tab' || tabs.length < 2) return
+      event.preventDefault()
+      const currentIndex = Math.max(0, tabs.findIndex((tab) => tab.path === selectedPath))
+      const direction = event.shiftKey ? -1 : 1
+      const nextIndex = (currentIndex + direction + tabs.length) % tabs.length
+      void activateTab(tabs[nextIndex].path)
+    }
+    window.addEventListener('keydown', handleTabKeys)
+    return () => window.removeEventListener('keydown', handleTabKeys)
+  })
+
   async function toggleReadOnly() {
     if (readOnly) {
-      setReadOnly(false)
+      updateReadOnly(false)
       return
     }
-    if (await saveDraft()) setReadOnly(true)
+    if (await saveDraft()) updateReadOnly(true)
+  }
+
+  function updateReadOnly(value: boolean, path = selectedPath) {
+    setReadOnly(value)
+    if (path) setTabs((current) => current.map((tab) => tab.path === path ? { ...tab, readOnly: value } : tab))
   }
 
   const selectedFolderPath = selectedItem?.type === 'directory' ? selectedItem.path : selectedItem ? parentPath(selectedItem.path) : ''
@@ -732,33 +840,40 @@ export function App() {
     setInstallPrompt(undefined)
   }
 
+  function dismissInstallPrompt() {
+    localStorage.setItem(installPromptDismissedStorageKey, 'true')
+    setInstallPromptDismissed(true)
+    setInstallPrompt(undefined)
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100 lg:h-screen lg:flex-row lg:overflow-hidden">
       {mobileNavigationOpen && <button type="button" aria-label="Close notebook navigation" className="fixed inset-0 z-30 bg-black/65 lg:hidden" onClick={() => setMobileNavigationOpen(false)} />}
       <aside aria-label="Notebook navigation" className={`fixed inset-y-0 left-0 z-40 flex w-[min(20rem,calc(100vw-3rem))] shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 shadow-2xl transition-transform duration-200 lg:static lg:z-auto lg:w-80 lg:translate-x-0 lg:bg-zinc-900/60 lg:shadow-none ${mobileNavigationOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <header className="relative border-b border-zinc-800 px-5 py-5"><div className="flex items-center justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-xs font-semibold uppercase tracking-[0.22em] text-amber-400">RepoQuill</p><button type="button" aria-haspopup="menu" aria-expanded={notebookSwitcherOpen} onClick={() => setNotebookSwitcherOpen((open) => !open)} className="mt-1 flex min-h-9 max-w-full items-center gap-2 rounded-md pr-2 text-left text-lg font-semibold outline-none hover:text-amber-200 focus-visible:ring-2 focus-visible:ring-amber-500"><span className="truncate">{notebookName}</span><span aria-hidden="true" className="text-xs text-zinc-500">▾</span></button></div><div className="flex items-center gap-2"><button type="button" onClick={() => setSettingsOpen(true)} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Settings" title="Settings"><SettingsIcon /></button><button type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button><StatusDot health={health} /></div></div>{notebookSwitcherOpen && <><button type="button" aria-label="Close notebook switcher" className="fixed inset-0 z-20 cursor-default" onClick={() => setNotebookSwitcherOpen(false)} /><div role="menu" aria-label="Notebooks" className="absolute top-[4.8rem] right-3 left-3 z-30 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl">{notebooks.map((notebook) => <button key={notebook.id} type="button" role="menuitemradio" aria-checked={notebook.id === activeNotebookID} onClick={() => void switchNotebook(notebook)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-zinc-200 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"><span className="w-4 text-amber-400" aria-hidden="true">{notebook.id === activeNotebookID ? '✓' : ''}</span><span className="truncate">{notebook.name}</span></button>)}<div className="my-1 border-t border-zinc-700" /><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setAddNotebookOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-amber-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">+ Add Notebook</button><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setManageNotebooksOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Manage Notebooks</button></div></>}</header>
         <div className="relative grid grid-cols-[1fr_1fr_auto_auto] gap-1.5 border-b border-zinc-800 p-3">
-          <TreeAction disabled={operationBusy} onClick={() => void createEntry('file')}>New Note</TreeAction>
-          <TreeAction disabled={operationBusy} onClick={() => void createEntry('directory')}>New Folder</TreeAction>
-          <TreeAction label="Refresh tree" disabled={operationBusy} onClick={() => void loadTree()}>↻</TreeAction>
+          <TreeAction disabled={operationBusy || notebookConfigured === false} onClick={() => void createEntry('file')}>New Note</TreeAction>
+          <TreeAction disabled={operationBusy || notebookConfigured === false} onClick={() => void createEntry('directory')}>New Folder</TreeAction>
+          <TreeAction label="Refresh tree" disabled={operationBusy || notebookConfigured === false} onClick={() => void loadTree()}>↻</TreeAction>
           <TreeAction label="Selected item actions" disabled={operationBusy || !selectedItem} onClick={() => setOverflowOpen((open) => !open)}>•••</TreeAction>
           {overflowOpen && <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="Close action menu" onClick={() => setOverflowOpen(false)} />}
-          {overflowOpen && selectedItem && <div className="absolute top-12 right-3 z-30"><ActionMenu entry={selectedItem} onRename={beginRename} onMove={beginMove} onDelete={(entry) => { setOverflowOpen(false); void deleteEntry(entry) }} /></div>}
+          {overflowOpen && selectedItem && <div className="absolute top-12 right-3 z-30"><ActionMenu entry={selectedItem} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={(entry) => { setOverflowOpen(false); void deleteEntry(entry) }} /></div>}
         </div>
-        <div className="border-b border-zinc-800 px-3 py-2 text-xs text-zinc-500">Create in: <span className="text-zinc-300">{createInName}</span></div>
-        <div className="border-b border-zinc-800 p-3">
+        {notebookConfigured !== false && <div className="border-b border-zinc-800 px-3 py-2 text-xs text-zinc-500">Create in: <span className="text-zinc-300">{createInName}</span></div>}
+        {notebookConfigured !== false && <div className="border-b border-zinc-800 p-3">
           <div className="relative">
             <span aria-hidden="true" className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm text-zinc-500">⌕</span>
             <input type="search" value={searchQuery} onChange={(event) => { const value = event.target.value; setSearchQuery(value); if (!value.trim()) { setSearchResults([]); setSearchLoading(false); setSearchError(undefined) } }} placeholder="Search this notebook" aria-label="Search this notebook" className="min-h-10 w-full rounded-md border border-zinc-700 bg-zinc-950 py-2 pr-9 pl-9 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-amber-500 focus:ring-1 focus:ring-amber-500" />
             {searchQuery && <button type="button" onClick={() => { setSearchQuery(''); setSearchResults([]); setSearchLoading(false); setSearchError(undefined) }} aria-label="Clear search" className="absolute top-1/2 right-1.5 min-h-8 min-w-8 -translate-y-1/2 rounded text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200">×</button>}
           </div>
-        </div>
+        </div>}
         <div className="max-h-80 overflow-y-auto p-3 lg:max-h-none lg:flex-1">
           {operationError && <div className="mb-3 rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{operationError}</div>}
           {searchQuery.trim() && <SearchResults query={searchQuery.trim()} results={searchResults} loading={searchLoading} error={searchError} onSelect={selectSearchResult} />}
           {!searchQuery.trim() && <>
           {treeLoading && <SidebarMessage>Loading repository…</SidebarMessage>}
-          {treeError && <div className="rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200"><p>{treeError}</p>{treeError === 'repository is not configured' && <p className="mt-2 text-xs text-red-300/80">Set REPOQUILL_REPOSITORY and restart the backend.</p>}<button className="mt-3 rounded-md bg-red-900/60 px-3 py-1.5 text-xs hover:bg-red-800" onClick={() => void loadTree()}>Try again</button></div>}
+          {notebookConfigured === false && <div className="rounded-lg border border-zinc-700 bg-zinc-950/40 p-4 text-sm text-zinc-300"><p className="font-medium text-zinc-100">No notebook yet</p><p className="mt-1 text-xs leading-5 text-zinc-500">Connect an existing Git repository to start taking notes.</p><button type="button" className="mt-3 min-h-10 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 hover:bg-amber-400" onClick={() => setAddNotebookOpen(true)}>Add Notebook</button></div>}
+          {treeError && notebookConfigured !== false && <div className="rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200"><p>{treeError}</p><button className="mt-3 rounded-md bg-red-900/60 px-3 py-1.5 text-xs hover:bg-red-800" onClick={() => void loadTree()}>Try again</button></div>}
           {!treeLoading && !treeError && <button type="button" className={`mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${!selectedItem ? 'bg-amber-400/15 text-amber-200' : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'}`} onClick={() => { setSelectedItem(undefined); setOverflowOpen(false) }}><span aria-hidden="true">⌂</span><span className="truncate">{notebookName}</span></button>}
           {!treeLoading && !treeError && entries.length === 0 && <SidebarMessage>No Markdown files found.</SidebarMessage>}
           {!treeLoading && !treeError && entries.length > 0 && <nav aria-label="Notebook notes"><ul className="space-y-0.5">{entries.map((entry) => <TreeEntry key={entry.path} entry={entry} selectedPath={selectedItem?.path} expandedFolders={expandedFolders} renamePath={renameEntry?.path} renameValue={renameValue} onSelect={selectEntry} onToggleFolder={toggleFolder} onContextMenu={showContextMenu} onRenameValue={setRenameValue} onRenameCommit={() => void commitRename()} onRenameCancel={() => setRenameEntry(undefined)} />)}</ul></nav>}
@@ -766,15 +881,18 @@ export function App() {
         </div>
       </aside>
 
-      <main className="flex min-h-screen min-w-0 flex-1 flex-col overflow-y-auto lg:min-h-[60vh]">
-        <header className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-950/90 px-3 py-3 backdrop-blur sm:gap-4 sm:px-8">
+      <main className="flex min-h-screen min-w-0 flex-1 flex-col overflow-y-auto lg:min-h-[60vh]" style={{ '--editor-toolbar-top': tabs.length > 0 ? '99px' : '55px' } as CSSProperties}>
+        <div className="sticky top-0 z-10 bg-zinc-950/90 backdrop-blur">
+        <header className="flex items-center justify-between gap-2 border-b border-zinc-800 px-3 py-3 sm:gap-4 sm:px-8">
           <div className="flex min-w-0 items-center gap-2"><button type="button" aria-label="Open notebook navigation" aria-expanded={mobileNavigationOpen} onClick={() => setMobileNavigationOpen(true)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 lg:hidden">☰</button><p className="min-w-0 truncate text-sm text-zinc-400">{selectedPath ?? 'Select a Markdown file'}</p></div>
-          <div className="flex shrink-0 items-center gap-2">{selectedPath && <><button type="button" onClick={() => void toggleReadOnly()} className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${readOnly ? 'border-amber-500 bg-amber-400/15 text-amber-200' : 'border-zinc-700 text-zinc-200 hover:bg-zinc-800'}`} aria-pressed={readOnly}>{readOnly ? '🔒 Read only' : '✎ Edit'}</button><button type="button" disabled={readOnly || saveStatus === 'saved' || saveStatus === 'saving'} onClick={() => void saveDraft()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">Save</button></>}<button type="button" disabled={gitSyncing || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict'} onClick={() => void syncRepository()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">{gitSyncing ? 'Syncing…' : 'Sync'}</button></div>
+          <div className="flex shrink-0 items-center gap-2">{selectedPath && <><button type="button" onClick={() => void toggleReadOnly()} className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${readOnly ? 'border-amber-500 bg-amber-400/15 text-amber-200' : 'border-zinc-700 text-zinc-200 hover:bg-zinc-800'}`} aria-pressed={readOnly}>{readOnly ? '🔒 Read only' : '✎ Edit'}</button><button type="button" disabled={readOnly || saveStatus === 'saved' || saveStatus === 'saving'} onClick={() => void saveDraft()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">Save</button></>}<button type="button" disabled={notebookConfigured === false || gitSyncing || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict'} onClick={() => void syncRepository()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">{gitSyncing ? 'Syncing…' : 'Sync'}</button></div>
         </header>
+        {tabs.length > 0 && <NoteTabs tabs={tabs} activePath={selectedPath} onActivate={(path) => void activateTab(path)} onClose={(path) => void closeTab(path)} />}
+        </div>
         {(!browserOnline || health === 'offline') && <div role="status" className="border-b border-amber-800/70 bg-amber-950/40 px-4 py-2 text-sm text-amber-100 sm:px-8"><strong>Offline.</strong> RepoQuill is online-first; viewing may continue, but editing and synchronization require the server connection.</div>}
-        {installPrompt && <div className="flex items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-300 sm:px-8"><span>Install RepoQuill for a standalone app experience.</span><button type="button" onClick={() => void installApplication()} className="min-h-9 shrink-0 rounded-md border border-zinc-600 px-3 font-medium hover:bg-zinc-800">Install app</button></div>}
+        {installPrompt && !installPromptDismissed && <div className="flex items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-300 sm:px-8"><span>Install RepoQuill for a standalone app experience.</span><div className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => void installApplication()} className="min-h-9 rounded-md border border-zinc-600 px-3 font-medium hover:bg-zinc-800">Install app</button><button type="button" onClick={dismissInstallPrompt} aria-label="Dismiss install suggestion" title="Dismiss" className="flex min-h-9 min-w-9 items-center justify-center rounded-md text-lg text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200">×</button></div></div>}
         <article className={`mx-auto w-full max-w-4xl flex-1 px-5 sm:px-8 ${selectedPath ? 'pt-2 pb-8 sm:pt-2 sm:pb-12' : 'py-8 sm:py-12'}`}>
-          {!selectedPath && <EmptyState />}
+          {!selectedPath && <EmptyState notebookConfigured={notebookConfigured !== false} onAddNotebook={() => setAddNotebookOpen(true)} />}
           {noteLoading && <p className="text-sm text-zinc-400">Loading note…</p>}
           {noteError && <ErrorMessage>{noteError}</ErrorMessage>}
           {saveError && <ErrorMessage>{saveStatus === 'conflict' ? 'Save stopped: the file changed outside RepoQuill. Your edits remain in the editor; copy them somewhere safe before reloading the page to resolve the conflict.' : `Save failed: ${saveError}`}</ErrorMessage>}
@@ -782,11 +900,11 @@ export function App() {
         </article>
         {selectedPath && note && <DocumentStatusBar status={saveStatus} gitStatus={gitStatus} gitSyncing={gitSyncing} markdown={note.content} />}
       </main>
-      {contextMenu && <div className="fixed inset-0 z-40" onClick={() => setContextMenu(undefined)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined) }}><div className="fixed" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><ActionMenu entry={contextMenu.entry} onRename={beginRename} onMove={beginMove} onDelete={(entry) => { setContextMenu(undefined); void deleteEntry(entry) }} /></div></div>}
+      {contextMenu && <div className="fixed inset-0 z-40" onClick={() => setContextMenu(undefined)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined) }}><div className="fixed" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><ActionMenu entry={contextMenu.entry} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={(entry) => { setContextMenu(undefined); void deleteEntry(entry) }} /></div></div>}
       {moveEntry && <FolderPicker entries={entries} notebookName={notebookName} moving={moveEntry} destination={moveDestination} onDestination={setMoveDestination} onCancel={() => setMoveEntry(undefined)} onConfirm={() => void confirmMove()} />}
       {settingsOpen && <SettingsDialog mode="settings" autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} syncPreferences={syncPreferences} onSyncPreferences={setSyncPreferences} onClose={() => setSettingsOpen(false)} />}
       {addNotebookOpen && <SettingsDialog mode="onboarding" autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} onNotebookAdded={async () => { await activateClonedNotebook(); setAddNotebookOpen(false) }} onClose={() => setAddNotebookOpen(false)} />}
-      {manageNotebooksOpen && <ManageNotebooksDialog notebooks={notebooks} activeNotebookID={activeNotebookID} onClose={() => setManageNotebooksOpen(false)} />}
+      {manageNotebooksOpen && <ManageNotebooksDialog notebooks={notebooks} activeNotebookID={activeNotebookID} onRemoved={loadNotebooks} onClose={() => setManageNotebooksOpen(false)} />}
     </div>
   )
 }
@@ -1048,8 +1166,26 @@ function HostFingerprintList({ title, keys }: { title: string; keys: HostKeyInfo
   return <div className="mt-3"><p className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">{title}</p><ul className="mt-1 space-y-2">{keys.map((key) => <li key={`${key.keyType}:${key.fingerprint}`} className="rounded border border-zinc-700/80 bg-zinc-950/60 p-2"><div className="flex items-center justify-between gap-2"><span className="text-xs font-medium uppercase text-zinc-300">{key.keyType}</span><button type="button" onClick={() => void navigator.clipboard.writeText(key.fingerprint)} className="min-h-9 rounded px-2 text-xs text-amber-300 hover:bg-zinc-800" aria-label={`Copy ${key.keyType} fingerprint`}>Copy</button></div><code className="mt-1 block break-all text-[11px] leading-5 text-zinc-300">{key.fingerprint}</code></li>)}</ul></div>
 }
 
-function ManageNotebooksDialog({ notebooks, activeNotebookID, onClose }: { notebooks: NotebookInfo[]; activeNotebookID: string; onClose: () => void }) {
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><div role="dialog" aria-modal="true" aria-labelledby="manage-notebooks-title" className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="border-b border-zinc-800 px-5 py-4"><h2 id="manage-notebooks-title" className="text-lg font-semibold">Manage Notebooks</h2><p className="mt-1 text-xs text-zinc-500">Notebook details and synchronization configuration.</p></header><div className="overflow-y-auto p-5"><div className="space-y-2">{notebooks.map((notebook) => <section key={notebook.id} className="rounded-md border border-zinc-800 p-3"><div className="flex items-center justify-between gap-2"><h3 className="font-medium text-zinc-200">{notebook.name}</h3>{notebook.id === activeNotebookID && <span className="text-xs text-emerald-400">Active</span>}</div>{notebook.remoteUrl ? <p className="mt-2 break-all text-xs text-zinc-400">{notebook.remoteUrl}</p> : <p className="mt-2 text-xs text-zinc-500">Locally configured notebook</p>}{notebook.branch && <p className="mt-1 text-xs text-zinc-500">Branch: {notebook.branch}</p>}</section>)}</div></div><footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">Done</button></footer></div></div>
+function ManageNotebooksDialog({ notebooks, activeNotebookID, onRemoved, onClose }: { notebooks: NotebookInfo[]; activeNotebookID: string; onRemoved: () => Promise<void>; onClose: () => void }) {
+  const [removeBusy, setRemoveBusy] = useState(false)
+  const [removeError, setRemoveError] = useState<string>()
+
+  async function removeLocalNotebook(notebook: NotebookInfo) {
+    if (!window.confirm(`Remove ${notebook.name} from RepoQuill? Files in its local directory will not be deleted.`)) return
+    setRemoveBusy(true)
+    setRemoveError(undefined)
+    try {
+      const response = await fetch(`/api/notebooks/${encodeURIComponent(notebook.id)}`, { method: 'DELETE' })
+      if (!response.ok) await responseJSON<{ error?: string }>(response)
+      await onRemoved()
+    } catch (error) {
+      setRemoveError(messageFrom(error))
+    } finally {
+      setRemoveBusy(false)
+    }
+  }
+
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><div role="dialog" aria-modal="true" aria-labelledby="manage-notebooks-title" className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="border-b border-zinc-800 px-5 py-4"><h2 id="manage-notebooks-title" className="text-lg font-semibold">Manage Notebooks</h2><p className="mt-1 text-xs text-zinc-500">Notebook details and synchronization configuration.</p></header><div className="overflow-y-auto p-5">{removeError && <ErrorMessage>{removeError}</ErrorMessage>}<div className="space-y-2">{notebooks.map((notebook) => <section key={notebook.id} className="rounded-md border border-zinc-800 p-3"><div className="flex items-center justify-between gap-2"><h3 className="font-medium text-zinc-200">{notebook.name}</h3>{notebook.id === activeNotebookID && <span className="text-xs text-emerald-400">Active</span>}</div>{notebook.remoteUrl ? <p className="mt-2 break-all text-xs text-zinc-400">{notebook.remoteUrl}</p> : <><p className="mt-2 text-xs text-zinc-500">Locally configured notebook</p>{notebook.id === 'local' && notebook.id !== activeNotebookID && <button type="button" disabled={removeBusy} onClick={() => void removeLocalNotebook(notebook)} className="mt-3 min-h-10 rounded-md border border-red-900/80 px-3 text-xs text-red-300 hover:bg-red-950/50 disabled:opacity-50">Remove registration</button>}</>}{notebook.branch && <p className="mt-1 text-xs text-zinc-500">Branch: {notebook.branch}</p>}</section>)}</div></div><footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">Done</button></footer></div></div>
 }
 
 function SettingsIcon() {
@@ -1062,7 +1198,7 @@ type TreeEntryProps = {
   expandedFolders: Set<string>
   renamePath?: string
   renameValue: string
-  onSelect: (entry: TreeNode) => void
+  onSelect: (entry: TreeNode, disposition?: 'current' | 'new') => void
   onToggleFolder: (path: string) => void
   onContextMenu: (entry: TreeNode, event: MouseEvent) => void
   onRenameValue: (value: string) => void
@@ -1086,7 +1222,7 @@ function TreeEntry(props: TreeEntryProps) {
         <span aria-hidden="true" className="mr-2">{isFolder ? '📁' : '◇'}</span>
         {isRenaming
           ? <InlineRename value={renameValue} onChange={onRenameValue} onCommit={onRenameCommit} onCancel={onRenameCancel} />
-          : <button type="button" className="min-w-0 flex-1 truncate py-1.5 pr-2 text-left text-sm" onClick={() => onSelect(entry)} onDoubleClick={() => { if (isFolder) onToggleFolder(entry.path) }}>{isFolder ? entry.name : entry.name.replace(/\.md$/i, '')}</button>}
+          : <button type="button" className="min-w-0 flex-1 truncate py-1.5 pr-2 text-left text-sm" onClick={(event) => onSelect(entry, !isFolder && (event.ctrlKey || event.metaKey) ? 'new' : 'current')} onAuxClick={(event) => { if (!isFolder && event.button === 1) { event.preventDefault(); onSelect(entry, 'new') } }} onDoubleClick={() => { if (isFolder) onToggleFolder(entry.path) }}>{isFolder ? entry.name : entry.name.replace(/\.md$/i, '')}</button>}
       </div>
       {isFolder && expanded && entry.children && <ul className="ml-4 border-l border-zinc-800 pl-2">{entry.children.map((child) => <TreeEntry key={child.path} {...props} entry={child} />)}</ul>}
     </li>
@@ -1109,8 +1245,12 @@ function SearchResults({ query, results, loading, error, onSelect }: { query: st
   return <nav aria-label="Search results"><p className="mb-2 px-2 text-xs text-zinc-500">{results.length === 100 ? 'First 100 results' : `${results.length} ${results.length === 1 ? 'result' : 'results'}`}</p><ul className="space-y-1">{results.map((result, index) => <li key={`${result.type}:${result.path}:${result.line ?? 0}:${index}`}><button type="button" onClick={() => onSelect(result)} className="w-full rounded-md px-2 py-2 text-left hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"><span className="flex items-center gap-2 text-sm text-zinc-200"><span aria-hidden="true" className="text-zinc-500">{result.type === 'directory' ? '▸' : result.type === 'file' ? '◇' : '≡'}</span><span className="truncate">{result.path.replace(/\.md$/i, '')}</span>{result.line && <span className="ml-auto shrink-0 text-xs text-zinc-500">L{result.line}</span>}</span>{result.excerpt && <span className="mt-1 block truncate pl-5 text-xs text-zinc-500">{result.excerpt}</span>}</button></li>)}</ul></nav>
 }
 
-function ActionMenu({ entry, onRename, onMove, onDelete }: { entry: TreeNode; onRename: (entry: TreeNode) => void; onMove: (entry: TreeNode) => void; onDelete: (entry: TreeNode) => void }) {
-  return <div role="menu" className="w-40 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-2xl"><MenuButton onClick={() => onRename(entry)}>Rename</MenuButton><MenuButton onClick={() => onMove(entry)}>Move…</MenuButton><MenuButton danger onClick={() => onDelete(entry)}>Delete</MenuButton></div>
+function ActionMenu({ entry, onOpenNewTab, onRename, onMove, onDelete }: { entry: TreeNode; onOpenNewTab: (entry: TreeNode) => void; onRename: (entry: TreeNode) => void; onMove: (entry: TreeNode) => void; onDelete: (entry: TreeNode) => void }) {
+  return <div role="menu" className="w-44 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-2xl">{entry.type === 'file' && <MenuButton onClick={() => onOpenNewTab(entry)}>Open in new tab</MenuButton>}<MenuButton onClick={() => onRename(entry)}>Rename</MenuButton><MenuButton onClick={() => onMove(entry)}>Move…</MenuButton><MenuButton danger onClick={() => onDelete(entry)}>Delete</MenuButton></div>
+}
+
+function NoteTabs({ tabs, activePath, onActivate, onClose }: { tabs: NoteTab[]; activePath?: string; onActivate: (path: string) => void; onClose: (path: string) => void }) {
+  return <nav aria-label="Open notes" className="flex h-11 min-w-0 items-end gap-0.5 overflow-x-auto border-b border-zinc-800 px-2 sm:px-6"><div role="tablist" className="flex min-w-max items-end gap-0.5">{tabs.map((tab) => <div key={tab.path} role="presentation" className={`group flex h-10 max-w-56 items-center rounded-t-md border border-b-0 ${tab.path === activePath ? 'border-zinc-700 bg-zinc-900 text-zinc-100' : 'border-transparent text-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-300'}`}><button type="button" role="tab" aria-selected={tab.path === activePath} title={tab.path} onClick={() => onActivate(tab.path)} className="min-w-0 flex-1 truncate py-2.5 pl-3 text-left text-xs">{baseName(tab.path).replace(/\.md$/i, '')}</button><button type="button" aria-label={`Close ${baseName(tab.path).replace(/\.md$/i, '')}`} title="Close tab" onClick={() => onClose(tab.path)} className="mx-0.5 flex min-h-9 min-w-9 items-center justify-center rounded text-base text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200">×</button></div>)}</div></nav>
 }
 
 function MenuButton({ children, danger, onClick }: { children: ReactNode; danger?: boolean; onClick: () => void }) {
@@ -1150,4 +1290,4 @@ function StatusDot({ health }: { health: Health }) {
 
 function SidebarMessage({ children }: { children: ReactNode }) { return <p className="px-2 py-3 text-sm text-zinc-500">{children}</p> }
 function ErrorMessage({ children }: { children: ReactNode }) { return <p className="mb-5 rounded-lg border border-red-900/70 bg-red-950/30 p-4 text-sm text-red-200">{children}</p> }
-function EmptyState() { return <div className="flex min-h-80 flex-col items-center justify-center text-center"><div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-2xl" aria-hidden="true">◇</div><h2 className="mt-5 text-xl font-semibold">Your Markdown stays yours</h2><p className="mt-2 max-w-md text-sm leading-6 text-zinc-400">Choose a note from the repository tree to edit it with Milkdown. Changes are autosaved after a short pause.</p></div> }
+function EmptyState({ notebookConfigured, onAddNotebook }: { notebookConfigured: boolean; onAddNotebook: () => void }) { return <div className="flex min-h-80 flex-col items-center justify-center text-center"><div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-2xl" aria-hidden="true">◇</div><h2 className="mt-5 text-xl font-semibold">{notebookConfigured ? 'Your Markdown stays yours' : 'Connect your first notebook'}</h2><p className="mt-2 max-w-md text-sm leading-6 text-zinc-400">{notebookConfigured ? 'Choose a note from the notebook tree to edit it with Milkdown. Changes are autosaved after a short pause.' : 'RepoQuill works with ordinary Git repositories. Add one to browse and edit its portable Markdown notes.'}</p>{!notebookConfigured && <button type="button" onClick={onAddNotebook} className="mt-5 min-h-11 rounded-md bg-amber-500 px-4 text-sm font-semibold text-zinc-950 hover:bg-amber-400">Add Notebook</button>}</div> }

@@ -16,17 +16,20 @@ beforeEach(() => {
   localStorage.clear()
   localStorage.setItem('repoquill.auto-lock-minutes', '1')
   let active = 'personal'
+  let notebooks = [{ id: 'local', name: 'repos' }, { id: 'personal', name: 'Personal Notes', branch: 'main' }, { id: 'work', name: 'Work', branch: 'main' }]
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url === '/api/health') return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
-    if (url === '/api/notebook') return Response.json({ name: active === 'personal' ? 'Personal Notes' : 'Work' })
-    if (url === '/api/notebooks') return Response.json({ activeId: active, notebooks: [{ id: 'personal', name: 'Personal Notes', branch: 'main' }, { id: 'work', name: 'Work', branch: 'main' }] })
+    if (url === '/api/notebook') return Response.json({ name: active === 'personal' ? 'Personal Notes' : 'Work', configured: true })
+    if (url === '/api/notebooks') return Response.json({ activeId: active, notebooks })
     if (url === '/api/notebooks/work/activate' && init?.method === 'POST') { active = 'work'; return Response.json({ id: 'work', name: 'Work' }) }
-    if (url === '/api/repository/tree') return Response.json({ entries: active === 'personal' ? [{ name: 'Note.md', path: 'Note.md', type: 'file' }] : [{ name: 'Work.md', path: 'Work.md', type: 'file' }] })
+    if (url === '/api/notebooks/local' && init?.method === 'DELETE') { notebooks = notebooks.filter((notebook) => notebook.id !== 'local'); return new Response(null, { status: 204 }) }
+    if (url === '/api/repository/tree') return Response.json({ entries: active === 'personal' ? [{ name: 'Note.md', path: 'Note.md', type: 'file' }, { name: 'Second.md', path: 'Second.md', type: 'file' }] : [{ name: 'Work.md', path: 'Work.md', type: 'file' }] })
     if (url === '/api/repository/search?q=auto-lock') return Response.json({ results: [{ path: 'Note.md', type: 'content', line: 1, excerpt: '# Auto-lock note' }] })
     if (url === '/api/repository/git/status') return Response.json({ state: 'clean', branch: 'main' })
     if (url === '/api/repository/git/sync' && init?.method === 'POST') return Response.json({ state: 'synced', branch: 'main' })
     if (url === '/api/repository/git/sync-background' && init?.method === 'POST') return Response.json({ status: 'accepted' }, { status: 202 })
+    if (url.includes('Second.md')) return Response.json({ path: 'Second.md', content: '# Second note', version: 'v2' })
     if (url.startsWith('/api/repository/file?')) return Response.json({ path: 'Note.md', content: '# Auto-lock note', version: 'v1' })
     return Response.json({ error: 'unexpected request' }, { status: 500 })
   }))
@@ -86,6 +89,60 @@ describe('App auto-lock integration', () => {
     expect(syncCalls.length).toBeGreaterThanOrEqual(3)
   })
 
+  it('offers notebook onboarding instead of a synthetic local notebook on a fresh installation', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/health') return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (url === '/api/notebook') return Response.json({ name: 'Notebook', configured: false })
+      if (url === '/api/notebooks') return Response.json({ activeId: '', notebooks: [] })
+      if (url === '/api/repository/tree') return Response.json({ error: 'repository is not configured' }, { status: 503 })
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }))
+
+    const view = render(<App />)
+    expect(await view.findByRole('heading', { name: 'Connect your first notebook' })).toBeTruthy()
+    expect(view.getByText('No notebook yet')).toBeTruthy()
+    expect(view.queryByText(/Set REPOQUILL_REPOSITORY/)).toBeNull()
+    expect((view.getByRole('button', { name: 'Sync' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(view.getAllByRole('button', { name: 'Add Notebook' })[0])
+    expect(view.getByRole('heading', { name: 'Add Notebook' })).toBeTruthy()
+  })
+
+  it('unregisters an inactive legacy notebook without presenting file deletion', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const view = render(<App />)
+    const switcher = view.container.querySelector('[aria-haspopup="menu"]') as HTMLButtonElement
+    await waitFor(() => expect(switcher.textContent).toContain('Personal Notes'))
+    fireEvent.click(switcher)
+    fireEvent.click(view.getByRole('menuitem', { name: 'Manage Notebooks' }))
+    const remove = await view.findByRole('button', { name: 'Remove registration' })
+    fireEvent.click(remove)
+    await waitFor(() => expect(view.queryByRole('heading', { name: 'repos' })).toBeNull())
+    expect(window.confirm).toHaveBeenCalledWith('Remove repos from RepoQuill? Files in its local directory will not be deleted.')
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([url, init]) => String(url) === '/api/notebooks/local' && init?.method === 'DELETE')).toBe(true)
+  })
+
+  it('opens, switches, and closes notes in session tabs without duplicate editors', async () => {
+    const view = render(<App />)
+    fireEvent.click(await view.findByRole('button', { name: 'Note' }))
+    await waitFor(() => expect(view.container.textContent).toContain('Auto-lock note'))
+    expect(view.getAllByRole('tab')).toHaveLength(1)
+
+    fireEvent.click(view.getByRole('button', { name: 'Second' }), { ctrlKey: true })
+    await waitFor(() => expect(view.container.textContent).toContain('Second note'))
+    expect(view.getAllByRole('tab')).toHaveLength(2)
+    expect(view.getByRole('tab', { name: 'Second' }).getAttribute('aria-selected')).toBe('true')
+
+    fireEvent.keyDown(window, { key: 'Tab', ctrlKey: true })
+    await waitFor(() => expect(view.container.textContent).toContain('Auto-lock note'))
+    expect(view.getByRole('tab', { name: 'Note' }).getAttribute('aria-selected')).toBe('true')
+
+    fireEvent.keyDown(window, { key: 'w', ctrlKey: true })
+    await waitFor(() => expect(view.queryByRole('tab', { name: 'Note' })).toBeNull())
+    expect(view.getAllByRole('tab')).toHaveLength(1)
+    expect(view.container.textContent).toContain('Second note')
+  })
+
   it('requests best-effort background sync when a saved tab closes', async () => {
     render(<App />)
     await waitFor(() => expect(vi.mocked(globalThis.fetch).mock.calls.some(([url]) => String(url) === '/api/notebooks')).toBe(true))
@@ -130,4 +187,25 @@ describe('App auto-lock integration', () => {
     fireEvent.click(install)
     await waitFor(() => expect(prompt).toHaveBeenCalledOnce())
   })
+
+  it('keeps the PWA installation suggestion dismissed', async () => {
+    const view = render(<App />)
+    const event = new Event('beforeinstallprompt') as InstallPromptEventForTest
+    event.prompt = vi.fn(async () => undefined)
+    event.userChoice = Promise.resolve({ outcome: 'dismissed' })
+    window.dispatchEvent(event)
+    fireEvent.click(await view.findByRole('button', { name: 'Dismiss install suggestion' }))
+    expect(localStorage.getItem('repoquill.install-prompt-dismissed')).toBe('true')
+    expect(view.queryByText('Install RepoQuill for a standalone app experience.')).toBeNull()
+
+    cleanup()
+    const nextView = render(<App />)
+    window.dispatchEvent(event)
+    expect(nextView.queryByText('Install RepoQuill for a standalone app experience.')).toBeNull()
+  })
 })
+
+type InstallPromptEventForTest = Event & {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
+}

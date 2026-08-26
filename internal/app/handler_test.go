@@ -165,6 +165,83 @@ func TestRepositoryAPIRequiresConfiguration(t *testing.T) {
 	}
 }
 
+func TestFreshInstallationDoesNotRegisterDefaultNotebook(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "app", "notebooks.json")
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadataPath)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	notebook := httptest.NewRecorder()
+	handler.ServeHTTP(notebook, httptest.NewRequest(http.MethodGet, "/api/notebook", nil))
+	if notebook.Code != http.StatusOK || !strings.Contains(notebook.Body.String(), `"configured":false`) {
+		t.Fatalf("unexpected notebook state: %d %s", notebook.Code, notebook.Body.String())
+	}
+
+	registry := httptest.NewRecorder()
+	handler.ServeHTTP(registry, httptest.NewRequest(http.MethodGet, "/api/notebooks", nil))
+	if registry.Code != http.StatusOK || !strings.Contains(registry.Body.String(), `"notebooks":[]`) {
+		t.Fatalf("unexpected registry state: %d %s", registry.Code, registry.Body.String())
+	}
+	if _, err := os.Stat(metadataPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fresh installation unexpectedly created notebook metadata: %v", err)
+	}
+}
+
+func TestInactiveLegacyNotebookCanBeUnregisteredWithoutDeletingFiles(t *testing.T) {
+	dataRoot := t.TempDir()
+	localRoot := filepath.Join(dataRoot, "repos")
+	activeRoot := filepath.Join(dataRoot, "notebooks", "active")
+	if err := os.MkdirAll(localRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(localRoot, "Keep.md")
+	if err := os.WriteFile(marker, []byte("# Keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(dataRoot, "app", "notebooks.json")
+	if err := writeNotebookRegistry(metadataPath, notebookRegistry{
+		ActiveID: "active",
+		Entries: []notebookRecord{
+			{ID: "local", Name: "repos", LocalPath: localRoot},
+			{ID: "active", Name: "Notes", LocalPath: activeRoot, RemoteURL: "git@example.test:notes.git"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadataPath)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	activeRemoval := httptest.NewRecorder()
+	handler.ServeHTTP(activeRemoval, httptest.NewRequest(http.MethodDelete, "/api/notebooks/active", nil))
+	if activeRemoval.Code != http.StatusConflict {
+		t.Fatalf("active notebook removal was not blocked: %d %s", activeRemoval.Code, activeRemoval.Body.String())
+	}
+
+	removal := httptest.NewRecorder()
+	handler.ServeHTTP(removal, httptest.NewRequest(http.MethodDelete, "/api/notebooks/local", nil))
+	if removal.Code != http.StatusNoContent {
+		t.Fatalf("legacy notebook removal failed: %d %s", removal.Code, removal.Body.String())
+	}
+	if content, err := os.ReadFile(marker); err != nil || string(content) != "# Keep" {
+		t.Fatalf("legacy notebook files were changed: %q %v", content, err)
+	}
+	registry, err := loadNotebookRegistry(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registry.Entries) != 1 || registry.Entries[0].ID != "active" {
+		t.Fatalf("unexpected registry after removal: %#v", registry)
+	}
+}
+
 func TestRepositoryMutationAPI(t *testing.T) {
 	root := t.TempDir()
 	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)

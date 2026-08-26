@@ -8,7 +8,6 @@ services:
     volumes:
       - repoquill-data:/data
     environment:
-      REPOQUILL_REPOSITORY: /data/repos
       REPOQUILL_NOTEBOOKS_DIR: /data/notebooks
       REPOQUILL_NOTEBOOK_METADATA: /data/app/notebooks.json
       REPOQUILL_KEYS_DIR: /data/keys

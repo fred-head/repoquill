@@ -102,6 +102,27 @@ func setActiveNotebook(metadataPath, notebookID string) error {
 	return writeNotebookRegistry(metadataPath, registry)
 }
 
+func removeLocalNotebook(metadataPath, notebookID string) error {
+	registry, err := loadNotebookRegistry(metadataPath)
+	if err != nil {
+		return err
+	}
+	if registry.ActiveID == notebookID {
+		return errors.New("active notebook cannot be removed")
+	}
+	for index, entry := range registry.Entries {
+		if entry.ID != notebookID {
+			continue
+		}
+		if entry.ID != "local" || entry.RemoteURL != "" {
+			return errors.New("only the local legacy notebook can be removed")
+		}
+		registry.Entries = append(registry.Entries[:index], registry.Entries[index+1:]...)
+		return writeNotebookRegistry(metadataPath, registry)
+	}
+	return os.ErrNotExist
+}
+
 func writeNotebookRegistry(metadataPath string, registry notebookRegistry) error {
 	content, err := json.MarshalIndent(registry, "", "  ")
 	if err != nil {

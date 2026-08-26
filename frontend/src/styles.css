@@ -40,7 +40,7 @@ body { margin: 0; min-width: 320px; }
 
 [aria-label="Editor toolbars"] {
   position: sticky;
-  top: 55px;
+  top: var(--editor-toolbar-top, 55px);
   z-index: 9;
   background-color: rgb(9 9 11 / 92%);
   box-shadow: 0 8px 18px rgb(0 0 0 / 12%);

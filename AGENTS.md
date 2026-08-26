@@ -58,7 +58,8 @@ The application MUST provide:
 - Git synchronization,
 - simple sync status reporting,
 - self-hosted deployment,
-- no mandatory built-in authentication layer in V0.1.
+- a single-owner authentication boundary by Alpha 2 that can be explicitly
+  disabled for separately protected deployments.
 
 The application SHOULD feel simple and fast.
 
@@ -98,9 +99,8 @@ Do NOT implement the following in V0.1 unless explicitly requested:
 - microservices,
 - Kubernetes-specific architecture,
 - built-in account registration,
-- password reset,
-- MFA,
-- local password authentication,
+- multi-user account management,
+- email-based password reset,
 - OAuth provider implementation,
 - plugin systems,
 - themes marketplace,
@@ -881,24 +881,44 @@ Do not build semantic search in V0.1.
 
 # 27. Authentication and Security
 
-V0.1 should NOT implement a local authentication system.
+Alpha 2 introduces a deliberately small built-in authentication boundary for a
+single-owner self-hosted instance. This is an explicit architectural decision
+made after Alpha 1 demonstrated that interactive forward-auth layers can expire
+or intercept browser/PWA API requests without RepoQuill being able to understand
+or recover the authentication state reliably.
 
-The intended deployment is behind a trusted authentication layer such as:
+Supported authentication modes are:
 
-- Authentik,
-- Authelia,
-- Keycloak,
-- Cloudflare Access,
-- reverse-proxy basic auth,
-- another trusted identity-aware proxy.
+```text
+local     -> RepoQuill password with optional TOTP MFA; recommended default
+disabled  -> explicit operator choice for LAN, VPN, or external protection
+oidc      -> possible future direct integration, not required for Alpha 2
+```
 
-The application must document clearly:
+Local authentication must remain single-owner. Do not add registration,
+usernames, email addresses, invitations, roles, organizations, email recovery,
+or general account lifecycle. An internal fixed owner principal is allowed, but
+must not become canonical note metadata.
 
-> Do not expose the application directly to the public Internet without an appropriate authentication layer.
+Authentication metadata and sessions may use SQLite. They MUST NOT contain
+canonical note content or the only copy of an asset. Losing or resetting auth
+metadata must not make the Git-backed Markdown notebooks unreadable outside
+RepoQuill.
 
-Future versions may support OIDC.
+The built-in boundary does not replace HTTPS. Internet-facing deployments must
+terminate TLS at a correctly configured reverse proxy. Proxy-derived client IP
+or scheme headers may be trusted only from explicitly configured proxy
+addresses or networks.
 
-Avoid implementing password handling, MFA, password recovery, WebAuthn, or local account lifecycle unless there is a strong future requirement.
+`disabled` mode must require explicit configuration and produce a clear startup
+and UI warning. It is suitable only when access is otherwise constrained. Do
+not silently infer that an external authentication proxy is secure.
+
+Future OIDC must be a direct RepoQuill integration so the application knows the
+session state. MFA for OIDC remains the identity provider's responsibility.
+Do not implement a custom OAuth/OIDC protocol, local MFA cryptography, or a
+password/session algorithm where a focused, maintained library or standard
+primitive exists.
 
 ---
 
@@ -1620,8 +1640,10 @@ Requirements:
 - document security boundaries, recovery, persistence, and alpha limitations,
 - keep application, package, binary, changelog, and image versions consistent.
 
-The application still requires an external HTTPS authentication layer and must
-not be exposed directly to the public Internet.
+The Alpha 1 application still requires an external HTTPS authentication layer
+and must not be exposed directly to the public Internet. Milestone 19 replaces
+this Alpha 1 limitation with the Alpha 2 single-owner authentication boundary;
+HTTPS remains required for Internet-facing deployment.
 
 ---
 
@@ -1659,9 +1681,9 @@ Prepare the files expected in a public repository:
 
 - select and add an explicit open-source `LICENSE`; do not assume a license on
   the user's behalf,
-- ensure `README.md` documents the alpha status, supported deployment model,
+- ensure `README.md` documents the Alpha 1 status, supported deployment model,
   installation, persistent volumes, upgrades, backup/recovery, and the warning
-  not to expose RepoQuill without HTTPS and external authentication,
+  not to expose that release without HTTPS and external authentication,
 - keep `SECURITY.md` current with supported versions and a private vulnerability
   reporting path,
 - add contribution and code-of-conduct documents if public contributions are
@@ -1790,12 +1812,790 @@ Milestone 11 is complete when:
 - a fresh deployment and a persistence/upgrade test have succeeded,
 - no credentials are stored in Git, workflow files, release artifacts, or the
   container image,
-- the release notes clearly state that RepoQuill has no built-in authentication
-  and must be deployed behind an appropriate HTTPS authentication layer.
+- the Alpha 1 release notes clearly state that the release has no built-in
+  authentication and must be deployed behind an appropriate HTTPS
+  authentication layer.
 
 ---
 
-# 45. Alpha Release Criteria
+# 45. Alpha 2 Milestones
+
+Alpha 2 should close the remaining trust and everyday-navigation gaps without
+expanding RepoQuill into a general-purpose productivity platform. These
+milestones must continue to treat ordinary Markdown files, folders, assets, and
+Git history as the canonical data model.
+
+Milestones 16, 17, 19, and 20 are the highest-priority Alpha 2 milestones.
+Conflict handling, understandable synchronization, the authentication boundary,
+and continuous vulnerability management are trust and data-safety features, not
+optional polish, and should be implemented before lower-risk convenience work
+where practical. Milestones 19 and 20 are Alpha 2 release blockers and must
+receive dedicated security review.
+
+## Milestone 12 - Recoverable Deletion and Trash
+
+Replace immediate destructive deletion in normal notebook workflows with a
+recoverable notebook-local trash mechanism.
+
+Requirements:
+
+- move deleted notes and folders into a notebook-local `.trash` area by
+  default,
+- move a note's owned `.assets` directory together with the note,
+- provide a clear Trash view with Restore and permanently Delete actions,
+- provide recovery directly in RepoQuill and never use `recover it with Git`
+  as the only normal-user recovery instruction,
+- retain enough ordinary filesystem information to restore an item to its
+  original location where safe,
+- handle name collisions explicitly and never overwrite an existing restored
+  target silently,
+- require confirmation before permanent deletion,
+- preserve notebook-root confinement and reject symlink or traversal escapes,
+- keep trash operations visible to Git as ordinary filesystem changes,
+- exclude trashed content from the normal tree, search, editor links, and
+  unreferenced-asset cleanup.
+
+Do not implement a proprietary content store for deleted notes. Recovery must
+remain understandable at the filesystem and Git level.
+
+Completion criteria:
+
+- accidental deletion is recoverable from desktop and mobile,
+- notes, folders, and note-owned assets restore together safely,
+- permanent deletion is deliberate, confirmed, confined, and tested.
+
+## Milestone 13 - Note Version History and Restore
+
+Expose the history Git already provides in a note-oriented interface.
+
+Requirements:
+
+- show commits that affected the active Markdown note,
+- display timestamp and a useful commit summary,
+- allow viewing a historical note version and a readable diff,
+- allow restoring an earlier version without resetting or rewriting repository
+  history,
+- expose restoration as a direct note action rather than requiring the user to
+  identify or operate on a Git commit,
+- save a restoration as a new ordinary working-tree change that can be synced
+  normally,
+- preserve unsaved editor content and never replace it without explicit user
+  confirmation,
+- handle renamed or moved notes where Git can identify the history reliably,
+- report unavailable, shallow, missing, or invalid history clearly,
+- do not expose arbitrary revisions, paths, or Git arguments to command
+  execution.
+
+The first version does not need a repository-wide Git client or commit browser.
+
+Completion criteria:
+
+- a user can inspect and safely restore a previous version of a note,
+- restoration never performs a destructive reset or silent overwrite,
+- history remains ordinary provider-independent Git history.
+
+## Milestone 14 - Portable Internal Note Links
+
+Make links between notes convenient while retaining standard Markdown
+portability.
+
+Requirements:
+
+- provide a searchable note picker from the existing link action,
+- offer note suggestions when typing an internal-link trigger where practical,
+- serialize new internal links as ordinary relative Markdown links rather than
+  opaque application IDs,
+- open internal note links inside RepoQuill,
+- support opening a link in a new note tab with the existing desktop and touch
+  interaction patterns,
+- detect broken or missing internal-link targets without corrupting Markdown,
+- safely update affected relative links when notes or folders are renamed or
+  moved,
+- preview every ambiguous or broad link rewrite and never guess between
+  multiple possible targets,
+- preserve external URLs, anchors, images, encoded paths, angle-bracket paths,
+  and unsupported Markdown unchanged,
+- keep link resolution confined to the active notebook.
+
+Do not add backlinks, graph view, block references, transclusion, proprietary
+link IDs, or a canonical link database in this milestone.
+
+Completion criteria:
+
+- users can create and follow links without manually typing paths,
+- links remain useful in ordinary Markdown editors and Git forges,
+- rename and move operations do not silently leave known links broken.
+
+## Milestone 15 - Complete Notebook Management
+
+Turn the existing Manage Notebooks overview into a small, safe management
+surface.
+
+Requirements:
+
+- retain the current notebook details and active-state overview,
+- allow changing the human-readable notebook display name,
+- allow removing an inactive notebook registration from RepoQuill,
+- clearly distinguish removing registration from deleting a local working
+  tree,
+- make registration-only removal the safe default and never affect the remote
+  repository,
+- require stronger explicit confirmation before any optional local working-tree
+  deletion,
+- refuse removal while a required save or notebook operation is active,
+- close or transfer affected UI state safely when a notebook is removed,
+- show branch, remote, credential association, and repository health in a
+  troubleshooting-oriented but understandable form,
+- show a compact health summary for local files, remote connectivity, write
+  access, pending work, and the last successful synchronization,
+- turn each failed health check into a specific next action such as `Retry`,
+  `Check connection`, or `Repair access`,
+- keep branch names, repository paths, and raw diagnostics behind optional
+  technical details unless the user is editing connection settings,
+- preserve the existing Add Notebook, switching, Git/SSH onboarding, and sync
+  behavior.
+
+Editing a remote URL or branch in place is not required if safely recloning the
+notebook is the clearer model.
+
+Completion criteria:
+
+- Manage Notebooks provides meaningful management rather than only an overview,
+- each notebook has an understandable health state and actionable repair path,
+- registration removal cannot accidentally delete notebook content,
+- all destructive options communicate their exact local and remote impact.
+
+## Milestone 16 - Guided Conflict Resolution
+
+Provide a safe conflict-resolution workflow that is understandable without Git
+knowledge. Git remains the underlying mechanism, but the primary UI must speak
+only in terms of the user's version, the other version, combined content, and
+the resulting note.
+
+This milestone covers both conflicts detected by the optimistic file-version
+check during save and conflicts produced while integrating remote Git changes.
+The two technical sources should use one consistent user-facing mental model:
+
+> Two versions overlap. RepoQuill has preserved both and needs the user to
+> choose the resulting content.
+
+Requirements:
+
+- continue resolving unambiguous changes automatically and open the assistant
+  only for changes that require a decision,
+- stop automatic synchronization while any conflict remains unresolved,
+- preserve unsaved editor content, committed local content, and incoming
+  content before presenting resolution actions,
+- create a durable, identifiable Git safety point before applying a completed
+  Git conflict resolution,
+- show a notebook-level overview of every affected note, folder, and asset,
+- use plain labels such as `Your version`, `Other version`, `Keep note`, and
+  `Confirm deletion`; do not expose `ours`, `theirs`, index stages, rebase, or
+  conflict-marker terminology in the primary workflow,
+- allow the user to postpone resolution without losing either version,
+- allow inspecting both complete Markdown versions and a readable highlighted
+  text diff,
+- provide `Use your version`, `Use other version`, and `Edit combined version`
+  actions for Markdown conflicts,
+- use the normal RepoQuill editor for combined content where safe, while
+  keeping unresolved markers and Git conflict syntax out of the editor,
+- handle modify/delete conflicts with explicit `Keep note` and `Confirm
+  deletion` decisions, defaulting to the non-destructive choice,
+- handle rename and move conflicts with human-readable paths and the existing
+  safe folder picker,
+- update note-owned assets and portable internal links consistently after a
+  chosen rename or move,
+- show conflicting images side by side where the browser supports preview and
+  offer `Use your image`, `Use other image`, and `Keep both`,
+- give retained duplicate assets new collision-resistant names instead of
+  overwriting either file,
+- collect and review all decisions before mutating the working tree or
+  continuing synchronization,
+- revalidate the remote state and every affected path immediately before
+  applying decisions,
+- stop safely and request a new review if the remote or working-tree state
+  changed during resolution,
+- continue the existing Git operation and push automatically only after every
+  conflict has a valid decision,
+- report a clear success state and make the most recent resolution reversible
+  through its safety point where practical,
+- keep technical Git diagnostics available behind optional details for support
+  without making them part of the normal decision flow,
+- support keyboard, touch, narrow mobile/PWA layouts, and accessible labels,
+- never use force push, destructive reset, silent deletion, or automatic
+  preference for local or incoming content.
+
+Implementation safety rules:
+
+- never parse rendered editor HTML as the source for conflict resolution,
+- obtain historical conflict inputs through validated direct Git arguments and
+  confined notebook-relative paths,
+- do not expose arbitrary revisions, ref names, paths, or Git arguments through
+  frontend input,
+- serialize conflict-application operations per notebook,
+- do not allow ordinary automatic sync to resume while the repository still
+  contains unresolved entries or an incomplete Git operation,
+- preserve recovery information if the browser closes, the backend restarts,
+  the network fails, or applying a resolution is interrupted,
+- treat binary files as choose-one-or-keep-both decisions rather than attempting
+  a textual merge,
+- never write conflict markers into a note as an accepted resolution unless
+  the user deliberately typed those characters as normal content.
+
+Completion criteria:
+
+- a user with no Git knowledge can understand why synchronization paused and
+  complete every supported resolution through RepoQuill,
+- ordinary text, modify/delete, rename/move, and image conflict variants have
+  explicit safe workflows,
+- both original versions remain recoverable until the completed resolution is
+  safely recorded,
+- closing or refreshing the browser does not discard pending conflict choices
+  or the source versions,
+- a second remote update during resolution cannot cause stale decisions to be
+  applied silently,
+- focused backend, frontend, integration, and interruption-recovery tests cover
+  the conflict lifecycle,
+- the resulting notebook remains an ordinary readable Git repository without
+  proprietary conflict metadata in canonical note content.
+
+## Milestone 17 - Git-Invisible Save and Synchronization UX
+
+Make everyday save, synchronization, remote-change, and failure states
+understandable to users who have no Git knowledge. Git remains visible only in
+notebook connection settings, optional diagnostics, and other deliberately
+technical views.
+
+Requirements:
+
+- clearly distinguish `saved on this RepoQuill server` from `synchronized with
+  the connected service` without implying that a local save already exists on
+  the remote,
+- keep the compact document status bar, but use human-readable primary labels
+  and accessible explanations,
+- replace primary-interface states such as `Clean`, `Local changes`, `Remote
+  changes`, `Diverged`, `Dirty working tree`, `Upstream`, and `Rebase` with
+  phrases such as `Everything is up to date`, `Changes waiting to sync`, `New
+  changes available`, and `Changes need your review`,
+- provide a central synchronization details panel reachable from the status
+  bar,
+- show local-save state, connection state, pending synchronization state, last
+  successful synchronization, next scheduled attempt where applicable, and a
+  clear `Sync now` action,
+- expose raw branch, ahead/behind counts, operation names, sanitized command
+  diagnostics, and other Git terminology only under optional technical details,
+- structure every important error around three questions: what happened,
+  whether the user's note content is safe, and what the user can do next,
+- never show raw Git stderr as the only user-facing explanation,
+- provide specific safe actions such as `Retry`, `Check connection`, `Review
+  changes`, and `Open notebook settings`,
+- state explicitly when changes remain saved locally but have not reached the
+  remote service,
+- announce successfully integrated external changes in a non-blocking summary,
+  including added, updated, moved, and deleted notes where known,
+- allow opening an affected note from that summary without interrupting the
+  current note unexpectedly,
+- route overlapping external changes into Milestone 16 rather than describing
+  them as a technical synchronization failure,
+- use notebook, note, folder, saved, and synchronized terminology throughout
+  the primary note-taking UI,
+- reserve repository, remote, branch, SSH, commit, fetch, rebase, and push for
+  connection setup, diagnostics, and advanced details,
+- reorganize Settings into understandable sections such as General, Notebooks,
+  Storage and recovery, and Advanced,
+- place SSH keys, host trust, Git diagnostics, and other setup internals in the
+  Advanced or notebook-connection area after successful onboarding,
+- retain accessible text for every state and never communicate save or sync
+  safety through color or icons alone,
+- keep all existing synchronization scheduling, serialization, conflict
+  protection, provider independence, and local-save behavior unchanged unless a
+  safety correction is required.
+
+Suggested normal-user states:
+
+```text
+Saved on this server
+Waiting to synchronize
+Synchronizing…
+Everything is up to date
+New changes were received
+Synchronization could not finish
+Your decision is required
+Notebook is currently unavailable
+```
+
+Completion criteria:
+
+- a user can tell whether edits are saved locally and whether they reached the
+  connected service without understanding Git,
+- a synchronization failure explains that saved notes remain safe whenever
+  that is true and offers a concrete next step,
+- no primary workflow requires interpreting `clean`, `dirty`, `diverged`,
+  `ahead`, `behind`, `rebase`, or raw Git output,
+- external changes are visible and understandable instead of appearing as
+  unexplained content changes,
+- the synchronization panel and reorganized settings work on desktop and
+  mobile/PWA layouts.
+
+## Milestone 18 - Guided Notebook Connection Onboarding
+
+Make connecting an existing Git-backed notebook achievable without prior Git or
+SSH knowledge while keeping the underlying synchronization provider-independent.
+
+Requirements:
+
+- present a step-by-step connection assistant rather than one dense technical
+  form,
+- begin with approachable choices such as GitHub, GitLab, Forgejo/Gitea, and
+  another Git server,
+- treat provider choices as instructional presets only; cloning, fetching, and
+  pushing must continue to use normal provider-independent Git,
+- explain that the remote repository must already exist and that RepoQuill does
+  not create it through a provider API in Alpha 2,
+- provide provider-appropriate SSH URL examples and detect common HTTPS, SSH,
+  malformed, pasted-link, and escaped-address mistakes,
+- infer the host and default branch where it can be discovered safely instead
+  of requiring unnecessary input,
+- guide managed-key creation, public-key copying, provider-side deploy-key
+  placement, write-access selection, and connection testing one step at a time,
+- preserve the existing explicit SSH host fingerprint approval and explain in
+  plain language why the host must be trusted,
+- translate authentication, host trust, missing repository, missing branch,
+  read-only key, network, and clone failures into distinct actionable messages,
+- provide direct actions such as `Copy public key`, `Open setup instructions`,
+  `Test again`, and `Back`,
+- tell the user which completed onboarding steps are safe and retained after a
+  failure,
+- allow advanced users to choose existing server SSH configuration without
+  making that option the unexplained default,
+- show a final review containing notebook name, service/host, repository
+  address, branch, and credential choice before cloning,
+- after success, open the notebook and show the health summary from Milestone
+  15 plus the synchronization explanation from Milestone 17,
+- keep credentials out of frontend responses, logs, repository content, and
+  browser persistence,
+- remain usable by keyboard, touch, mobile/PWA, and assistive technology.
+
+Completion criteria:
+
+- a first-time GitHub user can connect a private repository by following only
+  the instructions shown in RepoQuill,
+- common connection failures identify the failed step and a concrete repair
+  action instead of returning a generic connection-test error,
+- an advanced provider-independent SSH workflow remains available,
+- no provider API, mandatory cloud integration, or proprietary notebook format
+  is introduced.
+
+## Milestone 19 - Single-Owner Authentication and Optional TOTP MFA
+
+Implement a small built-in authentication boundary designed for one owner of a
+self-hosted RepoQuill instance. The goal is reliable browser and PWA behavior
+without depending on an interactive forward-auth proxy. This is a security
+milestone and must be developed in the phases below; later phases must not begin
+by weakening incomplete safeguards from an earlier phase.
+
+The supported Alpha 2 modes are:
+
+```text
+local     -> built-in password and optional TOTP; recommended
+disabled  -> explicit operator choice for a separately protected deployment
+```
+
+Direct OIDC is deferred. Do not add registration, usernames, multiple users,
+roles, invitations, email addresses, or email-based recovery.
+
+### Phase 1 - Architecture and persistent security metadata
+
+- record the authentication decision, threat model, trust boundaries, public
+  routes, protected routes, proxy assumptions, and recovery model before
+  implementation,
+- introduce a dedicated internal authentication service rather than scattering
+  password and session checks through HTTP handlers,
+- store only authentication configuration, sessions, one-time recovery data,
+  throttling state where needed, and security events in an application metadata
+  database such as SQLite,
+- keep canonical Markdown, assets, Git repositories, SSH private keys, and Git
+  credentials outside authentication tables,
+- use a fixed internal owner principal without exposing unnecessary username or
+  account management concepts,
+- make schema migrations atomic, versioned, restart-safe, and backed up before
+  destructive changes,
+- define `local` and `disabled` configuration semantics and a safe migration
+  path for existing Alpha 1 deployments,
+- never silently enable unauthenticated public access during migration or after
+  damaged/missing authentication metadata.
+
+### Phase 2 - Secure first-run setup and local password
+
+- make fresh local-auth installations start in a restricted `setup required`
+  state,
+- prevent first-visitor instance takeover with a cryptographically random,
+  short-lived, one-time bootstrap token supplied through an operator-controlled
+  channel such as a Docker secret, a root-readable file on the persistent
+  volume, or an operator-only CLI command; log only retrieval instructions and
+  never the token value,
+- invalidate the bootstrap token permanently after successful setup and reject
+  every repeated setup attempt,
+- use Argon2id from a maintained cryptographic library with a unique random
+  salt and stored versioned cost parameters,
+- select memory and CPU parameters suitable for the minimum supported container
+  size and benchmark them in CI or a documented release process,
+- support transparent parameter upgrades after a later successful login,
+- compare derived credentials in constant time and return uniform failure
+  messages and materially similar failure timing,
+- allow long passphrases, whitespace, Unicode, paste, and password managers;
+  do not impose arbitrary composition or periodic-change rules,
+- reject unreasonably short and excessively large password inputs before
+  expensive hashing to prevent weak credentials and resource exhaustion,
+- never log passwords, derived hashes, setup tokens, request bodies, or other
+  authentication secrets.
+
+### Phase 3 - Server-side sessions and API boundary
+
+- use a maintained server-side session library and cryptographically random
+  opaque tokens rather than inventing a token or JWT format,
+- persist production sessions so a normal container restart does not force an
+  unexplained logout,
+- store only the opaque session identifier in a cookie and keep authentication
+  state on the server,
+- set `HttpOnly`, `Secure`, an appropriate `SameSite` value, and a confined
+  cookie path in production,
+- never store session IDs, refresh credentials, password material, or MFA
+  secrets in `localStorage`, `sessionStorage`, IndexedDB, URLs, or frontend
+  application state,
+- renew the session identifier after password and MFA authentication and every
+  authentication-level change to prevent fixation,
+- implement idle and absolute expiration plus an explicit `Remember this
+  device` duration,
+- provide login, logout, authentication status, current-session revocation, and
+  all-session revocation endpoints with stable JSON responses,
+- protect every notebook, note, asset, search, Git, SSH, maintenance, and
+  management API through deny-by-default middleware,
+- keep only the minimum setup, login, static shell, and non-sensitive liveness
+  surface public,
+- return a stable JSON `401` for expired or missing sessions rather than HTML or
+  redirects from API routes,
+- do not describe authentication expiration as a Git synchronization failure.
+
+### Phase 4 - CSRF, request origin, throttling, and proxy trust
+
+- bind a CSRF token to the authenticated session and require it for every
+  state-changing browser request,
+- retain and strengthen same-origin validation; never rely on `SameSite`
+  cookies as the only CSRF defense,
+- ensure GET and HEAD routes have no state-changing side effects,
+- apply progressive login delays and rate limits per trustworthy client address
+  plus a global limit suitable for a single-owner account,
+- avoid a permanent attacker-triggerable account lockout that could deny the
+  owner access indefinitely,
+- log authentication success, failure, throttling, setup, password change, MFA
+  change, session revocation, and recovery without logging credentials or note
+  content,
+- accept `X-Forwarded-For`, `X-Real-IP`, and `X-Forwarded-Proto` only from
+  explicitly configured trusted proxy IPs or CIDRs,
+- ignore or replace spoofed forwarding headers from all other clients,
+- document TLS termination and trusted-proxy configuration for common Docker
+  reverse-proxy deployments,
+- keep the backend unreachable except through the intended proxy where the
+  deployment exposes it to the Internet.
+
+### Phase 5 - Browser and PWA authentication lifecycle
+
+- show first-run setup and login as first-class responsive RepoQuill screens,
+- handle an expired session inside the SPA/PWA without relying on an external
+  redirect or hard refresh,
+- distinguish authentication required, backend unavailable, browser offline,
+  frontend update required, local save failure, and Git sync failure,
+- stop editing and automatic Git triggers safely when authentication expires,
+- preserve an unsaved editor draft before any logout, reload, or reauthentication
+  flow could discard it,
+- treat a browser recovery draft as temporary data-loss protection, not offline
+  editing or a canonical sync queue,
+- associate recovery drafts with notebook ID, note path, and loaded file version
+  and never overwrite changed server content silently,
+- reconcile a recovery draft after login through the normal version check and
+  route overlapping content to Milestone 16,
+- remove a recovery draft only after the note is saved successfully or the user
+  deliberately discards it,
+- retry authentication status on browser `online`, focus, and visibility
+  changes without creating request loops,
+- keep the service worker limited to the application shell and never cache auth
+  APIs, API responses, sessions, notes, or credentials,
+- support multiple tabs, installed PWA windows, mobile browsers, password
+  managers, keyboard navigation, and assistive technology.
+
+### Phase 6 - Password and session administration
+
+- add a Security settings section for changing the password, choosing session
+  durations within safe bounds, viewing active sessions, revoking another
+  session, revoking all other sessions, and logging out,
+- require recent password authentication and, when enabled, MFA for password or
+  MFA changes and other sensitive authentication operations,
+- invalidate all other sessions after a password change by default,
+- identify sessions with creation time, last activity, approximate client/device
+  description, and revocation state without invasive fingerprinting,
+- provide an operator-only CLI recovery command through the RepoQuill binary for
+  forgotten-password recovery,
+- require filesystem/container administrative access for CLI recovery,
+- make password reset revoke all sessions and make MFA reset a separate explicit
+  decision,
+- never alter, encrypt, delete, or relocate notebook contents during auth
+  recovery,
+- document that Git-backed notes remain independently recoverable even if all
+  RepoQuill authentication metadata is lost.
+
+### Phase 7 - Optional TOTP MFA and recovery codes
+
+- use a maintained TOTP implementation rather than implementing the algorithm,
+- require recent password verification before beginning enrollment,
+- generate the TOTP secret with a cryptographically secure random source and
+  render the enrollment QR code locally without an external service,
+- keep enrollment pending and MFA disabled until the user successfully verifies
+  a generated code,
+- encrypt the stored TOTP secret with an application key kept outside the
+  metadata database and never return it after enrollment completes,
+- use a small documented clock-skew window and strict attempt throttling,
+- accept password first and then TOTP or a one-time recovery code without
+  revealing which credential failed,
+- generate high-entropy one-time recovery codes, display them once, store only
+  hashes, and consume each code atomically,
+- require the user to confirm recovery-code storage before completing MFA
+  activation,
+- require recent password plus TOTP or a recovery code to disable or replace
+  MFA,
+- provide regeneration of recovery codes that invalidates every previous code,
+- never log TOTP secrets, QR payloads, submitted codes, or recovery codes,
+- do not claim that TOTP protects a stolen authenticated session; retain session
+  revocation and secure-cookie controls.
+
+### Phase 8 - Disabled mode and deployment migration
+
+- require an explicit `disabled` setting; do not infer it from forwarding
+  headers or an accessible authentication portal,
+- show a persistent security warning in Settings and startup logs while auth is
+  disabled,
+- document disabled mode for localhost, private LAN, VPN, Tailscale, or a
+  deliberately configured external authentication layer,
+- warn that interactive forward-auth can still expire independently and return
+  HTML or redirects to API clients,
+- ensure switching authentication modes cannot accidentally leave active local
+  sessions or setup tokens valid,
+- define a safe upgrade flow for existing Alpha 1 installations without silently
+  exposing them or irreversibly locking out the operator,
+- keep HTTPS and network isolation guidance applicable in every mode.
+
+### Phase 9 - Security verification and release gate
+
+- add focused unit, integration, frontend, and end-to-end tests for setup,
+  login, logout, expiration, remember-me, revocation, restart persistence,
+  password changes, recovery, and PWA reauthentication,
+- test setup takeover prevention, session fixation, session theft impact,
+  timing-sensitive comparisons, CSRF, Origin validation, brute-force
+  throttling, permanent-lockout resistance, proxy-header spoofing, and malformed
+  input/resource exhaustion,
+- test TOTP enrollment, clock windows, repeated-code handling, recovery-code
+  atomicity, MFA disable/reset, secret redaction, and interrupted enrollment,
+- test that all protected API routes deny unauthenticated access and every
+  intentionally public route exposes no notebook, Git, SSH, or host metadata,
+- test authentication metadata loss and CLI recovery without modifying note
+  repositories,
+- test login and session expiry in normal tabs, multiple tabs, mobile layouts,
+  and installed PWA mode,
+- run dependency, static, container, and vulnerability scans with no ignored
+  critical result,
+- perform a dedicated manual security review against current OWASP
+  authentication, password-storage, session-management, CSRF, and MFA guidance,
+- document the remaining threat model and accepted limitations in the release
+  notes,
+- do not publish Alpha 2 until the complete authentication test and review gate
+  passes.
+
+### Milestone 19 completion criteria
+
+- a fresh instance cannot be claimed without operator-controlled bootstrap
+  authority,
+- the owner can sign in with a password and optionally TOTP from desktop,
+  mobile, and installed PWA,
+- expiration and reauthentication never masquerade as Git failure or silently
+  discard an editor draft,
+- password hashes, session tokens, TOTP secrets, submitted codes, and recovery
+  codes are never stored or logged in plaintext outside their strictly required
+  protected form and lifetime,
+- password, session, MFA, recovery, CSRF, throttling, and trusted-proxy behavior
+  meets the requirements above and is covered by adversarial tests,
+- `disabled` mode is explicit, visibly warned, and documented,
+- container restart, auth reset, or loss of auth metadata cannot destroy or make
+  the underlying Git-backed Markdown notebooks unreadable,
+- Alpha 2 receives a dedicated security review before release.
+
+## Milestone 20 - Continuous Vulnerability and Supply-Chain Management
+
+Turn the existing point-in-time CI and release checks into a continuous process
+that also detects vulnerabilities disclosed after an image was built.
+Automation may discover, propose, test, and report updates; it must not silently
+merge security-sensitive changes or deploy an unreviewed image.
+
+### Phase 1 - Dependency inventory and update proposals
+
+- add `.github/dependabot.yml` coverage for Go modules at the repository root,
+  npm in `/frontend`, Docker base images, and GitHub Actions,
+- enable the GitHub dependency graph, Dependabot alerts, and Dependabot security
+  updates in repository settings,
+- create security-update pull requests as soon as a supported advisory becomes
+  available,
+- check ordinary dependency updates on a controlled weekly schedule and group
+  only low-risk development-tool updates where this improves reviewability,
+- keep authentication, session, cryptography, TOTP, SQLite, Git execution,
+  editor, PWA/service-worker, and container-base updates separately reviewable,
+- retain reproducible `go.sum` and `package-lock.json` state and reject builds
+  that require uncommitted dependency resolution,
+- inventory direct and transitive runtime dependencies in the release SBOM,
+- do not enable unattended dependency auto-merge.
+
+### Phase 2 - GitHub repository security controls
+
+- enable and verify Dependabot security alerts and maintainer notifications,
+- enable GitHub secret scanning and push protection where available,
+- enable CodeQL default setup for Go and JavaScript/TypeScript and evaluate the
+  `security-extended` query suite for authentication code,
+- run CodeQL for pull requests, the default/protected branch, and its scheduled
+  cadence,
+- configure branch protection or repository rulesets so required backend,
+  frontend, secret, image, and code-scanning checks must pass before merge,
+- prevent routine dependency updates from bypassing required checks,
+- keep GitHub Actions pinned to immutable commit SHAs while allowing Dependabot
+  to propose reviewed SHA updates,
+- periodically verify in GitHub's tool-status views that scanners remain active
+  and cover the expected files and languages.
+
+### Phase 3 - Scheduled source and published-image scanning
+
+- add a scheduled security workflow that runs at least weekly and preferably
+  daily for known-vulnerability data,
+- run `govulncheck ./...`, `npm audit`, secret scanning, and relevant static
+  analysis even when no source commit occurred,
+- build and scan a fresh production container with Trivy,
+- separately rescan the newest published immutable Alpha image and moving Alpha
+  channel tag so newly disclosed base-image or OS-package issues are detected,
+- retain HIGH and CRITICAL findings as failing results unless a documented,
+  time-limited, reviewed exception explains reachability and mitigation,
+- never suppress a CRITICAL authentication, remote-code-execution, credential,
+  traversal, or container-escape finding merely to make CI green,
+- produce an actionable signal containing the affected tag, digest, component,
+  advisory, severity, and fixed version where known,
+- distinguish scanner/advisory-database outages from a clean result and fail
+  closed for releases when required scan results are unavailable.
+
+### Phase 4 - Dependency pull-request safety policy
+
+- treat every automated update as an untrusted code change that must pass normal
+  pull-request review and complete CI,
+- require Go tests, race detection, `go vet`, `govulncheck`, frontend lint and
+  tests, production PWA build, `npm audit`, secret scanning, CodeQL, container
+  build, Trivy, and runtime smoke tests before merge,
+- require Milestone 19 authentication unit, integration, adversarial, and PWA
+  session tests for every update that can affect authentication,
+- review upstream release notes, advisories, maintenance status, license, and
+  relevant transitive changes before merging a security-critical dependency,
+- do not assume SemVer guarantees compatibility; patch and same-release-line
+  updates are lower risk but can still alter behavior, defaults, serialization,
+  timing, or security semantics,
+- separate major and security-sensitive updates from unrelated changes and do
+  not group multiple authentication or cryptographic libraries opaquely,
+- require human approval for production runtime dependencies and every auth,
+  session, MFA, cryptographic, database, Git, PWA, and container update,
+- permit auto-merge only after a later explicit policy names a narrow class of
+  development-only updates and proves that required review is not weakened.
+
+### Phase 5 - Release and deployment safety
+
+- publish only from an explicit immutable release tag after source,
+  architecture, image, runtime, and security gates pass,
+- never overwrite or move an immutable version tag,
+- move the Alpha convenience tag only after its immutable multi-architecture
+  image has passed every validation,
+- do not let Dependabot, CI, or a successful merge deploy directly to user
+  installations,
+- recommend immutable image pinning for production-like Alpha deployments and
+  document automatic channel-tag updaters as an explicit operator risk,
+- test a release candidate with fresh storage and representative existing
+  persistent data,
+- test auth schemas, sessions, notebook metadata, Git credentials, PWA updates,
+  migration, and rollback for dependency changes touching persistence or
+  security,
+- publish image digest, SBOM, provenance, limitations, migration, and rollback
+  instructions with each Alpha release.
+
+### Phase 6 - Vulnerability response and maintenance policy
+
+- define triage for Dependabot, CodeQL, Trivy, `govulncheck`, npm, secret scans,
+  and privately reported vulnerabilities,
+- evaluate reachability and relevance without dismissing a finding solely
+  because an automated tool cannot prove exploitability,
+- identify affected and fixed versions clearly and ship fixes as new immutable
+  releases,
+- rotate any credential that may have been disclosed; removing it from the
+  latest commit is insufficient,
+- keep private reports confidential until remediation and coordinated
+  disclosure are ready,
+- periodically verify that dependency feeds, scanners, pinned actions, base
+  images, and security libraries remain maintained,
+- state explicitly that automation detects known advisories and patterns, not
+  every unknown vulnerability, logic flaw, unsafe deployment, or auth design
+  mistake.
+
+### Milestone 20 completion criteria
+
+- Go, npm, Docker, and GitHub Actions dependencies receive automated update and
+  security proposals,
+- CodeQL, Dependabot alerts/security updates, secret scanning, and push
+  protection are enabled and verified where GitHub provides them,
+- source and published images are rescanned independently of repository
+  activity,
+- no dependency pull request can merge without required functional, build,
+  runtime, and security checks plus the required human review,
+- no dependency automation directly publishes or deploys an image,
+- newly disclosed HIGH or CRITICAL issues produce an actionable maintainer
+  signal identifying affected artifacts,
+- vulnerability response, supported-version, remediation, migration, and
+  rollback procedures are documented and exercised,
+- Milestones 19 and 20 pass their complete gates before Alpha 2 publication.
+
+## Alpha 2 completion criteria
+
+Alpha 2 is ready when:
+
+- the existing multiple-note tab workflow remains stable,
+- normal deletion is recoverable through Trash,
+- an earlier Git version of a note can be inspected and restored safely,
+- portable internal links can be created, followed, and maintained across
+  ordinary rename and move operations,
+- notebooks can be renamed and safely removed from RepoQuill,
+- overlapping file saves and Git synchronization conflicts can be completely
+  resolved through a non-technical guided workflow,
+- save, synchronization, external-change, and failure states are understandable
+  without Git terminology,
+- a private notebook can be connected through a guided, actionable onboarding
+  flow,
+- a single owner can securely authenticate with an optional second factor and
+  recover access without placing notebook content under the auth system,
+- authentication expiry is handled natively and safely in browser and PWA
+  workflows,
+- continuous dependency, source, secret, and published-image monitoring is
+  active and proposes reviewed updates without unattended merges,
+- all nine milestones work on desktop and mobile/PWA layouts where a user
+  interface is applicable,
+- destructive, path-sensitive, Markdown-rewriting, Git-history, and conflict
+  recovery behavior plus synchronization wording and onboarding failures are
+  covered by focused tests,
+- Milestones 19 and 20's dedicated security verification and release gates
+  pass,
+- no milestone introduces opaque canonical content or weakens Git/provider
+  independence.
+
+---
+
+# 46. Alpha Release Criteria
 
 Before calling a build "alpha", verify:
 
@@ -1815,16 +2615,13 @@ Before calling a build "alpha", verify:
 
 ---
 
-# 46. Future Features After Alpha
+# 47. Future Features After Alpha
 
 Potential later features:
 
 - raw Markdown/source mode,
 - configurable sync intervals,
 - manual sync,
-- commit history UI,
-- diff view,
-- basic conflict editor,
 - OIDC authentication,
 - provider-specific repository creation,
 - GitHub integration,
@@ -1838,14 +2635,13 @@ Potential later features:
 - light/dark theme,
 - import helpers,
 - export convenience tools,
-- repository health diagnostics,
 - WebDAV-like access only if it remains non-invasive.
 
 Every future feature must preserve the core portability principle.
 
 ---
 
-# 47. Features Requiring Special Scrutiny
+# 48. Features Requiring Special Scrutiny
 
 Before implementing any of the following, explicitly verify that they do not compromise plain-file portability:
 
@@ -1864,7 +2660,7 @@ Do not let convenient application features quietly turn the repository into an o
 
 ---
 
-# 48. Coding-Agent Rules
+# 49. Coding-Agent Rules
 
 When an AI coding agent works on this project, it MUST:
 
@@ -1882,7 +2678,7 @@ When an AI coding agent works on this project, it MUST:
 12. Never silently change the canonical storage model.
 13. Never replace filesystem/Git storage with a database.
 14. Never introduce collaborative editing architecture without an explicit project decision.
-15. Never add authentication complexity to V0.1 without an explicit project decision.
+15. Keep authentication within the explicit single-owner scope and Milestone 19 security requirements; do not add general account management without another project decision.
 16. Never introduce a cloud dependency for core functionality.
 17. Treat data loss risks as higher priority than UI convenience.
 18. Ask for clarification only when a decision would materially alter architecture or risk data loss; otherwise choose the simplest interpretation consistent with this document.
@@ -1890,7 +2686,7 @@ When an AI coding agent works on this project, it MUST:
 
 ---
 
-# 49. Agent Change Checklist
+# 50. Agent Change Checklist
 
 Before finishing a change, verify:
 
@@ -1909,7 +2705,7 @@ If any answer is problematic, redesign before merging.
 
 ---
 
-# 50. Project Philosophy
+# 51. Project Philosophy
 
 The application should stay boring in all the right ways.
 

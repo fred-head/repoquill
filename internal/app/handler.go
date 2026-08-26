@@ -48,7 +48,7 @@ func NewHandler(logger *slog.Logger, repositoryRoot string, versions ...string) 
 	if err != nil {
 		return nil, err
 	}
-	if errors.Is(activeLoadErr, os.ErrNotExist) && metadataPath != "" {
+	if errors.Is(activeLoadErr, os.ErrNotExist) && metadataPath != "" && repository.Configured() {
 		localRecord := notebookRecord{ID: "local", Name: activeNotebookName, LocalPath: repositoryRoot}
 		if registerErr := registerActiveNotebook(metadataPath, localRecord); registerErr == nil {
 			activeRecord = localRecord
@@ -88,7 +88,7 @@ func NewHandler(logger *slog.Logger, repositoryRoot string, versions ...string) 
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": version})
 	})
 	mux.HandleFunc("GET /api/notebook", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"name": currentNotebookName()})
+		writeJSON(w, http.StatusOK, map[string]any{"name": currentNotebookName(), "configured": currentRepository().Configured()})
 	})
 	mux.HandleFunc("GET /api/notebooks", func(w http.ResponseWriter, _ *http.Request) {
 		registry, err := loadNotebookRegistry(metadataPath)
@@ -141,6 +141,27 @@ func NewHandler(logger *slog.Logger, repositoryRoot string, versions ...string) 
 		activeNotebookName = record.Name
 		activeMu.Unlock()
 		writeJSON(w, http.StatusOK, record)
+	})
+	mux.HandleFunc("DELETE /api/notebooks/{notebookID}", func(w http.ResponseWriter, r *http.Request) {
+		notebookID := r.PathValue("notebookID")
+		if notebookID == "" || strings.ContainsAny(notebookID, "/\\\x00") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid notebook ID"})
+			return
+		}
+		if err := removeLocalNotebook(metadataPath, notebookID); err != nil {
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
+			case err.Error() == "active notebook cannot be removed":
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "switch to another notebook before removing this local notebook"})
+			case err.Error() == "only the local legacy notebook can be removed":
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only locally configured legacy notebooks can be removed in this version"})
+			default:
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook registration could not be removed"})
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /api/repository/tree", func(w http.ResponseWriter, _ *http.Request) {
 		tree, err := currentRepository().Tree()
