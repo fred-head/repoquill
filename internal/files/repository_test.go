@@ -103,7 +103,7 @@ func TestReadMarkdownRejectsUnsafePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, unsafe := range []string{"../note.md", "/tmp/note.md", "./note.md", `folder\note.md`, "note.txt"} {
+	for _, unsafe := range []string{"../note.md", "/tmp/note.md", "./note.md", `folder\note.md`, "line\nbreak.md", "tab\tname.md", "note.txt"} {
 		_, err := repository.ReadMarkdown(unsafe)
 		if !errors.Is(err, ErrInvalidPath) && !errors.Is(err, ErrNotMarkdown) {
 			t.Errorf("expected %q to be rejected, got %v", unsafe, err)

@@ -140,7 +140,7 @@ func TestOperationsRejectUnsafePaths(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "Safe.md"), "safe")
 	repository := mustRepository(t, root)
 
-	for _, unsafe := range []string{"", ".", "..", "../Outside.md", "/tmp/Outside.md", `Folder\Note.md`, ".git/config.md", "node_modules/readme.md"} {
+	for _, unsafe := range []string{"", ".", "..", "../Outside.md", "/tmp/Outside.md", `Folder\Note.md`, "line\nbreak.md", "tab\tname.md", ".git/config.md", "node_modules/readme.md"} {
 		if err := repository.Create(unsafe, "file"); !errors.Is(err, ErrInvalidPath) && !errors.Is(err, ErrNotMarkdown) {
 			t.Errorf("expected create path %q to be rejected, got %v", unsafe, err)
 		}
