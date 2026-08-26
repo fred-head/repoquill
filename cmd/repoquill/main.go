@@ -11,12 +11,33 @@ import (
 	"time"
 
 	"github.com/fred-head/repoquill/internal/app"
+	"github.com/fred-head/repoquill/internal/auth"
 )
 
 var version = "dev"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	authConfig, err := auth.ConfigFromEnvironment(os.LookupEnv)
+	if err != nil {
+		logger.Error("configure authentication", "error", err)
+		os.Exit(1)
+	}
+	authService, err := auth.Open(context.Background(), authConfig, logger)
+	if err != nil {
+		logger.Error("initialize authentication metadata", "error", err)
+		os.Exit(1)
+	}
+	defer authService.Close()
+	authState, err := authService.State(context.Background())
+	if err != nil {
+		logger.Error("read authentication state", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("authentication metadata ready", "mode", authState.Mode, "modeExplicit", authState.ModeExplicit, "setupCompleted", authState.SetupCompleted, "schemaVersion", authState.SchemaVersion)
+	if authState.Mode == auth.ModeDisabled {
+		logger.Warn("authentication is explicitly disabled; restrict access with a trusted network or external protection")
+	}
 	handler, err := app.NewHandler(logger, os.Getenv("REPOQUILL_REPOSITORY"), version)
 	if err != nil {
 		logger.Error("configure application", "error", err)

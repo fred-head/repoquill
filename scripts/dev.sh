@@ -62,6 +62,8 @@ echo "Notebook: ${notebook_root}"
   exec env REPOQUILL_REPOSITORY="${notebook_root}" \
   REPOQUILL_NOTEBOOKS_DIR="${notebooks_directory}" \
   REPOQUILL_NOTEBOOK_METADATA="${app_directory}/notebooks.json" \
+  REPOQUILL_AUTH_MODE="${REPOQUILL_AUTH_MODE:-local}" \
+  REPOQUILL_AUTH_METADATA="${app_directory}/auth.db" \
   REPOQUILL_KEYS_DIR="${keys_directory}" \
   REPOQUILL_SSH_KNOWN_HOSTS="${known_hosts_file}" \
   GOCACHE="/tmp/repoquill-go-cache" \
