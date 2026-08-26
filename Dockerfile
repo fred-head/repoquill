@@ -9,7 +9,7 @@ RUN npm run build
 FROM golang:1.26.7-alpine AS backend
 ARG VERSION=0.1.0-alpha.1.security.1
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd/ cmd/
 COPY internal/ internal/
 COPY web/ web/
