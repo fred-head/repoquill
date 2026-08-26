@@ -1825,12 +1825,12 @@ expanding RepoQuill into a general-purpose productivity platform. These
 milestones must continue to treat ordinary Markdown files, folders, assets, and
 Git history as the canonical data model.
 
-Milestones 16, 17, 19, and 20 are the highest-priority Alpha 2 milestones.
+Milestones 16, 17, 19, 20, and 21 are the highest-priority Alpha 2 milestones.
 Conflict handling, understandable synchronization, the authentication boundary,
-and continuous vulnerability management are trust and data-safety features, not
-optional polish, and should be implemented before lower-risk convenience work
-where practical. Milestones 19 and 20 are Alpha 2 release blockers and must
-receive dedicated security review.
+continuous vulnerability management, and the final dependency baseline are
+trust and data-safety features, not optional polish, and should be implemented
+before lower-risk convenience work where practical. Milestones 19, 20, and 21
+are Alpha 2 release blockers and must receive dedicated security review.
 
 ## Milestone 12 - Recoverable Deletion and Trash
 
@@ -2561,6 +2561,74 @@ merge security-sensitive changes or deploy an unreviewed image.
   rollback procedures are documented and exercised,
 - Milestones 19 and 20 pass their complete gates before Alpha 2 publication.
 
+## Milestone 21 - Final Alpha 2 Dependency and Toolchain Review
+
+Perform a deliberate final review of every dependency and build-tool release
+line after the Alpha 2 functionality and authentication work is complete. The
+goal is a current, maintained, reproducible, and vulnerability-free release
+baseline, not blindly selecting the numerically newest major version.
+
+### Phase 1 - Complete inventory and currency review
+
+- inventory direct and transitive npm dependencies, Go modules, Docker base
+  images, system packages, and pinned GitHub Actions from the final lockfiles,
+  image, and SBOM,
+- record installed, permitted, and latest available versions for direct
+  dependencies and identify unsupported or unmaintained release lines,
+- review the final Vite, React, Milkdown, TypeScript, ESLint, Vitest, jsdom,
+  Tailwind, PWA, authentication, session, MFA, cryptographic, and SQLite-related
+  versions explicitly,
+- distinguish production runtime dependencies from build-, test-, and
+  development-only tooling,
+- review licenses and maintenance status for newly introduced Alpha 2
+  dependencies.
+
+### Phase 2 - Controlled updates
+
+- apply compatible patch and minor updates where their release notes and
+  transitive changes are acceptable,
+- evaluate major upgrades such as Vite, TypeScript, ESLint, Vitest, jsdom, or
+  related plugins separately and never combine unrelated majors merely to make
+  the version inventory appear current,
+- adopt a major upgrade only when its supported runtime requirements,
+  compatibility, migration cost, and security benefit justify it,
+- document any intentionally retained older major with its reason, support
+  status, and a follow-up trigger; an older maintained release without known
+  vulnerabilities is acceptable,
+- regenerate and commit lockfiles reproducibly and ensure a clean install does
+  not create uncommitted dependency changes,
+- do not weaken scanner policy, suppress findings, or use force/legacy peer
+  resolution merely to complete an upgrade.
+
+### Phase 3 - Full regression and release gate
+
+- run the complete Milestone 20 pull-request and release checks after the final
+  dependency set is selected,
+- exercise editor serialization, image and asset handling, PWA installation and
+  update behavior, Git synchronization and conflict recovery, and all
+  Milestone 19 authentication/session/MFA flows,
+- build, scan, and smoke-test the final production image for every supported
+  CPU architecture,
+- require zero unresolved known vulnerabilities at the release policy threshold
+  across npm, Go, container OS packages, CodeQL, Dependabot, and secret scans,
+- produce the final Alpha 2 SBOM, provenance, dependency inventory, and release
+  notes from the exact immutable release candidate,
+- publish Alpha 2 only after intentional deferrals are documented and every
+  required functional, security, image, and recovery gate passes.
+
+### Milestone 21 completion criteria
+
+- every direct dependency and toolchain component has been reviewed against its
+  current maintained releases,
+- accepted updates are tested and reflected reproducibly in lockfiles and the
+  release image,
+- retained older majors have a documented technical reason and remain supported
+  without known release-blocking vulnerabilities,
+- the final multi-architecture image and complete Alpha 2 application pass all
+  Milestone 19 and 20 security and regression gates,
+- the released SBOM accurately describes the dependency baseline shipped to
+  users.
+
 ## Alpha 2 completion criteria
 
 Alpha 2 is ready when:
@@ -2583,12 +2651,15 @@ Alpha 2 is ready when:
   workflows,
 - continuous dependency, source, secret, and published-image monitoring is
   active and proposes reviewed updates without unattended merges,
-- all nine milestones work on desktop and mobile/PWA layouts where a user
+- the final dependency and toolchain baseline has been deliberately reviewed,
+  updated where justified, and documented where a maintained older major is
+  retained,
+- all ten milestones work on desktop and mobile/PWA layouts where a user
   interface is applicable,
 - destructive, path-sensitive, Markdown-rewriting, Git-history, and conflict
   recovery behavior plus synchronization wording and onboarding failures are
   covered by focused tests,
-- Milestones 19 and 20's dedicated security verification and release gates
+- Milestones 19, 20, and 21's dedicated security verification and release gates
   pass,
 - no milestone introduces opaque canonical content or weakens Git/provider
   independence.
