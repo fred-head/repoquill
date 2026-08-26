@@ -36,7 +36,7 @@ The published alpha image is available from GitHub Container Registry:
 ```yaml
 services:
   repoquill:
-    image: ghcr.io/fred-head/repoquill:0.1.0-alpha.1
+    image: ghcr.io/fred-head/repoquill:0.1.0-alpha.1.security.1
     init: true
     restart: unless-stopped
     ports:
@@ -72,9 +72,9 @@ SSH Git repository. RepoQuill can generate a dedicated deploy key and guides
 you through approving the Git host fingerprint.
 
 The moving `0.1.0-alpha` image tag tracks the newest successful alpha in the
-0.1.0 line. Pin `0.1.0-alpha.1` or the published digest when reproducibility is
-more important than automatic alpha updates. RepoQuill does not publish
-`latest` during alpha.
+0.1.0 line. Pin `0.1.0-alpha.1.security.1` or the published digest when
+reproducibility is more important than automatic alpha updates. RepoQuill does
+not publish `latest` during alpha.
 
 ### Use a host directory for persistent data
 

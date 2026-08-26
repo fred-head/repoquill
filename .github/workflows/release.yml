@@ -45,7 +45,7 @@ jobs:
         run: |
           ./scripts/check-release-version.sh "${GITHUB_REF_NAME}"
           version="${GITHUB_REF_NAME#v}"
-          channel="${version%.*}"
+          channel="${version%%-alpha.*}-alpha"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "channel=${channel}" >> "${GITHUB_OUTPUT}"
           echo "sha_tag=sha-${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"

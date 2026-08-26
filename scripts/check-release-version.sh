@@ -3,8 +3,8 @@
 set -Eeuo pipefail
 
 tag="${1:-}"
-if [[ ! "${tag}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+)$ ]]; then
-  echo "Release tag must match vMAJOR.MINOR.PATCH-alpha.NUMBER" >&2
+if [[ ! "${tag}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+(\.security\.[0-9]+)?)$ ]]; then
+  echo "Release tag must match vMAJOR.MINOR.PATCH-alpha.NUMBER or its .security.NUMBER refresh form" >&2
   exit 1
 fi
 version="${BASH_REMATCH[1]}"
@@ -36,7 +36,7 @@ if (!dockerfile.includes('org.opencontainers.image.version="${VERSION}"')) {
 if (!changelog.includes(`## [${version}] - `)) {
   failures.push('CHANGELOG.md has no matching release section')
 }
-const unreleased = changelog.match(/## \[Unreleased\]\s*([\s\S]*?)(?=\n## \[)/)?.[1]?.trim()
+const unreleased = changelog.match(/## \[Unreleased\][^\n]*\n([\s\S]*?)(?=\n## \[)/)?.[1]?.trim()
 if (unreleased) {
   failures.push('CHANGELOG.md Unreleased section is not empty')
 }
