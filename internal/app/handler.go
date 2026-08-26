@@ -690,7 +690,11 @@ func validateNotebookRemoteURL(remoteURL string) error {
 
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger.Info("http request", "method", sanitizeLogValue(r.Method), "path", sanitizeLogValue(r.URL.Path))
+		method := strings.ReplaceAll(r.Method, "\n", "")
+		method = strings.ReplaceAll(method, "\r", "")
+		requestPath := strings.ReplaceAll(r.URL.Path, "\n", "")
+		requestPath = strings.ReplaceAll(requestPath, "\r", "")
+		logger.Info("http request", "method", sanitizeLogValue(method), "path", sanitizeLogValue(requestPath))
 		next.ServeHTTP(w, r)
 	})
 }
