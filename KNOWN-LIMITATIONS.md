@@ -1,8 +1,8 @@
 # Known Alpha Limitations
 
-RepoQuill `0.1.0-alpha.1` is an evaluation release. The following limitations
-are deliberate or currently accepted and should be understood before using it
-with important notebooks.
+RepoQuill `0.1.0-alpha.1.security.1` is an evaluation release. The following
+limitations are deliberate or currently accepted and should be understood
+before using it with important notebooks.
 
 ## Deployment and access
 
