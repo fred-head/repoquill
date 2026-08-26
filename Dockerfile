@@ -27,7 +27,8 @@ LABEL org.opencontainers.image.title="RepoQuill" \
       org.opencontainers.image.documentation="https://github.com/fred-head/repoquill/blob/main/README.md" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="${VCS_REF}"
-RUN apk add --no-cache ca-certificates git openssh-client \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates git openssh-client \
     && addgroup -S repoquill \
     && adduser -S -G repoquill -h /data repoquill \
     && mkdir -p /data/app /data/repos /data/notebooks /data/keys \
