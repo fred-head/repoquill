@@ -21,6 +21,9 @@ func TestConfigFromEnvironmentDefaultsSafelyToLocal(t *testing.T) {
 	if !config.CookieSecure {
 		t.Fatal("secure session cookies must be the default")
 	}
+	if config.EncryptionKeyPath != "/srv/repoquill/auth.key" {
+		t.Fatalf("unexpected encryption key path %q", config.EncryptionKeyPath)
+	}
 }
 
 func TestConfigFromEnvironmentAcceptsExplicitDisabledMode(t *testing.T) {
@@ -63,6 +66,7 @@ func TestConfigFromEnvironmentRejectsUnsafeValues(t *testing.T) {
 		{"REPOQUILL_SESSION_COOKIE_SECURE": "sometimes"},
 		{"REPOQUILL_TRUSTED_PROXIES": "10.0.0.1,not-an-address"},
 		{"REPOQUILL_TRUSTED_PROXIES": "10.0.0.1,"},
+		{"REPOQUILL_AUTH_ENCRYPTION_KEY_FILE": "relative/auth.key"},
 	}
 	for _, values := range tests {
 		if _, err := ConfigFromEnvironment(mapLookup(values)); err == nil {

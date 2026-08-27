@@ -41,11 +41,13 @@ export async function authStatus(signal?: AbortSignal): Promise<AuthStatus> {
 }
 
 export function notifyAuthChanged() {
-  window.dispatchEvent(new CustomEvent(authChangedEvent))
-  if ('BroadcastChannel' in window) {
-    const channel = new BroadcastChannel(channelName)
+  const Channel = (window as unknown as { BroadcastChannel?: typeof BroadcastChannel }).BroadcastChannel
+  if (typeof Channel === 'function') {
+    const channel = new Channel(channelName)
     channel.postMessage('changed')
     channel.close()
+  } else {
+    window.dispatchEvent(new CustomEvent(authChangedEvent))
   }
 }
 
@@ -54,7 +56,8 @@ export function listenForAuthEvents(onRequired: () => void, onChanged: () => voi
   const changed = () => onChanged()
   window.addEventListener(authRequiredEvent, required)
   window.addEventListener(authChangedEvent, changed)
-  const channel = 'BroadcastChannel' in window ? new BroadcastChannel(channelName) : undefined
+  const Channel = (window as unknown as { BroadcastChannel?: typeof BroadcastChannel }).BroadcastChannel
+  const channel = typeof Channel === 'function' ? new Channel(channelName) : undefined
   if (channel) channel.onmessage = changed
   return () => {
     window.removeEventListener(authRequiredEvent, required)

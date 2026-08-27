@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- Added fail-closed single-owner password authentication, persistent server-side
+  sessions, session-bound CSRF protection, trusted-proxy handling, progressive
+  throttling, operator-only recovery, and an explicit unauthenticated mode.
+- Added optional password-first TOTP MFA with local QR generation, encrypted
+  secrets, replay protection, atomically single-use recovery codes, safe factor
+  replacement, and separate operator MFA reset.
+- Added the Milestone 19 adversarial route/MFA/session test matrix and a current
+  OWASP-oriented Alpha 2 authentication review and release gate.
+
+### Added
+
+- Responsive setup, login, reauthentication, Security settings, active-session
+  administration, MFA enrollment/recovery, and visible disabled-mode guidance
+  for browser and installed PWA use.
+
 ## [0.1.0-alpha.1.security.1] - 2026-08-26
 
 ### Security

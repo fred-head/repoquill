@@ -6,13 +6,22 @@ before using it with important notebooks.
 
 ## Deployment and access
 
-- RepoQuill has no built-in authentication, authorization, account isolation, or
-  TLS termination. It must run behind a trusted HTTPS authentication layer.
+- Alpha 2 adds a single-owner password boundary with optional TOTP MFA. It is
+  not a multi-user authorization system, and TLS termination remains the
+  operator's responsibility for Internet-facing deployments.
+- Explicit `disabled` mode has no built-in authentication and is suitable only
+  behind a deliberately managed LAN, VPN, or external access boundary.
+- A stolen authenticated session retains owner authority until it expires or is
+  revoked. TOTP does not protect an already stolen session, and TOTP itself is
+  not phishing-resistant.
 - The V0.1 ownership model assumes one active backend instance for each notebook
   working tree. Multiple backend writers are unsupported.
 - Managed SSH deploy keys and approved host identities live on the persistent
   `/data` volume. Losing that volume can require credential re-enrollment even
   when notes remain recoverable from a Git remote.
+- Local-auth metadata and the separate MFA encryption key also live on the
+  persistent volume. Loss of the key requires an explicit operator MFA reset;
+  neither auth recovery nor auth metadata loss changes notebook files.
 
 ## Editing and synchronization
 

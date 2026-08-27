@@ -84,12 +84,15 @@ func main() {
 }
 
 func runAuthCommand(ctx context.Context, logger *slog.Logger, arguments []string) error {
-	if len(arguments) != 2 || arguments[0] != "auth" || (arguments[1] != "bootstrap-token" && arguments[1] != "reset-password") {
-		return errors.New("usage: repoquill auth <bootstrap-token|reset-password>")
+	if len(arguments) != 2 || arguments[0] != "auth" || (arguments[1] != "bootstrap-token" && arguments[1] != "reset-password" && arguments[1] != "reset-mfa") {
+		return errors.New("usage: repoquill auth <bootstrap-token|reset-password|reset-mfa>")
 	}
 	config, err := auth.ConfigFromEnvironment(os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("configure authentication: %w", err)
+	}
+	if arguments[1] == "reset-mfa" {
+		config.AllowMFAKeyRecovery = true
 	}
 	service, err := auth.Open(ctx, config, logger)
 	if err != nil {
@@ -98,6 +101,13 @@ func runAuthCommand(ctx context.Context, logger *slog.Logger, arguments []string
 	defer service.Close()
 	if arguments[1] == "reset-password" {
 		return resetOwnerPassword(ctx, service)
+	}
+	if arguments[1] == "reset-mfa" {
+		if err := service.ResetMFA(ctx); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, "Owner MFA reset. All browser sessions were revoked; the owner password was not changed.")
+		return nil
 	}
 	token, err := service.CreateBootstrapToken(ctx)
 	if err != nil {

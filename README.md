@@ -201,8 +201,25 @@ docker compose exec -it repoquill repoquill auth reset-password
 ```
 
 The command requires an interactive terminal, revokes every browser session,
-and never modifies notebook repositories. TOTP reset remains a separate future
-operation. See the [local authentication guide](docs/security/local-authentication-setup.md).
+and never modifies notebook repositories. Optional TOTP MFA can be enabled in
+Security settings; its ten one-time recovery codes are shown only once. If the
+authenticator and recovery codes are both lost, reset MFA separately:
+
+```sh
+docker compose exec repoquill repoquill auth reset-mfa
+```
+
+The TOTP secret is encrypted with `/data/app/auth.key`, outside SQLite. Back up
+that file with `/data/app/auth.db`; neither contains notebook content. See the
+[local authentication guide](docs/security/local-authentication-setup.md).
+
+`REPOQUILL_AUTH_MODE=disabled` is accepted only as an explicit operator choice
+for localhost, a private LAN/VPN/Tailscale network, or deliberately configured
+external protection. It is not inferred from proxy headers. Switching modes
+invalidates all sessions, setup tokens, passwords, MFA, and recovery artifacts;
+returning to `local` therefore requires a new bootstrap setup. Interactive
+forward-auth can still expire independently and return HTML to the browser/PWA.
+HTTPS and backend network isolation remain necessary in either mode.
 
 See [SECURITY.md](SECURITY.md) for the threat model, deployment responsibilities,
 and private vulnerability reporting process.

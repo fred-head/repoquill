@@ -172,6 +172,11 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				return
 			}
 			err = sessions.Login(r.Context(), input.Password, input.RememberDevice, r.UserAgent())
+			if errors.Is(err, auth.ErrMFARequired) {
+				_ = authService.RecordSecurityEvent(r.Context(), "login_password", "success", "client="+auth.ClientReference(clientIP))
+				writeJSON(w, http.StatusAccepted, map[string]any{"authenticated": false, "mfaRequired": true})
+				return
+			}
 			if errors.Is(err, auth.ErrAuthentication) {
 				delay, recordErr := loginThrottle.Failure(r.Context(), clientIP)
 				if recordErr != nil {
@@ -194,6 +199,35 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				logger.Warn("clear login throttle failed", "error", err)
 			}
 			_ = authService.RecordSecurityEvent(r.Context(), "login", "success", "client="+auth.ClientReference(clientIP))
+			writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "csrfToken": sessions.ExistingCSRFToken(r.Context())})
+		})
+		mux.HandleFunc("POST /api/auth/login/mfa", func(w http.ResponseWriter, r *http.Request) {
+			var input struct {
+				Code string `json:"code"`
+			}
+			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			clientIP := requestIdentity.ClientIP(r)
+			if !loginThrottle.Begin() {
+				w.Header().Set("Retry-After", "1")
+				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many login attempts", "code": "login_throttled"})
+				return
+			}
+			defer loginThrottle.End()
+			if retry, err := loginThrottle.Check(r.Context(), clientIP); err != nil || retry > 0 {
+				w.Header().Set("Retry-After", "1")
+				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many login attempts", "code": "login_throttled"})
+				return
+			}
+			if err := sessions.CompleteMFA(r.Context(), input.Code); err != nil {
+				_, _ = loginThrottle.Failure(r.Context(), clientIP)
+				_ = authService.RecordSecurityEvent(r.Context(), "login_mfa", "failure", "client="+auth.ClientReference(clientIP))
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
+				return
+			}
+			_ = loginThrottle.Success(r.Context(), clientIP)
+			_ = authService.RecordSecurityEvent(r.Context(), "login_mfa", "success", "client="+auth.ClientReference(clientIP))
 			writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "csrfToken": sessions.ExistingCSRFToken(r.Context())})
 		})
 		mux.HandleFunc("POST /api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +287,12 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "security settings are unavailable"})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"sessionSettings": settings})
+			mfaEnabled, err := authService.MFAEnabled(r.Context())
+			if err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "MFA state is unavailable"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"sessionSettings": settings, "mfaEnabled": mfaEnabled})
 		})
 		mux.HandleFunc("PUT /api/auth/security/session-settings", func(w http.ResponseWriter, r *http.Request) {
 			var input struct {
@@ -261,13 +300,24 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				IdleHours       int    `json:"idleHours"`
 				LifetimeHours   int    `json:"lifetimeHours"`
 				RememberDays    int    `json:"rememberDays"`
+				MFACode         string `json:"mfaCode"`
 			}
 			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			if input.IdleHours < 1 || input.IdleHours > 720 || input.LifetimeHours < 1 || input.LifetimeHours > 24 || input.RememberDays < 1 || input.RememberDays > 90 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session durations are outside the allowed range"})
 				return
 			}
 			if err := authService.VerifyPassword(r.Context(), input.CurrentPassword); err != nil {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
 				return
+			}
+			if enabled, _ := authService.MFAEnabled(r.Context()); enabled {
+				if authService.VerifySecondFactor(r.Context(), input.MFACode) != nil {
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
+					return
+				}
 			}
 			settings := auth.SessionSettings{IdleHours: input.IdleHours, LifetimeHours: input.LifetimeHours, RememberDays: input.RememberDays}
 			if err := authService.UpdateSessionSettings(r.Context(), settings); err != nil {
@@ -281,9 +331,20 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			var input struct {
 				CurrentPassword string `json:"currentPassword"`
 				NewPassword     string `json:"newPassword"`
+				MFACode         string `json:"mfaCode"`
 			}
 			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
 				return
+			}
+			if err := auth.ValidatePassword(input.NewPassword); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			if enabled, _ := authService.MFAEnabled(r.Context()); enabled {
+				if err := authService.VerifyPassword(r.Context(), input.CurrentPassword); err != nil || authService.VerifySecondFactor(r.Context(), input.MFACode) != nil {
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
+					return
+				}
 			}
 			err := sessions.ChangePassword(r.Context(), input.CurrentPassword, input.NewPassword)
 			switch {
@@ -298,6 +359,74 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				logger.Error("password change failed", "error", err)
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "password change failed"})
 			}
+		})
+		mux.HandleFunc("POST /api/auth/mfa/enroll", func(w http.ResponseWriter, r *http.Request) {
+			var input struct {
+				CurrentPassword string `json:"currentPassword"`
+				CurrentFactor   string `json:"currentFactor"`
+			}
+			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			enrollment, err := authService.BeginMFAEnrollment(r.Context(), input.CurrentPassword, input.CurrentFactor)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
+				return
+			}
+			writeJSON(w, http.StatusOK, enrollment)
+		})
+		mux.HandleFunc("POST /api/auth/mfa/confirm", func(w http.ResponseWriter, r *http.Request) {
+			var input struct {
+				Code                string `json:"code"`
+				RecoveryCodesStored bool   `json:"recoveryCodesStored"`
+			}
+			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			if err := authService.ConfirmMFAEnrollment(r.Context(), input.Code, input.RecoveryCodesStored); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "MFA enrollment could not be confirmed"})
+				return
+			}
+			if err := sessions.RotateCurrent(r.Context()); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session rotation failed"})
+				return
+			}
+			_ = authService.RecordSecurityEvent(r.Context(), "mfa_enabled", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
+			writeJSON(w, http.StatusOK, map[string]any{"mfaEnabled": true, "csrfToken": sessions.ExistingCSRFToken(r.Context())})
+		})
+		mux.HandleFunc("DELETE /api/auth/mfa", func(w http.ResponseWriter, r *http.Request) {
+			var input struct {
+				CurrentPassword string `json:"currentPassword"`
+				Code            string `json:"code"`
+			}
+			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			if err := authService.DisableMFA(r.Context(), input.CurrentPassword, input.Code); err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
+				return
+			}
+			if err := sessions.Logout(r.Context()); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "logout failed"})
+				return
+			}
+			_ = authService.RecordSecurityEvent(r.Context(), "mfa_disabled", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
+			writeJSON(w, http.StatusOK, map[string]bool{"mfaEnabled": false})
+		})
+		mux.HandleFunc("POST /api/auth/mfa/recovery-codes", func(w http.ResponseWriter, r *http.Request) {
+			var input struct {
+				CurrentPassword string `json:"currentPassword"`
+				Code            string `json:"code"`
+			}
+			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			codes, err := authService.RegenerateRecoveryCodes(r.Context(), input.CurrentPassword, input.Code)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"recoveryCodes": codes})
 		})
 		mux.HandleFunc("POST /api/auth/setup", func(w http.ResponseWriter, r *http.Request) {
 			var input struct {
@@ -915,7 +1044,7 @@ func authenticationBoundary(authService *auth.Service, sessions *auth.Sessions, 
 			(readOnlyMethod && r.URL.Path == "/api/health") ||
 			(readOnlyMethod && r.URL.Path == "/api/auth/status") ||
 			(r.Method == http.MethodPost && r.URL.Path == "/api/auth/setup") ||
-			(r.Method == http.MethodPost && r.URL.Path == "/api/auth/login")
+			(r.Method == http.MethodPost && (r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/login/mfa"))
 		if public {
 			next.ServeHTTP(w, r)
 			return
@@ -952,7 +1081,7 @@ func csrfProtection(authService *auth.Service, sessions *auth.Sessions, identity
 			next.ServeHTTP(w, r)
 			return
 		}
-		if (r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/setup") && !sessions.Authenticated(r.Context()) {
+		if (r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/login/mfa" || r.URL.Path == "/api/auth/setup") && !sessions.Authenticated(r.Context()) {
 			next.ServeHTTP(w, r)
 			return
 		}

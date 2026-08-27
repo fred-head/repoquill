@@ -16,8 +16,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fred-head/repoquill/internal/auth"
+	"github.com/pquerna/otp/totp"
 )
 
 func TestHealth(t *testing.T) {
@@ -299,6 +301,67 @@ func TestSecurityAdministrationAPI(t *testing.T) {
 	handler.ServeHTTP(sessionList, sessionsRequest)
 	if sessionList.Code != http.StatusOK || !strings.Contains(sessionList.Body.String(), `"current":true`) {
 		t.Fatalf("session list unavailable after rotation: %d %s", sessionList.Code, sessionList.Body.String())
+	}
+}
+
+func TestPasswordFirstMFALoginAndRecoveryCode(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	service, err := auth.Open(t.Context(), auth.Config{Mode: auth.ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	bootstrap, _ := service.CreateBootstrapToken(t.Context())
+	const password = "a sufficiently long password"
+	if err := service.CompleteSetup(t.Context(), bootstrap.Value, password); err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := service.BeginMFAEnrollment(t.Context(), password, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.GenerateCode(enrollment.Secret, time.Now().UTC())
+	if err := service.ConfirmMFAEnrollment(t.Context(), code, true); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandlerWithAuth(logger, t.TempDir(), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	login := httptest.NewRecorder()
+	handler.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"a sufficiently long password","rememberDevice":true}`)))
+	if login.Code != http.StatusAccepted || !strings.Contains(login.Body.String(), `"mfaRequired":true`) {
+		t.Fatalf("password step did not require MFA: %d %s", login.Code, login.Body.String())
+	}
+	var pendingCookie *http.Cookie
+	for _, candidate := range login.Result().Cookies() {
+		if strings.Contains(candidate.Name, "repoquill_session") {
+			pendingCookie = candidate
+		}
+	}
+	if pendingCookie == nil {
+		t.Fatal("MFA challenge did not issue a confined pending-session cookie")
+	}
+
+	wrongRequest := httptest.NewRequest(http.MethodPost, "/api/auth/login/mfa", strings.NewReader(`{"code":"000000"}`))
+	wrongRequest.AddCookie(pendingCookie)
+	wrong := httptest.NewRecorder()
+	handler.ServeHTTP(wrong, wrongRequest)
+	if wrong.Code != http.StatusUnauthorized || strings.TrimSpace(wrong.Body.String()) != `{"code":"invalid_credentials","error":"authentication failed"}` {
+		t.Fatalf("MFA failure leaked details: %d %s", wrong.Code, wrong.Body.String())
+	}
+
+	recoveryRequest := httptest.NewRequest(http.MethodPost, "/api/auth/login/mfa", strings.NewReader(`{"code":"`+enrollment.RecoveryCodes[0]+`"}`))
+	recoveryRequest.AddCookie(pendingCookie)
+	recovery := httptest.NewRecorder()
+	handler.ServeHTTP(recovery, recoveryRequest)
+	if recovery.Code != http.StatusOK || !strings.Contains(recovery.Body.String(), `"authenticated":true`) {
+		t.Fatalf("recovery-code login failed: %d %s", recovery.Code, recovery.Body.String())
+	}
+	rotatedCookie, csrf := authRequestContextFromResponse(t, recovery)
+	if rotatedCookie == nil || rotatedCookie.Value == pendingCookie.Value || csrf == "" {
+		t.Fatal("MFA completion did not rotate session and CSRF credentials")
 	}
 }
 
@@ -1002,5 +1065,124 @@ func TestFrontendFallback(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "RepoQuill") {
 		t.Fatal("expected embedded frontend")
+	}
+}
+
+func TestEveryApplicationAPIRouteDeniesUnauthenticatedAccess(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	service, err := auth.Open(t.Context(), auth.Config{Mode: auth.ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	token, err := service.CreateBootstrapToken(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CompleteSetup(t.Context(), token.Value, "a sufficiently long password"); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandlerWithAuth(logger, t.TempDir(), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	protected := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/auth/logout"},
+		{http.MethodDelete, "/api/auth/session"},
+		{http.MethodDelete, "/api/auth/sessions"},
+		{http.MethodGet, "/api/auth/sessions"},
+		{http.MethodDelete, "/api/auth/sessions/others"},
+		{http.MethodDelete, "/api/auth/sessions/example"},
+		{http.MethodGet, "/api/auth/security"},
+		{http.MethodPut, "/api/auth/security/session-settings"},
+		{http.MethodPut, "/api/auth/password"},
+		{http.MethodPost, "/api/auth/mfa/enroll"},
+		{http.MethodPost, "/api/auth/mfa/confirm"},
+		{http.MethodDelete, "/api/auth/mfa"},
+		{http.MethodPost, "/api/auth/mfa/recovery-codes"},
+		{http.MethodGet, "/api/notebook"},
+		{http.MethodGet, "/api/notebooks"},
+		{http.MethodPost, "/api/notebooks/example/activate"},
+		{http.MethodDelete, "/api/notebooks/example"},
+		{http.MethodGet, "/api/repository/tree"},
+		{http.MethodGet, "/api/repository/search?q=secret"},
+		{http.MethodGet, "/api/repository/file?path=Secret.md"},
+		{http.MethodPut, "/api/repository/file"},
+		{http.MethodPost, "/api/repository/entries"},
+		{http.MethodPost, "/api/repository/move"},
+		{http.MethodDelete, "/api/repository/entry"},
+		{http.MethodPost, "/api/repository/assets"},
+		{http.MethodGet, "/api/repository/asset"},
+		{http.MethodGet, "/api/repository/assets/unreferenced"},
+		{http.MethodPost, "/api/repository/assets/cleanup"},
+		{http.MethodGet, "/api/repository/git/status"},
+		{http.MethodPost, "/api/repository/git/sync"},
+		{http.MethodPost, "/api/repository/git/sync-background"},
+		{http.MethodPost, "/api/notebooks"},
+		{http.MethodPost, "/api/notebooks/ssh-key"},
+		{http.MethodGet, "/api/notebooks/ssh-keys"},
+		{http.MethodDelete, "/api/notebooks/ssh-keys/example"},
+		{http.MethodPost, "/api/notebooks/test-connection"},
+		{http.MethodPost, "/api/notebooks/ssh-host/discover"},
+		{http.MethodPost, "/api/notebooks/ssh-host/trust"},
+		{http.MethodGet, "/api/future-protected-route"},
+	}
+	for _, route := range protected {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(route.method, route.path, nil))
+			if response.Code != http.StatusUnauthorized || strings.TrimSpace(response.Body.String()) != `{"code":"authentication_required","error":"authentication required"}` {
+				t.Fatalf("protected API response = %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestPublicAuthSurfaceDoesNotExposeDeploymentMetadata(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	root := filepath.Join(t.TempDir(), "SENSITIVE-HOST-PATH")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	service, err := auth.Open(t.Context(), auth.Config{Mode: auth.ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "SENSITIVE-AUTH-DATABASE.db")}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	token, err := service.CreateBootstrapToken(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CompleteSetup(t.Context(), token.Value, "a sufficiently long password"); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandlerWithAuth(logger, root, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/api/health", ""},
+		{http.MethodGet, "/api/auth/status", ""},
+		{http.MethodPost, "/api/auth/login", `{"password":"wrong but deliberately long password","rememberDevice":false}`},
+		{http.MethodPost, "/api/auth/login/mfa", `{"code":"000000"}`},
+		{http.MethodPost, "/api/auth/setup", `{"bootstrapToken":"invalid","password":"another sufficiently long password"}`},
+	}
+	for _, route := range public {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(route.method, route.path, strings.NewReader(route.body)))
+		body := strings.ToLower(response.Body.String())
+		for _, forbidden := range []string{"sensitive-host-path", "sensitive-auth-database", "remoteurl", "private key", "known_hosts", "git@"} {
+			if strings.Contains(body, strings.ToLower(forbidden)) {
+				t.Fatalf("public %s exposed deployment metadata %q: %s", route.path, forbidden, response.Body.String())
+			}
+		}
 	}
 }

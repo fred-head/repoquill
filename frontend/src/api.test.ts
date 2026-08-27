@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiFetch, setCSRFToken } from './api'
+import { apiFetch, listenForAuthEvents, notifyAuthChanged, setCSRFToken } from './api'
 
 afterEach(()=>{vi.restoreAllMocks();setCSRFToken();localStorage.clear();sessionStorage.clear()})
 
@@ -23,5 +23,22 @@ describe('authenticated API client',()=>{
     await apiFetch('/api/repository/git/status')
     expect(listener).toHaveBeenCalledOnce()
     window.removeEventListener('repoquill:auth-required',listener)
+  })
+
+  it('broadcasts authentication changes to other tabs and PWA windows',()=>{
+    const channels: MockBroadcastChannel[]=[]
+    class MockBroadcastChannel {
+      onmessage: (()=>void)|null=null
+      constructor(readonly name:string){channels.push(this)}
+      postMessage(){for(const channel of channels)if(channel!==this&&channel.name===this.name)channel.onmessage?.()}
+      close(){}
+    }
+    vi.stubGlobal('BroadcastChannel',MockBroadcastChannel)
+    const otherContext=vi.fn()
+    const stop=listenForAuthEvents(()=>undefined,otherContext)
+    notifyAuthChanged()
+    expect(otherContext).toHaveBeenCalledOnce()
+    stop()
+    vi.unstubAllGlobals()
   })
 })

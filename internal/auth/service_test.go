@@ -72,6 +72,9 @@ func TestModeTransitionInvalidatesAuthenticationArtifacts(t *testing.T) {
 	`, OwnerPrincipal, make([]byte, 16), make([]byte, 32), now, now); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.db.ExecContext(ctx, `INSERT INTO auth_mfa_configuration(id, enabled, secret_nonce, secret_ciphertext, created_at, updated_at) VALUES(1,1,?,?,?,?)`, make([]byte, 12), make([]byte, 32), now, now); err != nil {
+		t.Fatal(err)
+	}
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +101,13 @@ func TestModeTransitionInvalidatesAuthenticationArtifacts(t *testing.T) {
 	}
 	if credentials != 0 {
 		t.Fatalf("mode transition retained %d password credentials", credentials)
+	}
+	var mfa int
+	if err := disabled.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_mfa_configuration`).Scan(&mfa); err != nil {
+		t.Fatal(err)
+	}
+	if mfa != 0 {
+		t.Fatalf("mode transition retained %d MFA configurations", mfa)
 	}
 }
 
