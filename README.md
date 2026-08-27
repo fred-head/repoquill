@@ -6,10 +6,11 @@ into them, and keep the underlying Markdown files and assets fully portable.
 Each notebook is an ordinary Git repository, so your notes remain readable and
 versioned even without RepoQuill.
 
-> **Alpha software:** RepoQuill is ready for careful self-hosted testing, but it
-> does not yet include built-in authentication. Back up `/data`, pin a release
-> version, and read the [known limitations](KNOWN-LIMITATIONS.md) before using it
-> with important notebooks.
+> **Alpha software:** RepoQuill is ready for careful self-hosted testing. Alpha
+> 2 development includes a single-owner local authentication boundary, but is
+> not release-ready until the remaining MFA and security-gate work is complete.
+> Back up `/data`, pin a release version, and read the
+> [known limitations](KNOWN-LIMITATIONS.md) before using important notebooks.
 
 ## Features
 
@@ -75,6 +76,18 @@ docker compose up -d
 Open <http://localhost:8080>, choose **Add Notebook**, and connect an existing
 SSH Git repository. RepoQuill can generate a dedicated deploy key and guides
 you through approving the Git host fingerprint.
+
+On the first start in `local` authentication mode, create the short-lived setup
+token in a trusted terminal and enter it on the setup screen with your chosen
+owner password:
+
+```sh
+docker compose exec repoquill repoquill auth bootstrap-token
+```
+
+The token is printed once and expires after 15 minutes. Later sign-ins need only
+the password. Security settings let the owner change the password, configure
+session lifetimes, inspect browser sessions, and revoke other devices.
 
 `REPOQUILL_SESSION_COOKIE_SECURE=true` is the safe default for an HTTPS reverse
 proxy. For deliberate plain-HTTP localhost testing only, set it to `false`.
@@ -171,7 +184,7 @@ for deliberate resolution with a normal Git client.
 ## Security
 
 Published Alpha 1 images have no built-in authentication. Alpha 2 development
-adds fail-closed single-owner local authentication, but it does not provide TLS
+uses fail-closed single-owner local authentication, but it does not provide TLS
 termination. **Never expose the backend port directly to the public Internet.**
 Terminate HTTPS at a reverse proxy and restrict backend reachability to that
 proxy.
@@ -179,6 +192,17 @@ proxy.
 The supplied configuration binds to `127.0.0.1` by default. Configure the
 proxy's exact address or smallest dedicated network through
 `REPOQUILL_TRUSTED_PROXIES` before accepting forwarded IP or scheme headers.
+
+If the owner password is forgotten, an operator with container/filesystem
+administration can reset only the authentication credential:
+
+```sh
+docker compose exec -it repoquill repoquill auth reset-password
+```
+
+The command requires an interactive terminal, revokes every browser session,
+and never modifies notebook repositories. TOTP reset remains a separate future
+operation. See the [local authentication guide](docs/security/local-authentication-setup.md).
 
 See [SECURITY.md](SECURITY.md) for the threat model, deployment responsibilities,
 and private vulnerability reporting process.

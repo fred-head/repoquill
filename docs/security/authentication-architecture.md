@@ -1,9 +1,9 @@
 # RepoQuill single-owner authentication architecture
 
-Status: Milestone 19 architecture decision. The operator-authorized password
-setup foundation is implemented by M19P2 and the persistent server-side session
-boundary by M19P3; CSRF enforcement, throttling, browser/PWA login, recovery,
-and TOTP are added by later phases.
+Status: Milestone 19 architecture decision. Password setup, persistent sessions,
+CSRF/throttling, browser/PWA reauthentication, and password/session
+administration are implemented through M19P6. TOTP and the final security gate
+remain later phases.
 Alpha 2 must not be published until the complete M19 security gate passes.
 
 ## Decision and scope
@@ -125,6 +125,12 @@ M19P4 adds a random synchronizer token bound to each server-side session,
 Origin/Referer enforcement, bounded progressive login throttling, hashed client
 references in security events, and explicit trusted-proxy CIDRs. Forwarded
 client or scheme headers are ignored unless the direct peer is configured as a
-trusted proxy. The browser/PWA login screens, recovery, and MFA remain later M19
-phases, so no Alpha 2 image may be released before all M19 phases and adversarial
-tests pass.
+trusted proxy. M19P5 adds responsive setup/login screens, in-memory CSRF
+handling, cross-tab authentication notifications, network/focus rechecks, and
+version-aware temporary recovery drafts for interrupted unsaved edits. The
+service worker continues to cache only the application shell and never
+API/auth responses. M19P6 adds owner-verified password changes, configurable
+session lifetimes, opaque session inspection and revocation, plus an interactive
+operator password reset that revokes every session without touching notebook
+content. MFA remains a later M19 phase, so no Alpha 2 image may be released
+before all M19 phases and adversarial tests pass.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/fred-head/repoquill/internal/app"
 	"github.com/fred-head/repoquill/internal/auth"
+	"golang.org/x/term"
 )
 
 var version = "dev"
@@ -83,8 +84,8 @@ func main() {
 }
 
 func runAuthCommand(ctx context.Context, logger *slog.Logger, arguments []string) error {
-	if len(arguments) != 2 || arguments[0] != "auth" || arguments[1] != "bootstrap-token" {
-		return errors.New("usage: repoquill auth bootstrap-token")
+	if len(arguments) != 2 || arguments[0] != "auth" || (arguments[1] != "bootstrap-token" && arguments[1] != "reset-password") {
+		return errors.New("usage: repoquill auth <bootstrap-token|reset-password>")
 	}
 	config, err := auth.ConfigFromEnvironment(os.LookupEnv)
 	if err != nil {
@@ -95,6 +96,9 @@ func runAuthCommand(ctx context.Context, logger *slog.Logger, arguments []string
 		return fmt.Errorf("initialize authentication metadata: %w", err)
 	}
 	defer service.Close()
+	if arguments[1] == "reset-password" {
+		return resetOwnerPassword(ctx, service)
+	}
 	token, err := service.CreateBootstrapToken(ctx)
 	if err != nil {
 		return err
@@ -104,6 +108,35 @@ func runAuthCommand(ctx context.Context, logger *slog.Logger, arguments []string
 	fmt.Fprintln(os.Stdout, "Use this one-time setup token in RepoQuill within 15 minutes:")
 	fmt.Fprintln(os.Stdout, token.Value)
 	fmt.Fprintf(os.Stdout, "Expires at: %s\n", token.ExpiresAt.Format(time.RFC3339))
+	return nil
+}
+
+func resetOwnerPassword(ctx context.Context, service *auth.Service) error {
+	input := os.Stdin
+	if !term.IsTerminal(int(input.Fd())) {
+		return errors.New("password recovery requires an interactive terminal")
+	}
+	fmt.Fprint(os.Stderr, "New owner password: ")
+	first, err := term.ReadPassword(int(input.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return fmt.Errorf("read new password: %w", err)
+	}
+	defer clear(first)
+	fmt.Fprint(os.Stderr, "Confirm new owner password: ")
+	second, err := term.ReadPassword(int(input.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return fmt.Errorf("confirm new password: %w", err)
+	}
+	defer clear(second)
+	if string(first) != string(second) {
+		return errors.New("passwords do not match")
+	}
+	if err := service.RecoverPassword(ctx, string(first)); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stdout, "Owner password reset. All browser sessions were revoked; MFA configuration was not changed.")
 	return nil
 }
 

@@ -230,6 +230,78 @@ func TestLoginSessionPersistsAndCanBeRevoked(t *testing.T) {
 	}
 }
 
+func TestSecurityAdministrationAPI(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	service, err := auth.Open(t.Context(), auth.Config{Mode: auth.ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	bootstrap, err := service.CreateBootstrapToken(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const oldPassword = "a sufficiently long password"
+	const newPassword = "a different secure password"
+	if err := service.CompleteSetup(t.Context(), bootstrap.Value, oldPassword); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandlerWithAuth(logger, t.TempDir(), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	login := httptest.NewRecorder()
+	handler.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"a sufficiently long password"}`)))
+	if login.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", login.Code, login.Body.String())
+	}
+	cookie, csrf := authRequestContextFromResponse(t, login)
+
+	securityRequest := httptest.NewRequest(http.MethodGet, "/api/auth/security", nil)
+	securityRequest.AddCookie(cookie)
+	security := httptest.NewRecorder()
+	handler.ServeHTTP(security, securityRequest)
+	if security.Code != http.StatusOK || !strings.Contains(security.Body.String(), `"idleHours":168`) {
+		t.Fatalf("security settings unavailable: %d %s", security.Code, security.Body.String())
+	}
+
+	settingsRequest := httptest.NewRequest(http.MethodPut, "/api/auth/security/session-settings", strings.NewReader(`{"currentPassword":"a sufficiently long password","idleHours":48,"lifetimeHours":8,"rememberDays":14}`))
+	addAuthRequestContext(settingsRequest, cookie, csrf)
+	settings := httptest.NewRecorder()
+	handler.ServeHTTP(settings, settingsRequest)
+	if settings.Code != http.StatusOK || !strings.Contains(settings.Body.String(), `"idleHours":48`) {
+		t.Fatalf("session settings update failed: %d %s", settings.Code, settings.Body.String())
+	}
+
+	passwordBody, _ := json.Marshal(map[string]string{"currentPassword": oldPassword, "newPassword": newPassword})
+	passwordRequest := httptest.NewRequest(http.MethodPut, "/api/auth/password", bytes.NewReader(passwordBody))
+	addAuthRequestContext(passwordRequest, cookie, csrf)
+	password := httptest.NewRecorder()
+	handler.ServeHTTP(password, passwordRequest)
+	if password.Code != http.StatusOK {
+		t.Fatalf("password change failed: %d %s", password.Code, password.Body.String())
+	}
+	rotatedCookie, rotatedCSRF := authRequestContextFromResponse(t, password)
+	if rotatedCookie == nil || rotatedCookie.Value == cookie.Value || rotatedCSRF == csrf {
+		t.Fatal("password change did not rotate session credentials")
+	}
+	if err := service.VerifyPassword(t.Context(), oldPassword); !errors.Is(err, auth.ErrAuthentication) {
+		t.Fatalf("old password still verifies: %v", err)
+	}
+	if err := service.VerifyPassword(t.Context(), newPassword); err != nil {
+		t.Fatalf("new password does not verify: %v", err)
+	}
+
+	sessionsRequest := httptest.NewRequest(http.MethodGet, "/api/auth/sessions", nil)
+	sessionsRequest.AddCookie(rotatedCookie)
+	sessionList := httptest.NewRecorder()
+	handler.ServeHTTP(sessionList, sessionsRequest)
+	if sessionList.Code != http.StatusOK || !strings.Contains(sessionList.Body.String(), `"current":true`) {
+		t.Fatalf("session list unavailable after rotation: %d %s", sessionList.Code, sessionList.Body.String())
+	}
+}
+
 func TestAuthStatusGETDoesNotCreateSessionState(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service, err := auth.Open(t.Context(), auth.Config{Mode: auth.ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, logger)

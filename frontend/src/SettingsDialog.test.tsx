@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SettingsDialog } from './App'
+import { setCSRFToken } from './api'
 
 afterEach(() => {
   cleanup()
@@ -185,5 +186,28 @@ describe('Settings asset cleanup', () => {
     fireEvent.click(view.getByRole('button', { name: 'Delete assets' }))
     await waitFor(() => expect(view.getByText('Some assets were kept:')).toBeTruthy())
     expect(view.getAllByText(/asset is referenced or no longer eligible/).length).toBeGreaterThan(0)
+  })
+
+  it('shows security administration, active sessions, and the running version', async () => {
+    setCSRFToken('csrf-before')
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (input === '/api/auth/security') return jsonResponse({ sessionSettings: { lifetimeHours: 12, idleHours: 168, rememberDays: 30 } })
+      if (input === '/api/auth/sessions') return jsonResponse({ sessions: [{ id: 'opaque-id', createdAt: '2026-08-27T08:00:00Z', lastActivityAt: '2026-08-27T09:00:00Z', idleExpiresAt: '2026-09-03T09:00:00Z', absoluteExpiresAt: '2026-08-27T20:00:00Z', clientDescription: 'Firefox on Linux', current: true }] })
+      if (input === '/api/auth/password' && init?.method === 'PUT') return jsonResponse({ csrfToken: 'csrf-after' })
+      return jsonResponse({ error: 'unexpected request' }, false)
+    })
+    const view = render(<SettingsDialog authMode="local" runningVersion="0.2.0-alpha.2" autoLockMinutes={0} onAutoLockMinutes={vi.fn()} onClose={vi.fn()} />)
+
+    await waitFor(() => expect(view.getByText('Firefox on Linux')).toBeTruthy())
+    expect(view.getByText(/RepoQuill 0.2.0-alpha.2/)).toBeTruthy()
+    expect(view.getByText('· Current')).toBeTruthy()
+
+    fireEvent.change(view.getAllByLabelText('Current password')[0], { target: { value: 'old-password-123' } })
+    fireEvent.change(view.getByLabelText('New password'), { target: { value: 'new-password-123' } })
+    fireEvent.change(view.getByLabelText('Confirm new password'), { target: { value: 'new-password-123' } })
+    fireEvent.click(view.getByRole('button', { name: 'Change password' }))
+    await waitFor(() => expect(view.getByText('Password changed. All other sessions were signed out.')).toBeTruthy())
+    const passwordRequest = fetchMock.mock.calls.find(([url]) => url === '/api/auth/password')
+    expect(new Headers(passwordRequest?.[1]?.headers).get('X-CSRF-Token')).toBe('csrf-before')
   })
 })

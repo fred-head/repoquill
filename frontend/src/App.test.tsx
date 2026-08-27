@@ -14,6 +14,7 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', ResizeObserverStub)
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
   localStorage.clear()
+  sessionStorage.clear()
   localStorage.setItem('repoquill.auto-lock-minutes', '1')
   let active = 'personal'
   let notebooks = [{ id: 'local', name: 'repos' }, { id: 'personal', name: 'Personal Notes', branch: 'main' }, { id: 'work', name: 'Work', branch: 'main' }]
@@ -202,6 +203,17 @@ describe('App auto-lock integration', () => {
     const nextView = render(<App />)
     window.dispatchEvent(event)
     expect(nextView.queryByText('Install RepoQuill for a standalone app experience.')).toBeNull()
+  })
+
+  it('keeps a recovery draft when the server note version changed', async () => {
+    const draft = { notebookId: 'personal', path: 'Note.md', content: '# Unsaved recovery', savedContent: '# Older copy', version: 'older-version', capturedAt: '2026-08-27T09:00:00Z' }
+    sessionStorage.setItem('repoquill.recovery-draft', JSON.stringify(draft))
+    const view = render(<App authMode="local" />)
+
+    fireEvent.click(await view.findByRole('button', { name: 'Review draft' }))
+    expect(await view.findByText(/server copy changed while you were signed out/)).toBeTruthy()
+    expect(JSON.parse(sessionStorage.getItem('repoquill.recovery-draft') ?? 'null')).toEqual(draft)
+    expect(view.container.textContent).not.toContain('Unsaved recovery')
   })
 })
 

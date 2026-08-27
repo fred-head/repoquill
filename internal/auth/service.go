@@ -8,12 +8,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 type State struct {
 	Mode           Mode
@@ -24,9 +25,10 @@ type State struct {
 }
 
 type Service struct {
-	db     *sql.DB
-	config Config
-	logger *slog.Logger
+	db           *sql.DB
+	config       Config
+	logger       *slog.Logger
+	credentialMu sync.Mutex
 }
 
 type migration struct {
@@ -102,6 +104,14 @@ var migrations = []migration{
 		version: 3,
 		statements: []string{
 			`ALTER TABLE auth_sessions ADD COLUMN session_data BLOB NOT NULL DEFAULT X''`,
+		},
+	},
+	{
+		version: 4,
+		statements: []string{
+			`ALTER TABLE auth_configuration ADD COLUMN session_idle_hours INTEGER NOT NULL DEFAULT 168 CHECK (session_idle_hours BETWEEN 1 AND 720)`,
+			`ALTER TABLE auth_configuration ADD COLUMN session_lifetime_hours INTEGER NOT NULL DEFAULT 12 CHECK (session_lifetime_hours BETWEEN 1 AND 24)`,
+			`ALTER TABLE auth_configuration ADD COLUMN remember_lifetime_days INTEGER NOT NULL DEFAULT 30 CHECK (remember_lifetime_days BETWEEN 1 AND 90)`,
 		},
 	},
 }

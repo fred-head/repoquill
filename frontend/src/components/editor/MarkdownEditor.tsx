@@ -15,6 +15,7 @@ import { exitCode, lift, newlineInCode } from '@milkdown/kit/prose/commands'
 import { deleteColumn, deleteRow, deleteTable } from '@milkdown/kit/prose/tables'
 import { Milkdown, MilkdownProvider, useEditor } from '@milkdown/react'
 import { isEditorEditable } from '../../app/autoLock'
+import { apiFetch } from '../../api'
 
 type MarkdownEditorProps = {
   documentKey: string
@@ -116,7 +117,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange }:
     try {
       const form = new FormData()
       form.append('file', file)
-      const response = await fetch(`/api/repository/assets?note=${encodeURIComponent(notePath)}`, { method: 'POST', body: form })
+      const response = await apiFetch(`/api/repository/assets?note=${encodeURIComponent(notePath)}`, { method: 'POST', body: form })
       const result = await response.json() as { path?: string; error?: string }
       if (!response.ok || !result.path) throw new Error(result.error ?? `Image upload failed (${response.status})`)
       setUploadState('idle')

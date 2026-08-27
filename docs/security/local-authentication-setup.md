@@ -1,9 +1,8 @@
 # Local authentication setup foundation
 
-Status: Milestone 19 Phase 2 backend foundation. The responsive setup/login UI
-arrives in M19P5, and deny-by-default session enforcement arrives in M19P3.
-Do not treat this intermediate development branch as a completed authentication
-release.
+Status: Milestone 19 Phases 2-6. Setup/login, protected sessions, browser/PWA
+reauthentication, and password/session administration are implemented. Alpha 2
+remains release-blocked until TOTP and the complete M19 security gate pass.
 
 ## Operator-controlled bootstrap
 
@@ -26,10 +25,60 @@ invalidates the previous one; a token expires after 15 minutes and is consumed
 atomically with successful password setup. No token can be created after setup
 has completed or while authentication is disabled.
 
-The setup frontend added in M19P5 will submit the token and the chosen password
-to `POST /api/auth/setup`. `GET /api/auth/status` exposes only the configured
+The setup screen submits the token and the chosen password to
+`POST /api/auth/setup`. `GET /api/auth/status` exposes only the configured
 mode and whether setup is required. Neither endpoint exposes credential,
 notebook, Git, SSH, host, or owner metadata.
+
+## Browser and PWA sessions
+
+The login screen supports normal and remembered sessions. Session and CSRF
+secrets stay in HttpOnly cookies or memory; they are never written to browser
+storage. The SPA checks authentication again when connectivity returns, the
+window regains focus, or the page becomes visible. A session expiry replaces
+the editor with the login screen instead of reporting a save or Git failure.
+Other open RepoQuill tabs and installed PWA windows are notified without
+sharing credentials between them.
+
+If reauthentication interrupts an unsaved note, RepoQuill keeps one temporary,
+per-tab recovery draft in `sessionStorage`. The draft includes notebook ID,
+path, and loaded file version. After login it can be restored only when the
+server version still matches; otherwise RepoQuill preserves it for deliberate
+review instead of overwriting the note. It is removed only after a successful
+save or explicit discard. This is crash/reauthentication protection, not an
+offline editing queue or backup.
+
+The service worker caches only the application shell. Authentication and all
+`/api/` responses remain network-only.
+
+## Password and session administration
+
+The Security section in Settings provides:
+
+- password change after confirming the current password,
+- configurable normal, idle, and remembered-session lifetimes,
+- opaque browser-session descriptions and last-active timestamps,
+- revocation of an individual session or all other sessions,
+- logout of the current device.
+
+A password change rotates the current session and revokes all other sessions by
+default. Session identifiers shown in the UI are irreversible hashes, not the
+cookie credentials. The running backend version is shown at the bottom of
+Settings so operators can identify the deployed build.
+
+## Forgotten-password recovery
+
+An operator with access to the container terminal can replace a forgotten owner
+password without touching notebook content:
+
+```sh
+docker compose exec -it repoquill repoquill auth reset-password
+```
+
+The command refuses non-interactive input, reads and confirms the password with
+terminal echo disabled, and revokes every session. It changes only auth
+metadata. MFA recovery is intentionally a separate operation so password
+recovery cannot silently weaken a future second factor.
 
 ## Password policy and storage
 
@@ -79,9 +128,8 @@ the minimum supported CPU while retaining at least the documented memory-hard
 profile. Any cost reduction requires a security review; increases are applied
 through the transparent upgrade path.
 
-## Transitional limitation
+## Remaining release limitation
 
-M19P2 protects the restricted first-run state but deliberately does not
-implement sessions. After setup completes, the general deny-by-default session
-boundary remains an M19P3 responsibility. Alpha 2 remains release-blocked until
-all M19 phases and the adversarial M19P9 gate are complete.
+Local password authentication and administration are functional, but optional
+TOTP and the adversarial M19P9 verification gate are not complete. Do not treat
+this development branch as a finished Alpha 2 authentication release.

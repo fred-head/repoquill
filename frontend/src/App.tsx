@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSPrope
 import { AutoLockController, autoLockOptions, loadAutoLockPreference, parseAutoLockMinutes, saveAutoLockPreference, type AutoLockMinutes } from './app/autoLock'
 import { documentStats } from './app/documentStats'
 import { defaultSyncPreferences, loadSyncPreferences, saveSyncPreferences, type SyncPreferences } from './app/syncPreferences'
+import { apiFetch, listenForAuthEvents, notifyAuthChanged, setCSRFToken } from './api'
 
 const MarkdownEditor = lazy(() => import('./components/editor/MarkdownEditor').then((module) => ({ default: module.MarkdownEditor })))
 
@@ -24,11 +25,22 @@ type ManagedSSHKey = { keyId: string; publicKey: string; createdAt: string; fing
 type NotebookInfo = { id: string; name: string; remoteUrl?: string; branch?: string; authType?: GitAuthType; keyId?: string }
 type SearchResult = { path: string; type: 'directory' | 'file' | 'content'; line?: number; excerpt?: string }
 type NoteTab = { path: string; readOnly: boolean }
+type RecoveryDraft = { notebookId: string; path: string; content: string; version: string; savedContent: string; capturedAt: string }
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }
 const expandedFoldersStorageKey = 'repoquill.expanded-folders'
 const themeStorageKey = 'repoquill.theme'
 const installPromptDismissedStorageKey = 'repoquill.install-prompt-dismissed'
 const noteSwitchSyncFreshnessMs = 45_000
+const recoveryDraftStorageKey = 'repoquill.recovery-draft'
+
+function loadRecoveryDraft(): RecoveryDraft | undefined {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(recoveryDraftStorageKey) ?? 'null') as RecoveryDraft | null
+    return value?.path && value.version ? value : undefined
+  } catch {
+    return undefined
+  }
+}
 
 function loadTheme(): Theme {
   const stored = localStorage.getItem(themeStorageKey)
@@ -78,7 +90,7 @@ async function responseJSON<T>(response: Response): Promise<T> {
   return body
 }
 
-export function App() {
+export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut = () => undefined }: { authMode?: 'local'|'disabled'; runningVersion?:string; onLoggedOut?:()=>void } = {}) {
   const [theme, setTheme] = useState<Theme>(loadTheme)
   const [autoLockMinutes, setAutoLockMinutes] = useState<AutoLockMinutes>(() => loadAutoLockPreference(localStorage))
   const [syncPreferences, setSyncPreferences] = useState<SyncPreferences>(() => loadSyncPreferences(localStorage))
@@ -122,6 +134,7 @@ export function App() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState<string>()
+  const [recoveryDraft, setRecoveryDraft] = useState<RecoveryDraft|undefined>(loadRecoveryDraft)
   const activeDraft = useRef<Draft | undefined>(undefined)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const savePromise = useRef<Promise<FileResponse> | undefined>(undefined)
@@ -139,6 +152,21 @@ export function App() {
   const editorActivity = useRef(0)
   const autoLockExpire = useRef<() => void>(() => undefined)
   const autoLockController = useRef<AutoLockController | null>(null)
+  const activeNotebookIDRef = useRef(activeNotebookID)
+
+  activeNotebookIDRef.current = activeNotebookID
+  const preserveRecoveryDraft = useCallback(() => {
+    const draft = activeDraft.current
+    if (!draft || draft.content === draft.savedContent) return
+    const recovery = { notebookId: activeNotebookIDRef.current, path: draft.path, content: draft.content, version: draft.version, savedContent: draft.savedContent, capturedAt: new Date().toISOString() }
+    try { sessionStorage.setItem(recoveryDraftStorageKey, JSON.stringify(recovery)) } catch { return }
+    setRecoveryDraft(recovery)
+  }, [])
+
+  useEffect(() => listenForAuthEvents(() => {
+    preserveRecoveryDraft()
+    setReadOnly(true)
+  }, () => undefined), [preserveRecoveryDraft])
 
   useEffect(() => {
     const handleOnline = () => setBrowserOnline(true)
@@ -168,7 +196,7 @@ export function App() {
       setSearchLoading(true)
       setSearchError(undefined)
       try {
-        const response = await fetch(`/api/repository/search?q=${encodeURIComponent(query)}`, { signal: controller.signal })
+        const response = await apiFetch(`/api/repository/search?q=${encodeURIComponent(query)}`, { signal: controller.signal })
         const data = await responseJSON<{ results: SearchResult[] }>(response)
         setSearchResults(data.results)
       } catch (error) {
@@ -187,7 +215,7 @@ export function App() {
     setTreeLoading(true)
     setTreeError(undefined)
     try {
-      const response = await fetch('/api/repository/tree')
+      const response = await apiFetch('/api/repository/tree')
       const data = await responseJSON<{ entries: TreeNode[] }>(response)
       setEntries(data.entries)
       setNotebookConfigured(true)
@@ -208,7 +236,7 @@ export function App() {
       return
     }
     try {
-      const response = await fetch('/api/repository/git/status')
+      const response = await apiFetch('/api/repository/git/status')
       const status = await responseJSON<GitStatus>(response)
       gitStatusRef.current = status
       setGitStatus(status)
@@ -222,7 +250,7 @@ export function App() {
 
   const loadNotebookInfo = useCallback(async () => {
     try {
-      const response = await fetch('/api/notebook')
+      const response = await apiFetch('/api/notebook')
       const data = await responseJSON<{ name: string; configured: boolean }>(response)
       setNotebookConfigured(data.configured)
       setNotebookName(data.configured ? data.name || 'Notebook' : 'Notebooks')
@@ -233,7 +261,7 @@ export function App() {
 
   const loadNotebooks = useCallback(async () => {
     try {
-      const response = await fetch('/api/notebooks')
+      const response = await apiFetch('/api/notebooks')
       const data = await responseJSON<{ activeId: string; notebooks: NotebookInfo[] }>(response)
       setNotebooks(data.notebooks)
       setActiveNotebookID(data.activeId)
@@ -245,34 +273,39 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    fetch('/api/health').then((response) => {
+    apiFetch('/api/health').then((response) => {
       if (!response.ok) throw new Error('health check failed')
       setHealth('online')
     }).catch(() => setHealth('offline'))
-    fetch('/api/repository/tree').then(responseJSON<{ entries: TreeNode[] }>).then((data) => {
+    apiFetch('/api/repository/tree').then(responseJSON<{ entries: TreeNode[] }>).then((data) => {
       setEntries(data.entries)
       setNotebookConfigured(true)
       setHealth('online')
     }).catch((error: unknown) => { const message = messageFrom(error); setTreeError(message); if (message === 'repository is not configured') setNotebookConfigured(false) }).finally(() => setTreeLoading(false))
-    fetch('/api/notebook').then(responseJSON<{ name: string; configured: boolean }>).then((data) => { setNotebookConfigured(data.configured); setNotebookName(data.configured ? data.name || 'Notebook' : 'Notebooks') }).catch(() => setNotebookName('Notebook'))
-    fetch('/api/notebooks').then(responseJSON<{ activeId: string; notebooks: NotebookInfo[] }>).then((data) => { setNotebooks(data.notebooks); setActiveNotebookID(data.activeId); const active = data.notebooks.find((notebook) => notebook.id === data.activeId); if (active) setNotebookName(active.name) }).catch(() => undefined)
+    apiFetch('/api/notebook').then(responseJSON<{ name: string; configured: boolean }>).then((data) => { setNotebookConfigured(data.configured); setNotebookName(data.configured ? data.name || 'Notebook' : 'Notebooks') }).catch(() => setNotebookName('Notebook'))
+    apiFetch('/api/notebooks').then(responseJSON<{ activeId: string; notebooks: NotebookInfo[] }>).then((data) => { setNotebooks(data.notebooks); setActiveNotebookID(data.activeId); const active = data.notebooks.find((notebook) => notebook.id === data.activeId); if (active) setNotebookName(active.name) }).catch(() => undefined)
 
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
       const draft = activeDraft.current
       if (draft && draft.content !== draft.savedContent) {
+        preserveRecoveryDraft()
         event.preventDefault()
         return
       }
       if (syncPreferencesRef.current.syncOnClose && !closeSyncTriggered.current) {
         closeSyncTriggered.current = true
-        void fetch('/api/repository/git/sync-background', { method: 'POST', keepalive: true })
+        void apiFetch('/api/repository/git/sync-background', { method: 'POST', keepalive: true })
       }
     }
     const syncOnPageHide = () => {
       const draft = activeDraft.current
-      if (!syncPreferencesRef.current.syncOnClose || closeSyncTriggered.current || draft && draft.content !== draft.savedContent) return
+      if (draft && draft.content !== draft.savedContent) {
+        preserveRecoveryDraft()
+        return
+      }
+      if (!syncPreferencesRef.current.syncOnClose || closeSyncTriggered.current) return
       closeSyncTriggered.current = true
-      void fetch('/api/repository/git/sync-background', { method: 'POST', keepalive: true })
+      void apiFetch('/api/repository/git/sync-background', { method: 'POST', keepalive: true })
     }
     window.addEventListener('beforeunload', warnBeforeUnload)
     window.addEventListener('pagehide', syncOnPageHide)
@@ -282,7 +315,7 @@ export function App() {
       if (saveTimer.current) clearTimeout(saveTimer.current)
       if (inactivitySyncTimer.current) clearTimeout(inactivitySyncTimer.current)
     }
-  }, [])
+  }, [preserveRecoveryDraft])
 
   useEffect(() => {
     const initial = globalThis.setTimeout(() => { void refreshGitStatus() }, 0)
@@ -338,7 +371,7 @@ export function App() {
     const snapshot = { path: draft.path, content: draft.content, version: draft.version }
     setSaveStatus('saving')
     setSaveError(undefined)
-    const operation = fetch(`/api/repository/file?path=${encodeURIComponent(snapshot.path)}`, {
+    const operation = apiFetch(`/api/repository/file?path=${encodeURIComponent(snapshot.path)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: snapshot.content, version: snapshot.version }),
@@ -351,6 +384,7 @@ export function App() {
       if (current?.path === snapshot.path) {
         current.version = saved.version
         current.savedContent = snapshot.content
+		if (recoveryDraft?.path === snapshot.path) { sessionStorage.removeItem(recoveryDraftStorageKey); setRecoveryDraft(undefined) }
       }
     } catch (error) {
       setSaveStatus(error instanceof APIError && error.status === 409 ? 'conflict' : 'error')
@@ -377,7 +411,7 @@ export function App() {
           syncRequested.current = false
           if (!(await saveDraft())) return false
           const syncedGeneration = localChangeGeneration.current
-          const response = await fetch('/api/repository/git/sync', { method: 'POST' })
+          const response = await apiFetch('/api/repository/git/sync', { method: 'POST' })
           const result = await responseJSON<GitStatus>(response)
           gitStatusRef.current = result
           setGitStatus(result)
@@ -387,7 +421,7 @@ export function App() {
           lastSyncedGeneration.current = syncedGeneration
           await loadTree()
 
-          const statusResponse = await fetch('/api/repository/git/status')
+          const statusResponse = await apiFetch('/api/repository/git/status')
           const inspected = await responseJSON<GitStatus>(statusResponse)
           gitStatusRef.current = inspected
           setGitStatus(inspected)
@@ -471,7 +505,7 @@ export function App() {
     setOperationBusy(true)
     setOperationError(undefined)
     try {
-      const response = await fetch(`/api/notebooks/${encodeURIComponent(notebook.id)}/activate`, { method: 'POST' })
+      const response = await apiFetch(`/api/notebooks/${encodeURIComponent(notebook.id)}/activate`, { method: 'POST' })
       await responseJSON<NotebookInfo>(response)
       activeDraft.current = undefined
       setTabs([])
@@ -500,7 +534,7 @@ export function App() {
     setNoteError(undefined)
     setSaveError(undefined)
     try {
-      const response = await fetch(`/api/repository/file?path=${encodeURIComponent(path)}`)
+      const response = await apiFetch(`/api/repository/file?path=${encodeURIComponent(path)}`)
       const loaded = await responseJSON<FileResponse>(response)
       const existingTab = tabs.find((tab) => tab.path === path)
       setTabs((current) => {
@@ -531,6 +565,36 @@ export function App() {
     } finally {
       setNoteLoading(false)
     }
+  }
+
+  async function restoreRecoveryDraft() {
+    if (!recoveryDraft) return
+    if (recoveryDraft.notebookId && activeNotebookID && recoveryDraft.notebookId !== activeNotebookID) {
+      setOperationError('The recovery draft belongs to another notebook. Switch back to that notebook before restoring it.')
+      return
+    }
+    try {
+      const response = await apiFetch(`/api/repository/file?path=${encodeURIComponent(recoveryDraft.path)}`)
+      const current = await responseJSON<FileResponse>(response)
+      if (current.version !== recoveryDraft.version) {
+        setOperationError('The server copy changed while you were signed out. The recovery draft was kept; resolve it through the conflict workflow instead of overwriting the note.')
+        return
+      }
+      activeDraft.current = { ...current, content: recoveryDraft.content, savedContent: current.content }
+      setNote({ ...current, content: recoveryDraft.content })
+      setSelectedPath(current.path)
+      setTabs((items) => items.some((tab) => tab.path === current.path) ? items : [...items, { path: current.path, readOnly: false }])
+      setReadOnly(false)
+      setSaveStatus('unsaved')
+      setOperationError(undefined)
+    } catch (caught) {
+      setOperationError(messageFrom(caught))
+    }
+  }
+
+  function discardRecoveryDraft() {
+    sessionStorage.removeItem(recoveryDraftStorageKey)
+    setRecoveryDraft(undefined)
   }
 
   async function closeTab(path: string) {
@@ -588,7 +652,7 @@ export function App() {
     setOperationBusy(true)
     setOperationError(undefined)
     try {
-      const response = await fetch('/api/repository/entries', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, type }) })
+      const response = await apiFetch('/api/repository/entries', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, type }) })
       await responseJSON<{ path: string; type: string }>(response)
       if (parent) setExpandedFolders((current) => new Set(current).add(parent))
       await loadTree()
@@ -607,7 +671,7 @@ export function App() {
     setOperationBusy(true)
     setOperationError(undefined)
     try {
-      const response = await fetch('/api/repository/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: entry.path, target }) })
+      const response = await apiFetch('/api/repository/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: entry.path, target }) })
       await responseJSON<{ path: string }>(response)
       const affectedPath = selectedPath === entry.path || selectedPath?.startsWith(`${entry.path}/`)
         ? target + selectedPath.slice(entry.path.length)
@@ -687,7 +751,7 @@ export function App() {
     setOperationBusy(true)
     setOperationError(undefined)
     try {
-      const response = await fetch(`/api/repository/entry?path=${encodeURIComponent(entry.path)}`, { method: 'DELETE' })
+      const response = await apiFetch(`/api/repository/entry?path=${encodeURIComponent(entry.path)}`, { method: 'DELETE' })
       if (!response.ok) await responseJSON<never>(response)
       const activeDeleted = selectedPath === entry.path || selectedPath?.startsWith(`${entry.path}/`)
       const activeIndex = tabs.findIndex((tab) => tab.path === selectedPath)
@@ -890,6 +954,7 @@ export function App() {
         {tabs.length > 0 && <NoteTabs tabs={tabs} activePath={selectedPath} onActivate={(path) => void activateTab(path)} onClose={(path) => void closeTab(path)} />}
         </div>
         {(!browserOnline || health === 'offline') && <div role="status" className="border-b border-amber-800/70 bg-amber-950/40 px-4 py-2 text-sm text-amber-100 sm:px-8"><strong>Offline.</strong> RepoQuill is online-first; viewing may continue, but editing and synchronization require the server connection.</div>}
+        {recoveryDraft && <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-800/70 bg-amber-950/30 px-4 py-2 text-xs text-amber-100 sm:px-8"><span>An unsaved recovery draft for <strong>{recoveryDraft.path}</strong> was preserved after authentication ended.</span><span className="flex gap-2"><button type="button" onClick={()=>void restoreRecoveryDraft()} className="min-h-9 rounded border border-amber-700 px-3 hover:bg-amber-900/40">Review draft</button><button type="button" onClick={discardRecoveryDraft} className="min-h-9 rounded px-3 text-zinc-400 hover:bg-zinc-800">Discard</button></span></div>}
         {installPrompt && !installPromptDismissed && <div className="flex items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-300 sm:px-8"><span>Install RepoQuill for a standalone app experience.</span><div className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => void installApplication()} className="min-h-9 rounded-md border border-zinc-600 px-3 font-medium hover:bg-zinc-800">Install app</button><button type="button" onClick={dismissInstallPrompt} aria-label="Dismiss install suggestion" title="Dismiss" className="flex min-h-9 min-w-9 items-center justify-center rounded-md text-lg text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200">×</button></div></div>}
         <article className={`mx-auto w-full max-w-4xl flex-1 px-5 sm:px-8 ${selectedPath ? 'pt-2 pb-8 sm:pt-2 sm:pb-12' : 'py-8 sm:py-12'}`}>
           {!selectedPath && <EmptyState notebookConfigured={notebookConfigured !== false} onAddNotebook={() => setAddNotebookOpen(true)} />}
@@ -902,14 +967,14 @@ export function App() {
       </main>
       {contextMenu && <div className="fixed inset-0 z-40" onClick={() => setContextMenu(undefined)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined) }}><div className="fixed" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><ActionMenu entry={contextMenu.entry} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={(entry) => { setContextMenu(undefined); void deleteEntry(entry) }} /></div></div>}
       {moveEntry && <FolderPicker entries={entries} notebookName={notebookName} moving={moveEntry} destination={moveDestination} onDestination={setMoveDestination} onCancel={() => setMoveEntry(undefined)} onConfirm={() => void confirmMove()} />}
-      {settingsOpen && <SettingsDialog mode="settings" autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} syncPreferences={syncPreferences} onSyncPreferences={setSyncPreferences} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsDialog mode="settings" authMode={authMode} runningVersion={runningVersion} onLoggedOut={onLoggedOut} autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} syncPreferences={syncPreferences} onSyncPreferences={setSyncPreferences} onClose={() => setSettingsOpen(false)} />}
       {addNotebookOpen && <SettingsDialog mode="onboarding" autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} onNotebookAdded={async () => { await activateClonedNotebook(); setAddNotebookOpen(false) }} onClose={() => setAddNotebookOpen(false)} />}
       {manageNotebooksOpen && <ManageNotebooksDialog notebooks={notebooks} activeNotebookID={activeNotebookID} onRemoved={loadNotebooks} onClose={() => setManageNotebooksOpen(false)} />}
     </div>
   )
 }
 
-export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockMinutes, syncPreferences = defaultSyncPreferences, onSyncPreferences = () => undefined, onNotebookAdded, onClose }: { mode?: 'settings' | 'onboarding'; autoLockMinutes: AutoLockMinutes; onAutoLockMinutes: (value: AutoLockMinutes) => void; syncPreferences?: SyncPreferences; onSyncPreferences?: (value: SyncPreferences) => void; onNotebookAdded?: () => Promise<void> | void; onClose: () => void }) {
+export function SettingsDialog({ mode = 'settings', authMode = 'disabled', runningVersion = 'dev', onLoggedOut = () => undefined, autoLockMinutes, onAutoLockMinutes, syncPreferences = defaultSyncPreferences, onSyncPreferences = () => undefined, onNotebookAdded, onClose }: { mode?: 'settings' | 'onboarding'; authMode?:'local'|'disabled'; runningVersion?:string; onLoggedOut?:()=>void; autoLockMinutes: AutoLockMinutes; onAutoLockMinutes: (value: AutoLockMinutes) => void; syncPreferences?: SyncPreferences; onSyncPreferences?: (value: SyncPreferences) => void; onNotebookAdded?: () => Promise<void> | void; onClose: () => void }) {
   const [cleanupAssets, setCleanupAssets] = useState<CleanupAsset[]>()
   const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set())
   const [cleanupBusy, setCleanupBusy] = useState(false)
@@ -939,7 +1004,7 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
     setManagedKeysBusy(true)
     setManagedKeysError(undefined)
     try {
-      const response = await fetch('/api/notebooks/ssh-keys')
+      const response = await apiFetch('/api/notebooks/ssh-keys')
       const data = await responseJSON<{ keys: ManagedSSHKey[] }>(response)
       setManagedKeys(data.keys)
     } catch (error) {
@@ -954,7 +1019,7 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
     setCloneBusy(true)
     setCloneError(undefined)
     try {
-      const response = await fetch('/api/notebooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: notebookName, repositoryUrl: repositoryURL, branch: repositoryBranch, authType: gitAuthType, keyId: managedKey?.keyId ?? '' }) })
+      const response = await apiFetch('/api/notebooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: notebookName, repositoryUrl: repositoryURL, branch: repositoryBranch, authType: gitAuthType, keyId: managedKey?.keyId ?? '' }) })
       await responseJSON<{ id: string; name: string; localPath: string; branch: string }>(response)
       await onNotebookAdded?.()
       onClose()
@@ -972,7 +1037,7 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
     setCloneError(undefined)
     setCopyState(undefined)
     try {
-      const response = await fetch('/api/notebooks/ssh-key', { method: 'POST' })
+      const response = await apiFetch('/api/notebooks/ssh-key', { method: 'POST' })
       setManagedKey(await responseJSON<{ keyId: string; publicKey: string }>(response))
       invalidateConnection()
     } catch (error) {
@@ -987,7 +1052,7 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
     setManagedKeysBusy(true)
     setManagedKeysError(undefined)
     try {
-      const response = await fetch(`/api/notebooks/ssh-keys/${encodeURIComponent(deleteKey.keyId)}`, { method: 'DELETE' })
+      const response = await apiFetch(`/api/notebooks/ssh-keys/${encodeURIComponent(deleteKey.keyId)}`, { method: 'DELETE' })
       await responseJSON<{ deleted: string }>(response)
       setDeleteKey(undefined)
       await loadManagedKeys()
@@ -1013,11 +1078,11 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
     setCloneError(undefined)
     setConnectionResult(undefined)
     try {
-      const response = await fetch('/api/notebooks/test-connection', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repositoryUrl: repositoryURL, branch: repositoryBranch, authType: gitAuthType, keyId: managedKey?.keyId ?? '' }) })
+      const response = await apiFetch('/api/notebooks/test-connection', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repositoryUrl: repositoryURL, branch: repositoryBranch, authType: gitAuthType, keyId: managedKey?.keyId ?? '' }) })
       const result = await responseJSON<ConnectionResult>(response)
       setConnectionResult(result)
       if (result.state === 'host_verification_failed') {
-        const discoveryResponse = await fetch('/api/notebooks/ssh-host/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repositoryUrl: repositoryURL }) })
+        const discoveryResponse = await apiFetch('/api/notebooks/ssh-host/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repositoryUrl: repositoryURL }) })
         setHostTrust(await responseJSON<HostTrustDiscovery>(discoveryResponse))
       }
     } catch (error) {
@@ -1032,7 +1097,7 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
     setTrustBusy(true)
     setCloneError(undefined)
     try {
-      const response = await fetch('/api/notebooks/ssh-host/trust', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId: hostTrust.requestId }) })
+      const response = await apiFetch('/api/notebooks/ssh-host/trust', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId: hostTrust.requestId }) })
       await responseJSON<HostTrustDiscovery>(response)
       setHostTrust(undefined)
       await testRepositoryConnection()
@@ -1048,7 +1113,7 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
     setCleanupError(undefined)
     setCleanupFailures([])
     try {
-      const response = await fetch('/api/repository/assets/unreferenced')
+      const response = await apiFetch('/api/repository/assets/unreferenced')
       const data = await responseJSON<{ assets: CleanupAsset[] }>(response)
       setCleanupAssets(data.assets)
       setSelectedAssets(new Set(data.assets.map((asset) => asset.path)))
@@ -1067,7 +1132,7 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
     setCleanupError(undefined)
     setCleanupFailures([])
     try {
-      const response = await fetch('/api/repository/assets/cleanup', {
+      const response = await apiFetch('/api/repository/assets/cleanup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paths }),
@@ -1107,7 +1172,7 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
             </form>
           </section>}
 
-          {mode === 'settings' && <section className="order-3 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="ssh-keys-title">
+          {mode === 'settings' && <section className="order-4 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="ssh-keys-title">
             <div className="flex items-start justify-between gap-3"><div><h3 id="ssh-keys-title" className="text-sm font-semibold text-zinc-200">Git / SSH</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Managed keys remain on the server. Only their public halves are shown here.</p></div><button type="button" disabled={managedKeysBusy} onClick={() => void loadManagedKeys()} className="min-h-10 shrink-0 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">{managedKeys ? 'Refresh' : 'Load keys'}</button></div>
             {managedKeysError && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{managedKeysError}</p>}
             {managedKeysBusy && !managedKeys && <p className="mt-3 text-xs text-zinc-500">Loading managed keys…</p>}
@@ -1124,7 +1189,9 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
             <label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncBeforeOpeningNote} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncBeforeOpeningNote: event.target.checked })} className="h-5 w-5 accent-amber-500" />Background sync after switching notes</label>
           </section>}
 
-          {mode === 'settings' && <section className="order-2 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="maintenance-title">
+          {mode === 'settings' && <SecurityPanel authMode={authMode} runningVersion={runningVersion} onLoggedOut={onLoggedOut} />}
+
+          {mode === 'settings' && <section className="order-3 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="maintenance-title">
             <div className="flex items-start justify-between gap-4">
               <div><h3 id="maintenance-title" className="text-sm font-semibold text-zinc-200">Maintenance</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Find image files in note-specific asset folders that are no longer referenced by Markdown.</p></div>
               <button type="button" disabled={cleanupBusy} onClick={() => void scanAssets()} className="min-h-10 shrink-0 rounded-md border border-zinc-700 px-3 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">{cleanupBusy ? 'Scanning…' : cleanupAssets ? 'Scan again' : 'Scan'}</button>
@@ -1149,6 +1216,50 @@ export function SettingsDialog({ mode = 'settings', autoLockMinutes, onAutoLockM
     </div>
   )
 }
+
+type SecuritySession = { id:string; createdAt:string; lastActivityAt:string; idleExpiresAt:string; absoluteExpiresAt:string; revokedAt?:string; clientDescription:string; current:boolean }
+type ServerSessionSettings = { idleHours:number; lifetimeHours:number; rememberDays:number }
+
+function SecurityPanel({ authMode, runningVersion, onLoggedOut }: { authMode:'local'|'disabled'; runningVersion:string; onLoggedOut:()=>void }) {
+  const [settings, setSettings] = useState<ServerSessionSettings>()
+  const [sessions, setSessions] = useState<SecuritySession[]>([])
+  const [error, setError] = useState<string>()
+  const [notice, setNotice] = useState<string>()
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    if (authMode !== 'local') return
+    try {
+      const [securityResponse, sessionsResponse] = await Promise.all([apiFetch('/api/auth/security'), apiFetch('/api/auth/sessions')])
+      setSettings((await responseJSON<{sessionSettings:ServerSessionSettings}>(securityResponse)).sessionSettings)
+      setSessions((await responseJSON<{sessions:SecuritySession[]}>(sessionsResponse)).sessions)
+    } catch (caught) { setError(messageFrom(caught)) }
+  }, [authMode])
+  useEffect(() => { queueMicrotask(() => void load()) }, [load])
+
+  async function changePassword(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form=event.currentTarget; const data=new FormData(form)
+    if (data.get('newPassword') !== data.get('confirmNewPassword')) { setError('New passwords do not match.'); return }
+    setBusy(true); setError(undefined); setNotice(undefined)
+    try {
+      const response=await apiFetch('/api/auth/password',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({currentPassword:data.get('currentPassword'),newPassword:data.get('newPassword')})})
+      const result=await responseJSON<{csrfToken:string}>(response); setCSRFToken(result.csrfToken); form.reset(); setNotice('Password changed. All other sessions were signed out.'); notifyAuthChanged(); await load()
+    } catch(caught){setError(messageFrom(caught))} finally{setBusy(false)}
+  }
+
+  async function saveDurations(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if(!settings)return; const form=event.currentTarget; const data=new FormData(form); setBusy(true);setError(undefined);setNotice(undefined)
+    try { const response=await apiFetch('/api/auth/security/session-settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...settings,currentPassword:data.get('settingsPassword')})}); const result=await responseJSON<{sessionSettings:ServerSessionSettings}>(response);setSettings(result.sessionSettings);form.reset();setNotice('Session durations saved. They apply to new logins.') } catch(caught){setError(messageFrom(caught))} finally{setBusy(false)}
+  }
+
+  async function revoke(path:string) { setBusy(true);setError(undefined);try{await responseJSON(await apiFetch(path,{method:'DELETE'}));await load()}catch(caught){setError(messageFrom(caught))}finally{setBusy(false)} }
+  async function logout(){setBusy(true);try{await responseJSON(await apiFetch('/api/auth/logout',{method:'POST'}));onLoggedOut()}catch(caught){setError(messageFrom(caught));setBusy(false)}}
+
+  const version = runningVersion || 'dev'
+  return <section className="order-2 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="security-title"><h3 id="security-title" className="text-sm font-semibold text-zinc-200">Security</h3>{authMode==='disabled'?<p role="alert" className="mt-3 rounded-md border border-amber-700/70 bg-amber-950/25 p-3 text-xs leading-5 text-amber-200">Built-in authentication is explicitly disabled. Restrict access through a trusted network or external protection.</p>:<div className="mt-3 space-y-5">{error&&<p role="alert" className="rounded-md border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}{notice&&<p role="status" className="rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3 text-xs text-emerald-300">{notice}</p>}<form onSubmit={(event)=>void changePassword(event)} className="space-y-3 rounded-md border border-zinc-800 p-3"><h4 className="text-sm font-medium">Change password</h4><p className="text-xs leading-5 text-zinc-500">Your current password confirms this sensitive change. All other sessions are revoked.</p><SecurityPassword name="currentPassword" label="Current password" autoComplete="current-password"/><SecurityPassword name="newPassword" label="New password" autoComplete="new-password"/><SecurityPassword name="confirmNewPassword" label="Confirm new password" autoComplete="new-password"/><button disabled={busy} className="min-h-10 rounded-md border border-zinc-700 px-3 text-xs hover:bg-zinc-800 disabled:opacity-50">Change password</button></form>{settings&&<form onSubmit={(event)=>void saveDurations(event)} className="space-y-3 rounded-md border border-zinc-800 p-3"><h4 className="text-sm font-medium">Session durations</h4><label className="block text-xs text-zinc-300">Normal login lifetime<input type="number" min="1" max="24" value={settings.lifetimeHours} onChange={(event)=>setSettings({...settings,lifetimeHours:Number(event.target.value)})} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2"/> hours</label><label className="block text-xs text-zinc-300">Idle timeout<input type="number" min="1" max="720" value={settings.idleHours} onChange={(event)=>setSettings({...settings,idleHours:Number(event.target.value)})} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2"/> hours</label><label className="block text-xs text-zinc-300">Remembered device lifetime<input type="number" min="1" max="90" value={settings.rememberDays} onChange={(event)=>setSettings({...settings,rememberDays:Number(event.target.value)})} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2"/> days</label><SecurityPassword name="settingsPassword" label="Current password to save" autoComplete="current-password"/><button disabled={busy} className="min-h-10 rounded-md border border-zinc-700 px-3 text-xs hover:bg-zinc-800 disabled:opacity-50">Save durations</button></form>}<div className="rounded-md border border-zinc-800 p-3"><div className="flex items-center justify-between gap-2"><div><h4 className="text-sm font-medium">Browser sessions</h4><p className="mt-1 text-xs text-zinc-500">Device descriptions use only the browser user agent.</p></div><button type="button" disabled={busy} onClick={()=>void revoke('/api/auth/sessions/others')} className="min-h-10 rounded px-2 text-xs text-amber-300 hover:bg-zinc-800">Sign out others</button></div><ul className="mt-3 space-y-2">{sessions.filter((session)=>!session.revokedAt).map((session)=><li key={session.id} className="rounded border border-zinc-800 p-2 text-xs"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-zinc-300">{session.clientDescription||'Unknown client'} {session.current&&<span className="text-emerald-400">· Current</span>}</p><p className="mt-1 text-zinc-500">Active {new Date(session.lastActivityAt).toLocaleString()}</p></div>{!session.current&&<button type="button" disabled={busy} onClick={()=>void revoke(`/api/auth/sessions/${encodeURIComponent(session.id)}`)} className="min-h-9 shrink-0 rounded px-2 text-red-300 hover:bg-red-950/40">Revoke</button>}</div></li>)}</ul><button type="button" disabled={busy} onClick={()=>void logout()} className="mt-4 min-h-10 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40">Sign out this device</button></div></div>}<div className="mt-6 border-t border-zinc-800 pt-4 text-[11px] text-zinc-500"><p className="select-text">RepoQuill {version}</p>{version!=='dev'&&<a className="mt-1 inline-block text-amber-400 hover:underline" href={`https://github.com/fred-head/repoquill/releases/tag/v${encodeURIComponent(version)}`} target="_blank" rel="noreferrer">View release</a>}</div></section>
+}
+
+function SecurityPassword({name,label,autoComplete}:{name:string;label:string;autoComplete:string}) { return <label className="block text-xs text-zinc-300">{label}<input name={name} type="password" required minLength={12} maxLength={1024} autoComplete={autoComplete} className="mt-1.5 min-h-10 w-full rounded border border-zinc-700 bg-zinc-950 px-3 text-sm"/></label> }
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -1175,7 +1286,7 @@ function ManageNotebooksDialog({ notebooks, activeNotebookID, onRemoved, onClose
     setRemoveBusy(true)
     setRemoveError(undefined)
     try {
-      const response = await fetch(`/api/notebooks/${encodeURIComponent(notebook.id)}`, { method: 'DELETE' })
+      const response = await apiFetch(`/api/notebooks/${encodeURIComponent(notebook.id)}`, { method: 'DELETE' })
       if (!response.ok) await responseJSON<{ error?: string }>(response)
       await onRemoved()
     } catch (error) {
