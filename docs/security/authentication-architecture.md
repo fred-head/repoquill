@@ -121,6 +121,10 @@ development must explicitly set `REPOQUILL_SESSION_COOKIE_SECURE=false`.
 The public M19P3 surface is limited to the static shell, liveness, setup,
 login, and authentication status. Missing, expired, and revoked sessions receive
 `401` with `authentication_required`; they are not reported as Git failures.
-CSRF tokens, throttling, the browser/PWA login screens, recovery, and MFA remain
-later M19 phases, so no Alpha 2 image may be released before all M19 phases and
-adversarial tests pass.
+M19P4 adds a random synchronizer token bound to each server-side session,
+Origin/Referer enforcement, bounded progressive login throttling, hashed client
+references in security events, and explicit trusted-proxy CIDRs. Forwarded
+client or scheme headers are ignored unless the direct peer is configured as a
+trusted proxy. The browser/PWA login screens, recovery, and MFA remain later M19
+phases, so no Alpha 2 image may be released before all M19 phases and adversarial
+tests pass.

@@ -2,8 +2,11 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strings"
@@ -12,7 +15,10 @@ import (
 	"github.com/alexedwards/scs/v2"
 )
 
-const sessionPrincipalKey = "principal"
+const (
+	sessionPrincipalKey = "principal"
+	sessionCSRFKey      = "csrf_token"
+)
 
 type SessionOptions struct {
 	CookieSecure     bool
@@ -84,7 +90,34 @@ func (s *Sessions) establish(ctx context.Context, remember bool, client string) 
 	s.manager.RememberMe(ctx, remember)
 	s.manager.Put(ctx, sessionPrincipalKey, OwnerPrincipal)
 	s.manager.Put(ctx, "client", sanitizeClientDescription(client))
-	return nil
+	s.manager.Remove(ctx, sessionCSRFKey)
+	_, err := s.CSRFToken(ctx)
+	return err
+}
+
+func (s *Sessions) CSRFToken(ctx context.Context) (string, error) {
+	if existing := s.manager.GetString(ctx, sessionCSRFKey); existing != "" {
+		return existing, nil
+	}
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(value)
+	s.manager.Put(ctx, sessionCSRFKey, token)
+	return token, nil
+}
+
+func (s *Sessions) ExistingCSRFToken(ctx context.Context) string {
+	return s.manager.GetString(ctx, sessionCSRFKey)
+}
+
+func (s *Sessions) ValidCSRFToken(ctx context.Context, supplied string) bool {
+	expected := s.manager.GetString(ctx, sessionCSRFKey)
+	if expected == "" || len(supplied) != len(expected) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(supplied), []byte(expected)) == 1
 }
 
 func (s *Sessions) Logout(ctx context.Context) error { return s.manager.Destroy(ctx) }

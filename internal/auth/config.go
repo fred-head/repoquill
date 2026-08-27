@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,10 +19,11 @@ const (
 )
 
 type Config struct {
-	Mode         Mode
-	ModeExplicit bool
-	MetadataPath string
-	CookieSecure bool
+	Mode           Mode
+	ModeExplicit   bool
+	MetadataPath   string
+	CookieSecure   bool
+	TrustedProxies []netip.Prefix
 }
 
 type EnvironmentLookup func(string) (string, bool)
@@ -64,7 +66,36 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 			return Config{}, errors.New("REPOQUILL_SESSION_COOKIE_SECURE must be true or false")
 		}
 	}
-	return Config{Mode: mode, ModeExplicit: explicit, MetadataPath: filepath.Clean(metadataPath), CookieSecure: cookieSecure}, nil
+	trustedProxies, err := parseTrustedProxies(lookup)
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{Mode: mode, ModeExplicit: explicit, MetadataPath: filepath.Clean(metadataPath), CookieSecure: cookieSecure, TrustedProxies: trustedProxies}, nil
+}
+
+func parseTrustedProxies(lookup EnvironmentLookup) ([]netip.Prefix, error) {
+	raw, _ := lookup("REPOQUILL_TRUSTED_PROXIES")
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	prefixes := make([]netip.Prefix, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			return nil, errors.New("REPOQUILL_TRUSTED_PROXIES contains an empty entry")
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			address, addressErr := netip.ParseAddr(value)
+			if addressErr != nil {
+				return nil, fmt.Errorf("invalid trusted proxy %q", value)
+			}
+			prefix = netip.PrefixFrom(address, address.BitLen())
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }
 
 func ParseMode(value string) (Mode, error) {

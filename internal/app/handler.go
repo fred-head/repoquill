@@ -54,6 +54,12 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 	keysDirectory := os.Getenv("REPOQUILL_KEYS_DIR")
 	knownHostsPath := os.Getenv("REPOQUILL_SSH_KNOWN_HOSTS")
 	hostTrustService := gitrepo.NewHostTrustService(knownHostsPath, logger)
+	requestIdentity := auth.NewRequestIdentity(nil)
+	var loginThrottle *auth.LoginThrottle
+	if authService != nil {
+		requestIdentity = auth.NewRequestIdentity(authService.Config().TrustedProxies)
+		loginThrottle = auth.NewLoginThrottle(authService)
+	}
 	activeRecord, activeLoadErr := loadActiveNotebook(metadataPath)
 	activeNotebookName := strings.TrimSpace(os.Getenv("REPOQUILL_NOTEBOOK_NAME"))
 	if activeLoadErr == nil {
@@ -116,11 +122,15 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication state is unavailable"})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{
+			response := map[string]any{
 				"mode":          state.Mode,
 				"setupRequired": state.Mode == auth.ModeLocal && !state.SetupCompleted,
 				"authenticated": state.Mode == auth.ModeDisabled || (sessions != nil && sessions.Authenticated(r.Context())),
-			})
+			}
+			if state.Mode == auth.ModeLocal {
+				response["csrfToken"] = sessions.ExistingCSRFToken(r.Context())
+			}
+			writeJSON(w, http.StatusOK, response)
 		})
 		mux.HandleFunc("POST /api/auth/login", func(w http.ResponseWriter, r *http.Request) {
 			var input struct {
@@ -139,23 +149,58 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "login is not available", "code": "login_unavailable"})
 				return
 			}
+			clientIP := requestIdentity.ClientIP(r)
+			if !loginThrottle.Begin() {
+				w.Header().Set("Retry-After", "1")
+				_ = authService.RecordSecurityEvent(r.Context(), "login", "throttled", "client="+auth.ClientReference(clientIP))
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many login attempts", "code": "login_throttled", "retryAfterSeconds": 1})
+				return
+			}
+			defer loginThrottle.End()
+			retryAfter, throttleErr := loginThrottle.Check(r.Context(), clientIP)
+			if throttleErr != nil {
+				logger.Error("login throttle unavailable", "error", throttleErr)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication is unavailable"})
+				return
+			}
+			if retryAfter > 0 {
+				seconds := int64((retryAfter + time.Second - 1) / time.Second)
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
+				_ = authService.RecordSecurityEvent(r.Context(), "login", "throttled", "client="+auth.ClientReference(clientIP))
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many login attempts", "code": "login_throttled", "retryAfterSeconds": seconds})
+				return
+			}
 			err = sessions.Login(r.Context(), input.Password, input.RememberDevice, r.UserAgent())
 			if errors.Is(err, auth.ErrAuthentication) {
+				delay, recordErr := loginThrottle.Failure(r.Context(), clientIP)
+				if recordErr != nil {
+					logger.Error("record login throttle failed", "error", recordErr)
+				}
+				_ = authService.RecordSecurityEvent(r.Context(), "login", "failure", "client="+auth.ClientReference(clientIP))
+				if delay > 0 {
+					w.Header().Set("Retry-After", fmt.Sprintf("%d", int64((delay+time.Second-1)/time.Second)))
+				}
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
 				return
 			}
 			if err != nil {
+				_ = authService.RecordSecurityEvent(r.Context(), "login", "error", "client="+auth.ClientReference(clientIP))
 				logger.Error("login failed", "error", err)
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication is unavailable"})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
+			if err := loginThrottle.Success(r.Context(), clientIP); err != nil {
+				logger.Warn("clear login throttle failed", "error", err)
+			}
+			_ = authService.RecordSecurityEvent(r.Context(), "login", "success", "client="+auth.ClientReference(clientIP))
+			writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "csrfToken": sessions.ExistingCSRFToken(r.Context())})
 		})
 		mux.HandleFunc("POST /api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
 			if err := sessions.Logout(r.Context()); err != nil {
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "logout failed"})
 				return
 			}
+			_ = authService.RecordSecurityEvent(r.Context(), "logout", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 			writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
 		})
 		mux.HandleFunc("DELETE /api/auth/session", func(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +208,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session revocation failed"})
 				return
 			}
+			_ = authService.RecordSecurityEvent(r.Context(), "session_revoke_current", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 			writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
 		})
 		mux.HandleFunc("DELETE /api/auth/sessions", func(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +216,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session revocation failed"})
 				return
 			}
+			_ = authService.RecordSecurityEvent(r.Context(), "session_revoke_all", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 			writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
 		})
 		mux.HandleFunc("POST /api/auth/setup", func(w http.ResponseWriter, r *http.Request) {
@@ -188,12 +235,16 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 					writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "setup completed but login failed"})
 					return
 				}
-				writeJSON(w, http.StatusOK, map[string]bool{"setupCompleted": true})
+				_ = authService.RecordSecurityEvent(r.Context(), "setup", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
+				writeJSON(w, http.StatusOK, map[string]any{"setupCompleted": true, "authenticated": true, "csrfToken": sessions.ExistingCSRFToken(r.Context())})
 			case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLarge), errors.Is(err, auth.ErrInvalidPassword):
+				_ = authService.RecordSecurityEvent(r.Context(), "setup", "failure", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			case errors.Is(err, auth.ErrInvalidBootstrap):
+				_ = authService.RecordSecurityEvent(r.Context(), "setup", "failure", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "setup authorization is invalid or expired"})
 			case errors.Is(err, auth.ErrSetupUnavailable):
+				_ = authService.RecordSecurityEvent(r.Context(), "setup", "unavailable", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "owner setup is not available"})
 			default:
 				logger.Error("owner setup failed", "error", err)
@@ -671,9 +722,9 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 
 	handler := http.Handler(mux)
 	if sessions != nil {
-		handler = sessions.LoadAndSave(authenticationBoundary(authService, sessions, handler))
+		handler = sessions.LoadAndSave(authenticationBoundary(authService, sessions, csrfProtection(authService, sessions, requestIdentity, handler)))
 	}
-	return requestLogger(logger, securityHeaders(sameOriginProtection(handler))), nil
+	return requestLogger(logger, securityHeaders(sameOriginProtection(requestIdentity, handler))), nil
 }
 
 const maxRequestBodySize = (10 << 20) + (64 << 10)
@@ -806,7 +857,35 @@ func authenticationBoundary(authService *auth.Service, sessions *auth.Sessions, 
 	})
 }
 
-func sameOriginProtection(next http.Handler) http.Handler {
+func csrfProtection(authService *auth.Service, sessions *auth.Sessions, identity *auth.RequestIdentity, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		state, err := authService.State(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication state is unavailable"})
+			return
+		}
+		if state.Mode == auth.ModeDisabled {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if (r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/setup") && !sessions.Authenticated(r.Context()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !sessions.ValidCSRFToken(r.Context(), r.Header.Get("X-CSRF-Token")) {
+			_ = authService.RecordSecurityEvent(r.Context(), "csrf", "rejected", "client="+auth.ClientReference(identity.ClientIP(r)))
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "CSRF validation failed", "code": "csrf_invalid"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func sameOriginProtection(identity *auth.RequestIdentity, next http.Handler) http.Handler {
 	trusted := make(map[string]bool)
 	for _, value := range strings.Split(os.Getenv("REPOQUILL_TRUSTED_ORIGINS"), ",") {
 		if origin := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "/")); origin != "" {
@@ -823,12 +902,24 @@ func sameOriginProtection(next http.Handler) http.Handler {
 			return
 		}
 		origin := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(r.Header.Get("Origin")), "/"))
+		if origin == "" {
+			referer := strings.TrimSpace(r.Header.Get("Referer"))
+			if referer != "" {
+				parsed, err := url.Parse(referer)
+				if err == nil {
+					origin = strings.ToLower(parsed.Scheme + "://" + parsed.Host)
+				}
+			}
+		}
 		if origin != "" && !trusted[origin] {
 			parsed, err := url.Parse(origin)
-			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || !strings.EqualFold(parsed.Host, r.Host) {
+			if err != nil || parsed.Scheme != identity.Scheme(r) || !strings.EqualFold(parsed.Host, r.Host) {
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin request rejected"})
 				return
 			}
+		} else if origin == "" && r.Header.Get("Sec-Fetch-Site") != "" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "request origin is required"})
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
