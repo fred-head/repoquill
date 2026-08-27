@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	sessionPrincipalKey = "principal"
-	sessionCSRFKey      = "csrf_token"
+	sessionPrincipalKey  = "principal"
+	sessionCSRFKey       = "csrf_token"
+	sessionMFAPendingKey = "mfa_pending"
 )
 
 type SessionOptions struct {
@@ -71,6 +72,36 @@ func (s *Sessions) Login(ctx context.Context, password string, remember bool, cl
 	if err := s.service.VerifyPassword(ctx, password); err != nil {
 		return err
 	}
+	enabled, err := s.service.MFAEnabled(ctx)
+	if err != nil {
+		return err
+	}
+	if enabled {
+		if err := s.manager.RenewToken(ctx); err != nil {
+			return err
+		}
+		s.manager.SetDeadline(ctx, time.Now().Add(5*time.Minute))
+		s.manager.RememberMe(ctx, false)
+		s.manager.Put(ctx, sessionMFAPendingKey, true)
+		s.manager.Put(ctx, "client", sanitizeClientDescription(client))
+		s.manager.Put(ctx, "remember", remember)
+		s.manager.Remove(ctx, sessionPrincipalKey)
+		s.manager.Remove(ctx, sessionCSRFKey)
+		return ErrMFARequired
+	}
+	return s.establish(ctx, remember, client)
+}
+
+func (s *Sessions) CompleteMFA(ctx context.Context, code string) error {
+	if !s.manager.GetBool(ctx, sessionMFAPendingKey) {
+		return ErrMFAInvalid
+	}
+	if err := s.service.VerifySecondFactor(ctx, code); err != nil {
+		return ErrMFAInvalid
+	}
+	remember := s.manager.GetBool(ctx, "remember")
+	client := s.manager.GetString(ctx, "client")
+	s.manager.Remove(ctx, sessionMFAPendingKey)
 	return s.establish(ctx, remember, client)
 }
 
@@ -96,6 +127,7 @@ func (s *Sessions) establish(ctx context.Context, remember bool, client string) 
 	s.manager.Put(ctx, "client", sanitizeClientDescription(client))
 	s.manager.Put(ctx, "idle_hours", settings.IdleHours)
 	s.manager.Put(ctx, "remember", remember)
+	s.manager.Remove(ctx, sessionMFAPendingKey)
 	s.manager.Remove(ctx, sessionCSRFKey)
 	_, err = s.CSRFToken(ctx)
 	return err
@@ -155,6 +187,13 @@ func (s *Sessions) Logout(ctx context.Context) error { return s.manager.Destroy(
 
 func (s *Sessions) RevokeCurrent(ctx context.Context) error { return s.manager.Destroy(ctx) }
 
+func (s *Sessions) RotateCurrent(ctx context.Context) error {
+	if !s.Authenticated(ctx) {
+		return ErrAuthentication
+	}
+	return s.establish(ctx, s.manager.GetBool(ctx, "remember"), s.manager.GetString(ctx, "client"))
+}
+
 func (s *Sessions) RevokeAll(ctx context.Context) error {
 	if _, err := s.service.db.ExecContext(ctx, `UPDATE auth_sessions SET revoked_at = ? WHERE revoked_at IS NULL`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
@@ -205,7 +244,8 @@ func (s *sqliteSessionStore) DeleteCtx(ctx context.Context, token string) error 
 func (s *sqliteSessionStore) FindCtx(ctx context.Context, token string) ([]byte, bool, error) {
 	hash := sessionHash(token)
 	var data []byte
-	err := s.db.QueryRowContext(ctx, `SELECT session_data FROM auth_sessions WHERE session_id_hash = ? AND revoked_at IS NULL AND idle_expires_at > ?`, hash[:], time.Now().UTC().Format(time.RFC3339Nano)).Scan(&data)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	err := s.db.QueryRowContext(ctx, `SELECT session_data FROM auth_sessions WHERE session_id_hash = ? AND revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?`, hash[:], now, now).Scan(&data)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}

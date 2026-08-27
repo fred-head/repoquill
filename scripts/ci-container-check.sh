@@ -19,6 +19,7 @@ container_name="repoquill-check-${check_id}"
 volume_name="repoquill-check-${check_id}"
 container_created=false
 volume_created=false
+cookie_jar=""
 
 cleanup() {
   trap - EXIT INT TERM
@@ -27,6 +28,9 @@ cleanup() {
   fi
   if [[ "${volume_created}" == true ]]; then
     docker volume rm "${volume_name}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${cookie_jar}" && "${cookie_jar}" == /tmp/repoquill-auth-cookies.* && -f "${cookie_jar}" && ! -L "${cookie_jar}" ]]; then
+    rm -f -- "${cookie_jar}"
   fi
 }
 trap cleanup EXIT INT TERM
@@ -60,6 +64,7 @@ start_container() {
     --env REPOQUILL_NOTEBOOK_METADATA=/data/app/notebooks.json \
     --env "REPOQUILL_AUTH_MODE=${auth_mode}" \
     --env REPOQUILL_AUTH_METADATA=/data/app/auth.db \
+    --env REPOQUILL_SESSION_COOKIE_SECURE=false \
     --env REPOQUILL_KEYS_DIR=/data/keys \
     --env REPOQUILL_SSH_KNOWN_HOSTS=/data/keys/known_hosts \
     "${image}" >/dev/null
@@ -109,8 +114,6 @@ if docker logs "${container_name}" 2>&1 | grep --fixed-strings --quiet "${bootst
   echo "Container wrote the bootstrap token to normal server logs" >&2
   exit 1
 fi
-unset bootstrap_token
-
 auth_status="$(curl --fail --silent --show-error "http://127.0.0.1:${port}/api/auth/status")"
 if [[ "${auth_status}" != *'"mode":"local"'* || "${auth_status}" != *'"setupRequired":true'* ]]; then
   echo "Fresh local-auth container did not require owner setup: ${auth_status}" >&2
@@ -126,24 +129,58 @@ if [[ "${blocked_status}" != "403" ]]; then
   exit 1
 fi
 
-docker rm --force "${container_name}" >/dev/null
-container_created=false
-
-# The persistence portion is intentionally run in explicitly disabled mode.
-# M19P2's local mode is expected to remain locked until operator-authorized
-# setup, while M19P3 adds normal post-setup sessions to this smoke test.
-start_container disabled
-port="$(wait_for_health)"
-
-curl --fail --silent --show-error \
+cookie_jar="$(mktemp /tmp/repoquill-auth-cookies.XXXXXX)"
+setup_response="$(curl --fail --silent --show-error \
+  --cookie-jar "${cookie_jar}" \
   --request POST \
   --header 'Content-Type: application/json' \
+  --data "{\"bootstrapToken\":\"${bootstrap_token}\",\"password\":\"release-check-passphrase\"}" \
+  "http://127.0.0.1:${port}/api/auth/setup")"
+unset bootstrap_token
+csrf_token="$(printf '%s\n' "${setup_response}" | sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p')"
+if [[ ! "${csrf_token}" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
+  echo "Owner setup did not return a valid session-bound CSRF token: ${setup_response}" >&2
+  exit 1
+fi
+if [[ "$(docker exec "${container_name}" stat -c '%a' /data/app/auth.key)" != "600" ]]; then
+  echo "MFA encryption key does not have private permissions" >&2
+  exit 1
+fi
+curl --fail --silent --show-error \
+  --cookie "${cookie_jar}" \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --header "X-CSRF-Token: ${csrf_token}" \
   --data '{"path":"Release check.md","type":"file"}' \
   "http://127.0.0.1:${port}/api/repository/entries" >/dev/null
+unset csrf_token setup_response
 
 docker rm --force "${container_name}" >/dev/null
 container_created=false
 
+# The authenticated server-side session and canonical note both survive a
+# normal container replacement.
+start_container local
+port="$(wait_for_health)"
+curl --fail --silent --show-error --cookie "${cookie_jar}" \
+  "http://127.0.0.1:${port}/api/repository/file?path=Release%20check.md" \
+  | grep --fixed-strings '"path":"Release check.md"' >/dev/null
+
+# Operator MFA recovery revokes browser sessions but never changes notes.
+docker exec "${container_name}" repoquill auth reset-mfa >/dev/null
+revoked_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --cookie "${cookie_jar}" \
+  "http://127.0.0.1:${port}/api/repository/file?path=Release%20check.md")"
+if [[ "${revoked_status}" != "401" ]]; then
+  echo "Operator MFA recovery did not revoke the active session (HTTP ${revoked_status})" >&2
+  exit 1
+fi
+
+docker rm --force "${container_name}" >/dev/null
+container_created=false
+
+# Explicit disabled mode remains an intentional migration option and retains
+# the same portable notebook data.
 start_container disabled
 port="$(wait_for_health)"
 curl --fail --silent --show-error \

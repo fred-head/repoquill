@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 4
+const currentSchemaVersion = 5
 
 type State struct {
 	Mode           Mode
@@ -25,10 +25,11 @@ type State struct {
 }
 
 type Service struct {
-	db           *sql.DB
-	config       Config
-	logger       *slog.Logger
-	credentialMu sync.Mutex
+	db            *sql.DB
+	config        Config
+	logger        *slog.Logger
+	credentialMu  sync.Mutex
+	encryptionKey []byte
 }
 
 type migration struct {
@@ -114,6 +115,22 @@ var migrations = []migration{
 			`ALTER TABLE auth_configuration ADD COLUMN remember_lifetime_days INTEGER NOT NULL DEFAULT 30 CHECK (remember_lifetime_days BETWEEN 1 AND 90)`,
 		},
 	},
+	{
+		version: 5,
+		statements: []string{
+			`CREATE TABLE auth_mfa_configuration (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+				last_totp_step INTEGER NOT NULL DEFAULT -1,
+				secret_nonce BLOB,
+				secret_ciphertext BLOB,
+				pending_secret_nonce BLOB,
+				pending_secret_ciphertext BLOB,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			) STRICT`,
+		},
+	},
 }
 
 func Open(ctx context.Context, config Config, logger *slog.Logger) (*Service, error) {
@@ -142,7 +159,12 @@ func Open(ctx context.Context, config Config, logger *slog.Logger) (*Service, er
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	service := &Service{db: db, config: config, logger: logger}
+	encryptionKey, err := loadOrCreateEncryptionKey(config)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	service := &Service{db: db, config: config, logger: logger, encryptionKey: encryptionKey}
 	if err := service.initialize(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -232,7 +254,13 @@ func (s *Service) initialize(ctx context.Context) error {
 	if schemaVersion != currentSchemaVersion {
 		return fmt.Errorf("unsupported authentication schema version %d", schemaVersion)
 	}
-	return s.reconcileConfiguration(ctx)
+	if err := s.reconcileConfiguration(ctx); err != nil {
+		return err
+	}
+	if _, _, err := s.decryptMFASecret(ctx); err != nil && !s.config.AllowMFAKeyRecovery {
+		return fmt.Errorf("validate MFA encryption key: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) applyMigration(ctx context.Context, next migration) error {
@@ -283,6 +311,7 @@ func (s *Service) reconcileConfiguration(ctx context.Context) error {
 			`DELETE FROM auth_recovery_artifacts`,
 			`DELETE FROM auth_throttle_state`,
 			`DELETE FROM auth_password_credentials`,
+			`DELETE FROM auth_mfa_configuration`,
 		} {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("invalidate authentication state: %w", err)

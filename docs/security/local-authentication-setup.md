@@ -1,8 +1,9 @@
 # Local authentication setup foundation
 
-Status: Milestone 19 Phases 2-6. Setup/login, protected sessions, browser/PWA
-reauthentication, and password/session administration are implemented. Alpha 2
-remains release-blocked until TOTP and the complete M19 security gate pass.
+Status: Milestone 19 Phases 2-9. Setup/login, protected sessions, browser/PWA
+reauthentication, password/session administration, optional TOTP, and explicit
+disabled-mode migration are implemented and security-reviewed. Each exact Alpha
+2 candidate remains release-blocked until the complete CI and scan gate passes.
 
 ## Operator-controlled bootstrap
 
@@ -77,8 +78,60 @@ docker compose exec -it repoquill repoquill auth reset-password
 
 The command refuses non-interactive input, reads and confirms the password with
 terminal echo disabled, and revokes every session. It changes only auth
-metadata. MFA recovery is intentionally a separate operation so password
-recovery cannot silently weaken a future second factor.
+metadata. MFA recovery is intentionally separate so password recovery cannot
+silently weaken the second factor:
+
+```sh
+docker compose exec repoquill repoquill auth reset-mfa
+```
+
+That command revokes every session and removes MFA/recovery codes without
+changing the owner password or any notebook.
+
+## Optional TOTP MFA
+
+Security settings can enroll any standard 30-second, six-digit TOTP
+authenticator. Enrollment requires the current password. The QR code is rendered
+inside RepoQuill without an external QR service; MFA remains disabled until a
+generated code verifies and the owner confirms that the recovery codes were
+stored safely.
+
+RepoQuill accepts one clock step before or after the current step. A successfully
+used TOTP step cannot be replayed. Ten high-entropy recovery codes are displayed
+once, stored only as SHA-256 domain-separated hashes, and consumed atomically.
+Regenerating codes invalidates every old code. Login always asks for the password
+first and then accepts either TOTP or one recovery code without revealing which
+factor failed.
+
+The TOTP secret is encrypted using AES-256-GCM. The 32-byte application key is
+stored at `/data/app/auth.key` by default (or
+`REPOQUILL_AUTH_ENCRYPTION_KEY_FILE`) with mode `0600`, separately from
+`auth.db`. Both must be backed up. Losing the key fails closed while MFA exists;
+an operator may then use the explicit `reset-mfa` command. Neither file contains
+canonical notes or assets.
+
+Disabling or replacing MFA requires the current password plus a current TOTP or
+unused recovery code. A replacement remains pending, leaving the existing
+factor and recovery codes valid until the new authenticator is confirmed.
+
+## Explicit disabled mode and upgrades
+
+Omitting `REPOQUILL_AUTH_MODE` always selects fail-closed `local` mode. This is
+the safe Alpha 1 upgrade path: the existing notebooks remain untouched while
+the application enters setup-required state until the operator creates a
+bootstrap token and owner password.
+
+`REPOQUILL_AUTH_MODE=disabled` must be written explicitly. Use it only for
+localhost, a private LAN, VPN/Tailscale, or a deliberately secured external
+layer. Settings and startup logs keep warning while it is active. Interactive
+forward-auth can expire independently and return an HTML login page to API
+requests, which a browser/PWA cannot treat as RepoQuill authentication.
+
+Changing between `local` and `disabled` invalidates sessions, setup tokens,
+password credentials, MFA secrets, recovery codes, and throttling state. A
+later return to `local` requires bootstrap setup again. HTTPS termination,
+strict proxy trust, and backend network isolation remain applicable in every
+mode.
 
 ## Password policy and storage
 
@@ -130,6 +183,6 @@ through the transparent upgrade path.
 
 ## Remaining release limitation
 
-Local password authentication and administration are functional, but optional
-TOTP and the adversarial M19P9 verification gate are not complete. Do not treat
-this development branch as a finished Alpha 2 authentication release.
+Local password authentication, optional TOTP, recovery, and explicit disabled
+mode are functional, but the adversarial M19P9 verification gate is not
+complete. Do not treat this development branch as a finished Alpha 2 release.

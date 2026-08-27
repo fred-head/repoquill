@@ -58,3 +58,32 @@ func TestSessionCookieSecurityOptions(t *testing.T) {
 		t.Fatalf("unsafe production cookie settings: %#v", sessions.manager.Cookie)
 	}
 }
+
+func TestSQLiteSessionStoreRejectsExpiredSessions(t *testing.T) {
+	service, err := Open(t.Context(), Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	store := &sqliteSessionStore{db: service.db}
+	token := "expired-opaque-session"
+	if err := store.CommitCtx(t.Context(), token, []byte("session"), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.ExecContext(t.Context(), `UPDATE auth_sessions SET idle_expires_at=?`, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.FindCtx(t.Context(), token); err != nil || ok {
+		t.Fatalf("idle-expired session remained usable: ok=%v err=%v", ok, err)
+	}
+
+	if err := store.CommitCtx(t.Context(), token, []byte("session"), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.ExecContext(t.Context(), `UPDATE auth_sessions SET absolute_expires_at=?`, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.FindCtx(t.Context(), token); err != nil || ok {
+		t.Fatalf("absolute-expired session remained usable: ok=%v err=%v", ok, err)
+	}
+}

@@ -68,3 +68,17 @@ The design follows the OWASP guidance for
 [synchronizer CSRF tokens](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html),
 [session cookies](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html),
 and [login throttling](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html).
+
+## Explicit disabled mode
+
+RepoQuill never infers external authentication from forwarded headers or a
+reachable login portal. `REPOQUILL_AUTH_MODE=disabled` must be configured
+explicitly and leaves the API without its built-in password/MFA boundary. Use
+it only when localhost, private network/VPN/Tailscale policy, or a deliberately
+configured external layer already constrains access.
+
+Interactive forward-auth products may expire independently and respond to an
+API request with HTML or a redirect. RepoQuill's browser and PWA cannot convert
+that response into a native session refresh. Built-in `local` mode is therefore
+the most robust default. HTTPS, exact trusted-proxy configuration, and backend
+network isolation remain necessary even when authentication is disabled.

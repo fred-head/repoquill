@@ -202,12 +202,42 @@ describe('Settings asset cleanup', () => {
     expect(view.getByText(/RepoQuill 0.2.0-alpha.2/)).toBeTruthy()
     expect(view.getByText('· Current')).toBeTruthy()
 
-    fireEvent.change(view.getAllByLabelText('Current password')[0], { target: { value: 'old-password-123' } })
+    const passwordForm = view.getAllByText('Change password').find((element) => element.tagName === 'H4')!.closest('form')!
+    fireEvent.change(passwordForm.querySelector('input[name="currentPassword"]')!, { target: { value: 'old-password-123' } })
     fireEvent.change(view.getByLabelText('New password'), { target: { value: 'new-password-123' } })
     fireEvent.change(view.getByLabelText('Confirm new password'), { target: { value: 'new-password-123' } })
     fireEvent.click(view.getByRole('button', { name: 'Change password' }))
     await waitFor(() => expect(view.getByText('Password changed. All other sessions were signed out.')).toBeTruthy())
     const passwordRequest = fetchMock.mock.calls.find(([url]) => url === '/api/auth/password')
     expect(new Headers(passwordRequest?.[1]?.headers).get('X-CSRF-Token')).toBe('csrf-before')
+  })
+
+  it('requires recovery-code confirmation before activating MFA', async () => {
+    let enabled = false
+    const recoveryCodes = ['AAAAA-BBBBB-CCCCC-DDDDD-EEEEE', 'FFFFF-GGGGG-HHHHH-IIIII-JJJJJ']
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (input === '/api/auth/security') return jsonResponse({ sessionSettings: { lifetimeHours: 12, idleHours: 168, rememberDays: 30 }, mfaEnabled: enabled })
+      if (input === '/api/auth/sessions') return jsonResponse({ sessions: [] })
+      if (input === '/api/auth/mfa/enroll') return jsonResponse({ secret: 'BASE32SECRET', qrCode: 'data:image/png;base64,AAAA', recoveryCodes })
+      if (input === '/api/auth/mfa/confirm') { enabled = true; return jsonResponse({ mfaEnabled: true }) }
+      return jsonResponse({ error: `unexpected ${String(input)} ${init?.method}` }, false)
+    })
+    const view = render(<SettingsDialog authMode="local" autoLockMinutes={0} onAutoLockMinutes={vi.fn()} onClose={vi.fn()} />)
+    await waitFor(() => expect(view.getByRole('button', { name: 'Set up authenticator' })).toBeTruthy())
+    fireEvent.change(view.container.querySelector('input[name="mfaPassword"]')!, { target: { value: 'a sufficiently long password' } })
+    fireEvent.click(view.getByRole('button', { name: 'Set up authenticator' }))
+    expect(await view.findByAltText('TOTP enrollment QR code')).toBeTruthy()
+    expect(view.getByText(recoveryCodes[0])).toBeTruthy()
+    expect((view.getByRole('button', { name: 'Enable MFA' }) as HTMLButtonElement).form?.checkValidity()).toBe(false)
+    fireEvent.click(view.getByLabelText('I stored these recovery codes safely.'))
+    fireEvent.change(view.getByLabelText('Current code from the new authenticator'), { target: { value: '123456' } })
+    fireEvent.click(view.getByRole('button', { name: 'Enable MFA' }))
+    await waitFor(() => expect(view.getByText('Two-factor authentication enabled.')).toBeTruthy())
+  })
+
+  it('shows a persistent explicit warning when built-in authentication is disabled', () => {
+    const view = render(<SettingsDialog authMode="disabled" autoLockMinutes={0} onAutoLockMinutes={vi.fn()} onClose={vi.fn()} />)
+    expect(view.getByRole('alert').textContent).toContain('Built-in authentication is disabled')
+    expect(view.getByRole('alert').textContent).toContain('forward-auth')
   })
 })

@@ -2396,6 +2396,10 @@ roles, invitations, email addresses, or email-based recovery.
 
 ### Phase 9 - Security verification and release gate
 
+Implementation status: completed on the Alpha 2 development branch. The exact
+release candidate must still pass the full CI, scan, container, and manual
+preflight gate before an Alpha 2 tag may be published.
+
 - add focused unit, integration, frontend, and end-to-end tests for setup,
   login, logout, expiration, remember-me, revocation, restart persistence,
   password changes, recovery, and PWA reauthentication,

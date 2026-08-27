@@ -2,9 +2,10 @@
 
 Status: Milestone 19 architecture decision. Password setup, persistent sessions,
 CSRF/throttling, browser/PWA reauthentication, and password/session
-administration are implemented through M19P6. TOTP and the final security gate
-remain later phases.
-Alpha 2 must not be published until the complete M19 security gate passes.
+administration, optional TOTP, and explicit disabled-mode migration are
+implemented through M19P9. The completed review and residual-risk record lives
+in [m19-security-review.md](m19-security-review.md). Alpha 2 must not be
+published unless the complete M19 CI and review gate passes for its exact tag.
 
 ## Decision and scope
 
@@ -132,5 +133,15 @@ service worker continues to cache only the application shell and never
 API/auth responses. M19P6 adds owner-verified password changes, configurable
 session lifetimes, opaque session inspection and revocation, plus an interactive
 operator password reset that revokes every session without touching notebook
-content. MFA remains a later M19 phase, so no Alpha 2 image may be released
-before all M19 phases and adversarial tests pass.
+content. M19P7 adds password-first TOTP with a one-step clock-skew window,
+single-use TOTP steps, hashed atomic recovery codes, locally rendered enrollment
+QR codes, and AES-256-GCM secret encryption using a separate private application
+key. Enrollment and replacement remain pending until the new factor verifies
+and recovery-code storage is confirmed. M19P8 completes explicit disabled-mode
+warnings and migration guidance; every mode transition invalidates all local
+authentication artifacts and never alters notebook repositories. M19P9 adds
+the complete unauthenticated-route matrix, adversarial MFA/session tests,
+browser/PWA lifecycle tests, authenticated container persistence/recovery smoke
+coverage, and the documented OWASP-oriented review. No Alpha 2 image may be
+released unless those checks and the vulnerability gates pass for the exact
+candidate.

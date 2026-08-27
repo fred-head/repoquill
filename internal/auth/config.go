@@ -19,11 +19,13 @@ const (
 )
 
 type Config struct {
-	Mode           Mode
-	ModeExplicit   bool
-	MetadataPath   string
-	CookieSecure   bool
-	TrustedProxies []netip.Prefix
+	Mode                Mode
+	ModeExplicit        bool
+	MetadataPath        string
+	EncryptionKeyPath   string
+	CookieSecure        bool
+	TrustedProxies      []netip.Prefix
+	AllowMFAKeyRecovery bool
 }
 
 type EnvironmentLookup func(string) (string, bool)
@@ -58,6 +60,14 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 	if !filepath.IsAbs(metadataPath) {
 		return Config{}, errors.New("authentication metadata path must be absolute")
 	}
+	encryptionKeyPath, _ := lookup("REPOQUILL_AUTH_ENCRYPTION_KEY_FILE")
+	encryptionKeyPath = strings.TrimSpace(encryptionKeyPath)
+	if encryptionKeyPath == "" {
+		encryptionKeyPath = filepath.Join(filepath.Dir(metadataPath), "auth.key")
+	}
+	if !filepath.IsAbs(encryptionKeyPath) {
+		return Config{}, errors.New("authentication encryption key path must be absolute")
+	}
 
 	cookieSecure := true
 	if raw, ok := lookup("REPOQUILL_SESSION_COOKIE_SECURE"); ok && strings.TrimSpace(raw) != "" {
@@ -70,7 +80,7 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Mode: mode, ModeExplicit: explicit, MetadataPath: filepath.Clean(metadataPath), CookieSecure: cookieSecure, TrustedProxies: trustedProxies}, nil
+	return Config{Mode: mode, ModeExplicit: explicit, MetadataPath: filepath.Clean(metadataPath), EncryptionKeyPath: filepath.Clean(encryptionKeyPath), CookieSecure: cookieSecure, TrustedProxies: trustedProxies}, nil
 }
 
 func parseTrustedProxies(lookup EnvironmentLookup) ([]netip.Prefix, error) {
