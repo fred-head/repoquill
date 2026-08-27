@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -107,15 +108,20 @@ func TestSecureOwnerSetupAPI(t *testing.T) {
 		t.Fatalf("protected API did not return stable JSON 401: %d %s", unauthenticated.Code, unauthenticated.Body.String())
 	}
 
+	_, currentCSRF := authRequestContext(t, handler, sessionCookie)
 	repeated := httptest.NewRecorder()
-	handler.ServeHTTP(repeated, httptest.NewRequest(http.MethodPost, "/api/auth/setup", bytes.NewReader(requestBody)))
+	repeatedRequest := httptest.NewRequest(http.MethodPost, "/api/auth/setup", bytes.NewReader(requestBody))
+	addAuthRequestContext(repeatedRequest, sessionCookie, currentCSRF)
+	handler.ServeHTTP(repeated, repeatedRequest)
 	if repeated.Code != http.StatusConflict {
 		t.Fatalf("repeated setup was not rejected: %d %s", repeated.Code, repeated.Body.String())
 	}
 
 	oversized := httptest.NewRecorder()
 	oversizedBody := strings.NewReader(`{"bootstrapToken":"` + strings.Repeat("x", 5000) + `","password":"a sufficiently long password"}`)
-	handler.ServeHTTP(oversized, httptest.NewRequest(http.MethodPost, "/api/auth/setup", oversizedBody))
+	oversizedRequest := httptest.NewRequest(http.MethodPost, "/api/auth/setup", oversizedBody)
+	addAuthRequestContext(oversizedRequest, sessionCookie, currentCSRF)
+	handler.ServeHTTP(oversized, oversizedRequest)
 	if oversized.Code != http.StatusBadRequest {
 		t.Fatalf("oversized auth request was accepted: %d", oversized.Code)
 	}
@@ -144,13 +150,15 @@ func TestLoginSessionPersistsAndCanBeRevoked(t *testing.T) {
 	}
 
 	wrong := httptest.NewRecorder()
-	handler.ServeHTTP(wrong, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"wrong password","rememberDevice":false}`)))
+	wrongRequest := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"wrong password","rememberDevice":false}`))
+	handler.ServeHTTP(wrong, wrongRequest)
 	if wrong.Code != http.StatusUnauthorized || strings.Contains(wrong.Body.String(), "wrong password") {
 		t.Fatalf("invalid login response: %d %s", wrong.Code, wrong.Body.String())
 	}
 
 	login := httptest.NewRecorder()
-	handler.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"a sufficiently long password","rememberDevice":true}`)))
+	loginRequest := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"a sufficiently long password","rememberDevice":true}`))
+	handler.ServeHTTP(login, loginRequest)
 	if login.Code != http.StatusOK {
 		t.Fatalf("login failed: %d %s", login.Code, login.Body.String())
 	}
@@ -163,6 +171,19 @@ func TestLoginSessionPersistsAndCanBeRevoked(t *testing.T) {
 	if cookie == nil || cookie.MaxAge <= 0 {
 		t.Fatalf("remembered login did not issue a persistent cookie: %#v", cookie)
 	}
+	_, firstCSRF := authRequestContext(t, handler, cookie)
+	reauthRequest := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"a sufficiently long password","rememberDevice":true}`))
+	addAuthRequestContext(reauthRequest, cookie, firstCSRF)
+	reauth := httptest.NewRecorder()
+	handler.ServeHTTP(reauth, reauthRequest)
+	if reauth.Code != http.StatusOK {
+		t.Fatalf("authenticated re-login failed: %d %s", reauth.Code, reauth.Body.String())
+	}
+	newCookie, newCSRF := authRequestContextFromResponse(t, reauth)
+	if newCookie == nil || newCookie.Value == cookie.Value || newCSRF == firstCSRF {
+		t.Fatal("authentication-level change did not rotate session and CSRF tokens")
+	}
+	cookie = newCookie
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -183,9 +204,18 @@ func TestLoginSessionPersistsAndCanBeRevoked(t *testing.T) {
 	if protected.Code == http.StatusUnauthorized {
 		t.Fatalf("session did not survive service restart: %s", protected.Body.String())
 	}
+	missingCSRFRequest := httptest.NewRequest(http.MethodDelete, "/api/auth/sessions", nil)
+	missingCSRFRequest.AddCookie(cookie)
+	missingCSRF := httptest.NewRecorder()
+	handler.ServeHTTP(missingCSRF, missingCSRFRequest)
+	if missingCSRF.Code != http.StatusForbidden || !strings.Contains(missingCSRF.Body.String(), `"code":"csrf_invalid"`) {
+		t.Fatalf("state-changing authenticated request bypassed CSRF protection: %d %s", missingCSRF.Code, missingCSRF.Body.String())
+	}
 
+	_, authenticatedCSRF := authRequestContext(t, handler, cookie)
 	revokeRequest := httptest.NewRequest(http.MethodDelete, "/api/auth/sessions", nil)
 	revokeRequest.AddCookie(cookie)
+	revokeRequest.Header.Set("X-CSRF-Token", authenticatedCSRF)
 	revoked := httptest.NewRecorder()
 	handler.ServeHTTP(revoked, revokeRequest)
 	if revoked.Code != http.StatusOK {
@@ -198,6 +228,118 @@ func TestLoginSessionPersistsAndCanBeRevoked(t *testing.T) {
 	if afterRevoke.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked session remained authorized: %d", afterRevoke.Code)
 	}
+}
+
+func TestAuthStatusGETDoesNotCreateSessionState(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	service, err := auth.Open(t.Context(), auth.Config{Mode: auth.ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	handler, err := NewHandlerWithAuth(logger, t.TempDir(), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/auth/status", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("auth status failed: %d", response.Code)
+	}
+	if len(response.Result().Cookies()) != 0 {
+		t.Fatalf("safe auth status GET created session cookie: %#v", response.Result().Cookies())
+	}
+	if strings.Contains(response.Body.String(), `"csrfToken":"`) && !strings.Contains(response.Body.String(), `"csrfToken":""`) {
+		t.Fatalf("safe auth status GET created CSRF state: %s", response.Body.String())
+	}
+}
+
+func TestLoginThrottleReturnsStableTemporaryLimit(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	service, err := auth.Open(t.Context(), auth.Config{Mode: auth.ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	bootstrap, err := service.CreateBootstrapToken(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CompleteSetup(t.Context(), bootstrap.Value, "a sufficiently long password"); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandlerWithAuth(logger, t.TempDir(), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cookie *http.Cookie
+	for attempt := 1; attempt <= 4; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"incorrect password","rememberDevice":false}`))
+		request.RemoteAddr = "198.51.100.40:1234"
+		if cookie != nil {
+			request.AddCookie(cookie)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d returned %d: %s", attempt, response.Code, response.Body.String())
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"a sufficiently long password","rememberDevice":false}`))
+	request.RemoteAddr = "198.51.100.40:1234"
+	if cookie != nil {
+		request.AddCookie(cookie)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" || !strings.Contains(response.Body.String(), `"code":"login_throttled"`) {
+		t.Fatalf("progressive throttle did not block immediate retry: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func authRequestContext(t *testing.T, handler http.Handler, cookie *http.Cookie) (*http.Cookie, string) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/auth/status", nil)
+	if cookie != nil {
+		request.AddCookie(cookie)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("auth status failed: %d %s", response.Code, response.Body.String())
+	}
+	resultCookie, token := authRequestContextFromResponse(t, response)
+	if resultCookie == nil {
+		resultCookie = cookie
+	}
+	return resultCookie, token
+}
+
+func authRequestContextFromResponse(t *testing.T, response *httptest.ResponseRecorder) (*http.Cookie, string) {
+	t.Helper()
+	var payload struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.CSRFToken == "" {
+		t.Fatal("auth status did not provide a CSRF token")
+	}
+	var cookie *http.Cookie
+	for _, candidate := range response.Result().Cookies() {
+		if strings.Contains(candidate.Name, "repoquill_session") {
+			cookie = candidate
+		}
+	}
+	return cookie, payload.CSRFToken
+}
+
+func addAuthRequestContext(request *http.Request, cookie *http.Cookie, token string) {
+	if cookie != nil {
+		request.AddCookie(cookie)
+	}
+	request.Header.Set("X-CSRF-Token", token)
 }
 
 func TestExplicitDisabledModeDoesNotEnterSetupGate(t *testing.T) {
@@ -249,11 +391,44 @@ func TestSecurityHeadersAndSameOriginProtection(t *testing.T) {
 
 	sameSite := httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil)
 	sameSite.Host = "notes.example.test"
-	sameSite.Header.Set("Origin", "https://notes.example.test")
+	sameSite.Header.Set("Origin", "http://notes.example.test")
 	allowed := httptest.NewRecorder()
 	handler.ServeHTTP(allowed, sameSite)
 	if allowed.Code == http.StatusForbidden {
 		t.Fatal("same-origin mutation was rejected")
+	}
+}
+
+func TestSameOriginProtectionTrustsForwardedSchemeOnlyFromConfiguredProxy(t *testing.T) {
+	identity := auth.NewRequestIdentity([]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")})
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	handler := sameOriginProtection(identity, next)
+
+	trusted := httptest.NewRequest(http.MethodPost, "http://notes.example.test/api/action", nil)
+	trusted.Host = "notes.example.test"
+	trusted.RemoteAddr = "10.0.0.2:8080"
+	trusted.Header.Set("Origin", "https://notes.example.test")
+	trusted.Header.Set("X-Forwarded-Proto", "https")
+	trustedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(trustedResponse, trusted)
+	if trustedResponse.Code != http.StatusNoContent {
+		t.Fatalf("trusted proxy scheme was rejected: %d", trustedResponse.Code)
+	}
+
+	untrusted := trusted.Clone(t.Context())
+	untrusted.RemoteAddr = "198.51.100.2:8080"
+	untrustedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(untrustedResponse, untrusted)
+	if untrustedResponse.Code != http.StatusForbidden {
+		t.Fatalf("untrusted forwarded scheme was accepted: %d", untrustedResponse.Code)
+	}
+
+	missingOrigin := httptest.NewRequest(http.MethodPost, "http://notes.example.test/api/action", nil)
+	missingOrigin.Header.Set("Sec-Fetch-Site", "same-origin")
+	missingOriginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingOriginResponse, missingOrigin)
+	if missingOriginResponse.Code != http.StatusForbidden {
+		t.Fatalf("browser mutation without origin was accepted: %d", missingOriginResponse.Code)
 	}
 }
 

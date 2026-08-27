@@ -8,9 +8,15 @@ upgraded rather than exposed for continued use.
 
 ## Alpha security model
 
-RepoQuill 0.1 is a self-hosted, single-operator application. It deliberately has no built-in authentication or user authorization. Anyone who can reach its HTTP interface can read, change, delete, and synchronize every configured notebook and can administer RepoQuill-managed SSH credentials.
+The published Alpha 1 line has no built-in authentication. Anyone who can reach
+an Alpha 1 HTTP interface can read, change, delete, and synchronize every
+configured notebook and administer RepoQuill-managed SSH credentials.
 
-Never expose RepoQuill directly to the public Internet. Put it behind HTTPS and a trusted authentication-aware reverse proxy such as Authentik, Authelia, Keycloak, Cloudflare Access, or an equivalently protected proxy. Restrict network access to the proxy and trusted administration networks.
+Alpha 2 development adds fail-closed single-owner local authentication. Until
+the complete Milestone 19 browser, recovery, MFA, and adversarial release gates
+are finished, development builds must not be treated as a production security
+release. HTTPS termination and restricted backend reachability remain required
+even with built-in authentication.
 
 The supplied Compose configuration publishes port 8080 on `127.0.0.1` by default. Set `REPOQUILL_PUBLISH_ADDR` only when deliberate network exposure is protected separately.
 
@@ -18,7 +24,10 @@ The supplied Compose configuration publishes port 8080 on `127.0.0.1` by default
 
 - Markdown files and assets remain inside the configured notebook working tree.
 - Symlinks, traversal paths, absolute paths, `.git`, and `node_modules` are rejected or excluded from note operations.
-- Mutating browser requests are protected against cross-site origins. If a reverse proxy changes the public host, configure the exact public origins as a comma-separated `REPOQUILL_TRUSTED_ORIGINS` value, for example `https://notes.example.com`.
+- Local-auth sessions use server-side state, confined secure cookies, and a
+  session-bound CSRF token. Mutations also enforce exact request origins.
+- Forwarded IP and scheme headers are ignored unless the direct peer matches an
+  explicitly configured `REPOQUILL_TRUSTED_PROXIES` address or CIDR.
 - Notebook onboarding accepts SSH repository URLs only. Embedded credentials, local paths, option-like values, unsafe protocols, and malformed branches are rejected.
 - SSH host keys require explicit fingerprint review and strict host verification.
 - Managed private keys stay below `/data/keys`, use restrictive permissions, and are never returned by the API.
@@ -57,6 +66,8 @@ and coordinated-disclosure process is documented in
 ## Operator responsibilities
 
 - Protect and back up the complete `/data` volume. It contains working trees, notebook registration, trusted SSH hosts, and managed private keys.
+- Terminate TLS at the reverse proxy, keep the backend unreachable from
+  untrusted networks, and configure only the actual proxy addresses as trusted.
 - Keep the container image, reverse proxy, host OS, Git provider, and authentication layer patched.
 - Verify SSH fingerprints through an independent trusted source before approval.
 - Use dedicated deploy keys with access limited to the intended repository.

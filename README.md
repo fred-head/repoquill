@@ -49,6 +49,8 @@ services:
       REPOQUILL_AUTH_MODE: local
       REPOQUILL_AUTH_METADATA: /data/app/auth.db
       REPOQUILL_SESSION_COOKIE_SECURE: "true"
+      # Set only to the exact address/CIDR of your reverse proxy network.
+      # REPOQUILL_TRUSTED_PROXIES: 172.20.0.0/24
       REPOQUILL_KEYS_DIR: /data/keys
       REPOQUILL_SSH_KNOWN_HOSTS: /data/keys/known_hosts
     read_only: true
@@ -76,6 +78,9 @@ you through approving the Git host fingerprint.
 
 `REPOQUILL_SESSION_COOKIE_SECURE=true` is the safe default for an HTTPS reverse
 proxy. For deliberate plain-HTTP localhost testing only, set it to `false`.
+Internet-facing deployments must use TLS and explicitly configure only their
+actual proxy addresses through `REPOQUILL_TRUSTED_PROXIES`; see the
+[reverse-proxy security guide](docs/security/reverse-proxy.md).
 
 The moving `0.1.0-alpha` image tag tracks the newest successful alpha in the
 0.1.0 line. Pin `0.1.0-alpha.1.security.1` or the published digest when
@@ -165,14 +170,15 @@ for deliberate resolution with a normal Git client.
 
 ## Security
 
-RepoQuill has no built-in authentication or TLS termination. **Never expose it
-directly to the public Internet.** Put it behind HTTPS and a trusted
-authentication layer such as Authentik, Authelia, Keycloak, Cloudflare Access,
-or a protected reverse proxy.
+Published Alpha 1 images have no built-in authentication. Alpha 2 development
+adds fail-closed single-owner local authentication, but it does not provide TLS
+termination. **Never expose the backend port directly to the public Internet.**
+Terminate HTTPS at a reverse proxy and restrict backend reachability to that
+proxy.
 
-The supplied configuration binds to `127.0.0.1` by default. If a reverse proxy
-changes the public request origin, configure the exact HTTPS origin through
-`REPOQUILL_TRUSTED_ORIGINS`.
+The supplied configuration binds to `127.0.0.1` by default. Configure the
+proxy's exact address or smallest dedicated network through
+`REPOQUILL_TRUSTED_PROXIES` before accepting forwarded IP or scheme headers.
 
 See [SECURITY.md](SECURITY.md) for the threat model, deployment responsibilities,
 and private vulnerability reporting process.
