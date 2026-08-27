@@ -46,6 +46,9 @@ services:
     environment:
       REPOQUILL_NOTEBOOKS_DIR: /data/notebooks
       REPOQUILL_NOTEBOOK_METADATA: /data/app/notebooks.json
+      REPOQUILL_AUTH_MODE: local
+      REPOQUILL_AUTH_METADATA: /data/app/auth.db
+      REPOQUILL_SESSION_COOKIE_SECURE: "true"
       REPOQUILL_KEYS_DIR: /data/keys
       REPOQUILL_SSH_KNOWN_HOSTS: /data/keys/known_hosts
     read_only: true
@@ -70,6 +73,9 @@ docker compose up -d
 Open <http://localhost:8080>, choose **Add Notebook**, and connect an existing
 SSH Git repository. RepoQuill can generate a dedicated deploy key and guides
 you through approving the Git host fingerprint.
+
+`REPOQUILL_SESSION_COOKIE_SECURE=true` is the safe default for an HTTPS reverse
+proxy. For deliberate plain-HTTP localhost testing only, set it to `false`.
 
 The moving `0.1.0-alpha` image tag tracks the newest successful alpha in the
 0.1.0 line. Pin `0.1.0-alpha.1.security.1` or the published digest when

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -20,6 +21,7 @@ type Config struct {
 	Mode         Mode
 	ModeExplicit bool
 	MetadataPath string
+	CookieSecure bool
 }
 
 type EnvironmentLookup func(string) (string, bool)
@@ -55,7 +57,14 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 		return Config{}, errors.New("authentication metadata path must be absolute")
 	}
 
-	return Config{Mode: mode, ModeExplicit: explicit, MetadataPath: filepath.Clean(metadataPath)}, nil
+	cookieSecure := true
+	if raw, ok := lookup("REPOQUILL_SESSION_COOKIE_SECURE"); ok && strings.TrimSpace(raw) != "" {
+		cookieSecure, err = strconv.ParseBool(strings.TrimSpace(raw))
+		if err != nil {
+			return Config{}, errors.New("REPOQUILL_SESSION_COOKIE_SECURE must be true or false")
+		}
+	}
+	return Config{Mode: mode, ModeExplicit: explicit, MetadataPath: filepath.Clean(metadataPath), CookieSecure: cookieSecure}, nil
 }
 
 func ParseMode(value string) (Mode, error) {

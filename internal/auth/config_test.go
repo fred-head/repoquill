@@ -17,6 +17,9 @@ func TestConfigFromEnvironmentDefaultsSafelyToLocal(t *testing.T) {
 	if config.MetadataPath != "/srv/repoquill/auth.db" {
 		t.Fatalf("unexpected metadata path %q", config.MetadataPath)
 	}
+	if !config.CookieSecure {
+		t.Fatal("secure session cookies must be the default")
+	}
 }
 
 func TestConfigFromEnvironmentAcceptsExplicitDisabledMode(t *testing.T) {
@@ -37,6 +40,7 @@ func TestConfigFromEnvironmentRejectsUnsafeValues(t *testing.T) {
 	tests := []map[string]string{
 		{"REPOQUILL_AUTH_MODE": "public"},
 		{"REPOQUILL_AUTH_MODE": "disabled", "REPOQUILL_AUTH_METADATA": "relative/auth.db"},
+		{"REPOQUILL_SESSION_COOKIE_SECURE": "sometimes"},
 	}
 	for _, values := range tests {
 		if _, err := ConfigFromEnvironment(mapLookup(values)); err == nil {

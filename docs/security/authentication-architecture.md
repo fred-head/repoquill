@@ -1,8 +1,9 @@
 # RepoQuill single-owner authentication architecture
 
 Status: Milestone 19 architecture decision. The operator-authorized password
-setup foundation is implemented by M19P2; sessions, CSRF enforcement,
-throttling, browser/PWA login, recovery, and TOTP are added by later phases.
+setup foundation is implemented by M19P2 and the persistent server-side session
+boundary by M19P3; CSRF enforcement, throttling, browser/PWA login, recovery,
+and TOTP are added by later phases.
 Alpha 2 must not be published until the complete M19 security gate passes.
 
 ## Decision and scope
@@ -109,7 +110,17 @@ deletes, or rewrites notebook repositories.
 
 M19P1 initializes and validates this metadata service. M19P2 adds the
 operator-controlled one-time bootstrap, versioned Argon2id credential, and a
-restricted first-run boundary that blocks all non-setup APIs. These foundations
-intentionally do not claim that authentication is complete. The post-setup API
-boundary is replaced by deny-by-default session middleware in M19P3, and no
-Alpha 2 image may be released before all M19 phases and adversarial tests pass.
+restricted first-run boundary that blocks all non-setup APIs. M19P3 uses SCS
+v2.9 with random opaque session identifiers, stores only their SHA-256 hashes
+and server-side state in SQLite, and applies a deny-by-default API boundary.
+Normal sessions have a 12-hour absolute lifetime; remembered sessions have a
+30-day absolute lifetime, both with a seven-day idle ceiling. The cookie is
+HttpOnly, SameSite Strict, scoped to `/api`, and Secure by default. Plain HTTP
+development must explicitly set `REPOQUILL_SESSION_COOKIE_SECURE=false`.
+
+The public M19P3 surface is limited to the static shell, liveness, setup,
+login, and authentication status. Missing, expired, and revoked sessions receive
+`401` with `authentication_required`; they are not reported as Git failures.
+CSRF tokens, throttling, the browser/PWA login screens, recovery, and MFA remain
+later M19 phases, so no Alpha 2 image may be released before all M19 phases and
+adversarial tests pass.

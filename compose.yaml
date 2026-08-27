@@ -12,6 +12,7 @@ services:
       REPOQUILL_NOTEBOOK_METADATA: /data/app/notebooks.json
       REPOQUILL_AUTH_MODE: ${REPOQUILL_AUTH_MODE:-local}
       REPOQUILL_AUTH_METADATA: /data/app/auth.db
+      REPOQUILL_SESSION_COOKIE_SECURE: ${REPOQUILL_SESSION_COOKIE_SECURE:-true}
       REPOQUILL_KEYS_DIR: /data/keys
       REPOQUILL_SSH_KNOWN_HOSTS: /data/keys/known_hosts
     read_only: true

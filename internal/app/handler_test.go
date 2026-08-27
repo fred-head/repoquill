@@ -79,6 +79,15 @@ func TestSecureOwnerSetupAPI(t *testing.T) {
 	if setup.Code != http.StatusOK || !strings.Contains(setup.Body.String(), `"setupCompleted":true`) {
 		t.Fatalf("owner setup failed: %d %s", setup.Code, setup.Body.String())
 	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range setup.Result().Cookies() {
+		if strings.Contains(cookie.Name, "repoquill_session") {
+			sessionCookie = cookie
+		}
+	}
+	if sessionCookie == nil || !sessionCookie.HttpOnly || sessionCookie.Path != "/api" || sessionCookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("setup did not issue a confined HttpOnly SameSite session cookie: %#v", sessionCookie)
+	}
 
 	after := httptest.NewRecorder()
 	handler.ServeHTTP(after, httptest.NewRequest(http.MethodGet, "/api/auth/status", nil))
@@ -86,9 +95,16 @@ func TestSecureOwnerSetupAPI(t *testing.T) {
 		t.Fatalf("setup status did not change: %d %s", after.Code, after.Body.String())
 	}
 	unlocked := httptest.NewRecorder()
-	handler.ServeHTTP(unlocked, httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil))
-	if unlocked.Code == http.StatusForbidden {
+	unlockedRequest := httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil)
+	unlockedRequest.AddCookie(sessionCookie)
+	handler.ServeHTTP(unlocked, unlockedRequest)
+	if unlocked.Code == http.StatusForbidden || unlocked.Code == http.StatusUnauthorized {
 		t.Fatalf("setup boundary remained locked after successful setup: %d %s", unlocked.Code, unlocked.Body.String())
+	}
+	unauthenticated := httptest.NewRecorder()
+	handler.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil))
+	if unauthenticated.Code != http.StatusUnauthorized || strings.TrimSpace(unauthenticated.Body.String()) != `{"code":"authentication_required","error":"authentication required"}` {
+		t.Fatalf("protected API did not return stable JSON 401: %d %s", unauthenticated.Code, unauthenticated.Body.String())
 	}
 
 	repeated := httptest.NewRecorder()
@@ -102,6 +118,85 @@ func TestSecureOwnerSetupAPI(t *testing.T) {
 	handler.ServeHTTP(oversized, httptest.NewRequest(http.MethodPost, "/api/auth/setup", oversizedBody))
 	if oversized.Code != http.StatusBadRequest {
 		t.Fatalf("oversized auth request was accepted: %d", oversized.Code)
+	}
+}
+
+func TestLoginSessionPersistsAndCanBeRevoked(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	metadataPath := filepath.Join(t.TempDir(), "auth.db")
+	config := auth.Config{Mode: auth.ModeLocal, MetadataPath: metadataPath}
+	password := "a sufficiently long password"
+
+	service, err := auth.Open(t.Context(), config, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := service.CreateBootstrapToken(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CompleteSetup(t.Context(), token.Value, password); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandlerWithAuth(logger, t.TempDir(), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wrong := httptest.NewRecorder()
+	handler.ServeHTTP(wrong, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"wrong password","rememberDevice":false}`)))
+	if wrong.Code != http.StatusUnauthorized || strings.Contains(wrong.Body.String(), "wrong password") {
+		t.Fatalf("invalid login response: %d %s", wrong.Code, wrong.Body.String())
+	}
+
+	login := httptest.NewRecorder()
+	handler.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"a sufficiently long password","rememberDevice":true}`)))
+	if login.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", login.Code, login.Body.String())
+	}
+	var cookie *http.Cookie
+	for _, candidate := range login.Result().Cookies() {
+		if strings.Contains(candidate.Name, "repoquill_session") {
+			cookie = candidate
+		}
+	}
+	if cookie == nil || cookie.MaxAge <= 0 {
+		t.Fatalf("remembered login did not issue a persistent cookie: %#v", cookie)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err = auth.Open(t.Context(), config, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	handler, err = NewHandlerWithAuth(logger, t.TempDir(), service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	protectedRequest := httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil)
+	protectedRequest.AddCookie(cookie)
+	protected := httptest.NewRecorder()
+	handler.ServeHTTP(protected, protectedRequest)
+	if protected.Code == http.StatusUnauthorized {
+		t.Fatalf("session did not survive service restart: %s", protected.Body.String())
+	}
+
+	revokeRequest := httptest.NewRequest(http.MethodDelete, "/api/auth/sessions", nil)
+	revokeRequest.AddCookie(cookie)
+	revoked := httptest.NewRecorder()
+	handler.ServeHTTP(revoked, revokeRequest)
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("session revocation failed: %d %s", revoked.Code, revoked.Body.String())
+	}
+	requestAfterRevoke := httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil)
+	requestAfterRevoke.AddCookie(cookie)
+	afterRevoke := httptest.NewRecorder()
+	handler.ServeHTTP(afterRevoke, requestAfterRevoke)
+	if afterRevoke.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked session remained authorized: %d", afterRevoke.Code)
 	}
 }
 

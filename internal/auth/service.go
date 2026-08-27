@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 type State struct {
 	Mode           Mode
@@ -98,6 +98,12 @@ var migrations = []migration{
 			) STRICT`,
 		},
 	},
+	{
+		version: 3,
+		statements: []string{
+			`ALTER TABLE auth_sessions ADD COLUMN session_data BLOB NOT NULL DEFAULT X''`,
+		},
+	},
 }
 
 func Open(ctx context.Context, config Config, logger *slog.Logger) (*Service, error) {
@@ -144,6 +150,8 @@ func (s *Service) Close() error {
 	}
 	return s.db.Close()
 }
+
+func (s *Service) Config() Config { return s.config }
 
 func (s *Service) State(ctx context.Context) (State, error) {
 	var state State

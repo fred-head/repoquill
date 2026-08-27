@@ -34,10 +34,18 @@ func NewHandlerWithAuth(logger *slog.Logger, repositoryRoot string, authService 
 	if authService == nil {
 		return nil, errors.New("authentication service is required")
 	}
-	return newHandler(logger, repositoryRoot, authService, versions...)
+	sessions, err := auth.NewSessions(authService, auth.DefaultSessionOptions(authService.Config().CookieSecure))
+	if err != nil {
+		return nil, err
+	}
+	return newHandlerWithSessions(logger, repositoryRoot, authService, sessions, versions...)
 }
 
 func newHandler(logger *slog.Logger, repositoryRoot string, authService *auth.Service, versions ...string) (http.Handler, error) {
+	return newHandlerWithSessions(logger, repositoryRoot, authService, nil, versions...)
+}
+
+func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authService *auth.Service, sessions *auth.Sessions, versions ...string) (http.Handler, error) {
 	version := "dev"
 	if len(versions) > 0 && strings.TrimSpace(versions[0]) != "" {
 		version = strings.TrimSpace(versions[0])
@@ -111,7 +119,58 @@ func newHandler(logger *slog.Logger, repositoryRoot string, authService *auth.Se
 			writeJSON(w, http.StatusOK, map[string]any{
 				"mode":          state.Mode,
 				"setupRequired": state.Mode == auth.ModeLocal && !state.SetupCompleted,
+				"authenticated": state.Mode == auth.ModeDisabled || (sessions != nil && sessions.Authenticated(r.Context())),
 			})
+		})
+		mux.HandleFunc("POST /api/auth/login", func(w http.ResponseWriter, r *http.Request) {
+			var input struct {
+				Password       string `json:"password"`
+				RememberDevice bool   `json:"rememberDevice"`
+			}
+			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			state, err := authService.State(r.Context())
+			if err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication state is unavailable"})
+				return
+			}
+			if state.Mode != auth.ModeLocal || !state.SetupCompleted {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "login is not available", "code": "login_unavailable"})
+				return
+			}
+			err = sessions.Login(r.Context(), input.Password, input.RememberDevice, r.UserAgent())
+			if errors.Is(err, auth.ErrAuthentication) {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
+				return
+			}
+			if err != nil {
+				logger.Error("login failed", "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication is unavailable"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
+		})
+		mux.HandleFunc("POST /api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
+			if err := sessions.Logout(r.Context()); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "logout failed"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
+		})
+		mux.HandleFunc("DELETE /api/auth/session", func(w http.ResponseWriter, r *http.Request) {
+			if err := sessions.RevokeCurrent(r.Context()); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session revocation failed"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
+		})
+		mux.HandleFunc("DELETE /api/auth/sessions", func(w http.ResponseWriter, r *http.Request) {
+			if err := sessions.RevokeAll(r.Context()); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session revocation failed"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
 		})
 		mux.HandleFunc("POST /api/auth/setup", func(w http.ResponseWriter, r *http.Request) {
 			var input struct {
@@ -124,6 +183,11 @@ func newHandler(logger *slog.Logger, repositoryRoot string, authService *auth.Se
 			err := authService.CompleteSetup(r.Context(), input.BootstrapToken, input.Password)
 			switch {
 			case err == nil:
+				if establishErr := sessions.EstablishAfterSetup(r.Context(), r.UserAgent()); establishErr != nil {
+					logger.Error("owner session establishment failed", "error", establishErr)
+					writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "setup completed but login failed"})
+					return
+				}
 				writeJSON(w, http.StatusOK, map[string]bool{"setupCompleted": true})
 			case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLarge), errors.Is(err, auth.ErrInvalidPassword):
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -605,7 +669,11 @@ func newHandler(logger *slog.Logger, repositoryRoot string, authService *auth.Se
 	})
 	mux.Handle("/", spaHandler(assets))
 
-	return requestLogger(logger, securityHeaders(sameOriginProtection(setupRequiredBoundary(authService, mux)))), nil
+	handler := http.Handler(mux)
+	if sessions != nil {
+		handler = sessions.LoadAndSave(authenticationBoundary(authService, sessions, handler))
+	}
+	return requestLogger(logger, securityHeaders(sameOriginProtection(handler))), nil
 }
 
 const maxRequestBodySize = (10 << 20) + (64 << 10)
@@ -706,16 +774,18 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func setupRequiredBoundary(authService *auth.Service, next http.Handler) http.Handler {
+func authenticationBoundary(authService *auth.Service, sessions *auth.Sessions, next http.Handler) http.Handler {
 	if authService == nil {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		readOnlyMethod := r.Method == http.MethodGet || r.Method == http.MethodHead
-		if !strings.HasPrefix(r.URL.Path, "/api/") ||
+		public := !strings.HasPrefix(r.URL.Path, "/api/") ||
 			(readOnlyMethod && r.URL.Path == "/api/health") ||
 			(readOnlyMethod && r.URL.Path == "/api/auth/status") ||
-			(r.Method == http.MethodPost && r.URL.Path == "/api/auth/setup") {
+			(r.Method == http.MethodPost && r.URL.Path == "/api/auth/setup") ||
+			(r.Method == http.MethodPost && r.URL.Path == "/api/auth/login")
+		if public {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -726,6 +796,10 @@ func setupRequiredBoundary(authService *auth.Service, next http.Handler) http.Ha
 		}
 		if state.Mode == auth.ModeLocal && !state.SetupCompleted {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "owner setup is required", "code": "setup_required"})
+			return
+		}
+		if state.Mode == auth.ModeLocal && !sessions.Authenticated(r.Context()) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required", "code": "authentication_required"})
 			return
 		}
 		next.ServeHTTP(w, r)
