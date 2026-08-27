@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fred-head/repoquill/internal/auth"
 )
 
 func TestHealth(t *testing.T) {
@@ -31,6 +33,95 @@ func TestHealth(t *testing.T) {
 	}
 	if got := strings.TrimSpace(recorder.Body.String()); got != `{"status":"ok","version":"dev"}` {
 		t.Fatalf("unexpected body: %s", got)
+	}
+}
+
+func TestSecureOwnerSetupAPI(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	authService, err := auth.Open(t.Context(), auth.Config{Mode: auth.ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authService.Close()
+	handler, err := NewHandlerWithAuth(logger, t.TempDir(), authService)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status := httptest.NewRecorder()
+	handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/auth/status", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"setupRequired":true`) || strings.Contains(status.Body.String(), "owner") {
+		t.Fatalf("unexpected public auth status: %d %s", status.Code, status.Body.String())
+	}
+	blocked := httptest.NewRecorder()
+	handler.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil))
+	if blocked.Code != http.StatusForbidden || !strings.Contains(blocked.Body.String(), `"code":"setup_required"`) {
+		t.Fatalf("notebook API was exposed before owner setup: %d %s", blocked.Code, blocked.Body.String())
+	}
+
+	invalidBody := strings.NewReader(`{"bootstrapToken":"wrong","password":"a sufficiently long password"}`)
+	invalid := httptest.NewRecorder()
+	handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/api/auth/setup", invalidBody))
+	if invalid.Code != http.StatusUnauthorized || strings.Contains(invalid.Body.String(), "wrong") {
+		t.Fatalf("setup leaked or accepted invalid authorization: %d %s", invalid.Code, invalid.Body.String())
+	}
+
+	token, err := authService.CreateBootstrapToken(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestBody, err := json.Marshal(map[string]string{"bootstrapToken": token.Value, "password": "a sufficiently long password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := httptest.NewRecorder()
+	handler.ServeHTTP(setup, httptest.NewRequest(http.MethodPost, "/api/auth/setup", bytes.NewReader(requestBody)))
+	if setup.Code != http.StatusOK || !strings.Contains(setup.Body.String(), `"setupCompleted":true`) {
+		t.Fatalf("owner setup failed: %d %s", setup.Code, setup.Body.String())
+	}
+
+	after := httptest.NewRecorder()
+	handler.ServeHTTP(after, httptest.NewRequest(http.MethodGet, "/api/auth/status", nil))
+	if after.Code != http.StatusOK || !strings.Contains(after.Body.String(), `"setupRequired":false`) {
+		t.Fatalf("setup status did not change: %d %s", after.Code, after.Body.String())
+	}
+	unlocked := httptest.NewRecorder()
+	handler.ServeHTTP(unlocked, httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil))
+	if unlocked.Code == http.StatusForbidden {
+		t.Fatalf("setup boundary remained locked after successful setup: %d %s", unlocked.Code, unlocked.Body.String())
+	}
+
+	repeated := httptest.NewRecorder()
+	handler.ServeHTTP(repeated, httptest.NewRequest(http.MethodPost, "/api/auth/setup", bytes.NewReader(requestBody)))
+	if repeated.Code != http.StatusConflict {
+		t.Fatalf("repeated setup was not rejected: %d %s", repeated.Code, repeated.Body.String())
+	}
+
+	oversized := httptest.NewRecorder()
+	oversizedBody := strings.NewReader(`{"bootstrapToken":"` + strings.Repeat("x", 5000) + `","password":"a sufficiently long password"}`)
+	handler.ServeHTTP(oversized, httptest.NewRequest(http.MethodPost, "/api/auth/setup", oversizedBody))
+	if oversized.Code != http.StatusBadRequest {
+		t.Fatalf("oversized auth request was accepted: %d", oversized.Code)
+	}
+}
+
+func TestExplicitDisabledModeDoesNotEnterSetupGate(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	authService, err := auth.Open(t.Context(), auth.Config{
+		Mode: auth.ModeDisabled, ModeExplicit: true, MetadataPath: filepath.Join(t.TempDir(), "auth.db"),
+	}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authService.Close()
+	handler, err := NewHandlerWithAuth(logger, t.TempDir(), authService)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil))
+	if response.Code == http.StatusForbidden || strings.Contains(response.Body.String(), "setup_required") {
+		t.Fatalf("explicit disabled mode entered the local setup gate: %d %s", response.Code, response.Body.String())
 	}
 }
 

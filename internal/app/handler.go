@@ -20,12 +20,24 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/fred-head/repoquill/internal/auth"
 	"github.com/fred-head/repoquill/internal/files"
 	gitrepo "github.com/fred-head/repoquill/internal/git"
 	frontend "github.com/fred-head/repoquill/web"
 )
 
 func NewHandler(logger *slog.Logger, repositoryRoot string, versions ...string) (http.Handler, error) {
+	return newHandler(logger, repositoryRoot, nil, versions...)
+}
+
+func NewHandlerWithAuth(logger *slog.Logger, repositoryRoot string, authService *auth.Service, versions ...string) (http.Handler, error) {
+	if authService == nil {
+		return nil, errors.New("authentication service is required")
+	}
+	return newHandler(logger, repositoryRoot, authService, versions...)
+}
+
+func newHandler(logger *slog.Logger, repositoryRoot string, authService *auth.Service, versions ...string) (http.Handler, error) {
 	version := "dev"
 	if len(versions) > 0 && strings.TrimSpace(versions[0]) != "" {
 		version = strings.TrimSpace(versions[0])
@@ -89,6 +101,42 @@ func NewHandler(logger *slog.Logger, repositoryRoot string, versions ...string) 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": version})
 	})
+	if authService != nil {
+		mux.HandleFunc("GET /api/auth/status", func(w http.ResponseWriter, r *http.Request) {
+			state, err := authService.State(r.Context())
+			if err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication state is unavailable"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"mode":          state.Mode,
+				"setupRequired": state.Mode == auth.ModeLocal && !state.SetupCompleted,
+			})
+		})
+		mux.HandleFunc("POST /api/auth/setup", func(w http.ResponseWriter, r *http.Request) {
+			var input struct {
+				BootstrapToken string `json:"bootstrapToken"`
+				Password       string `json:"password"`
+			}
+			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			err := authService.CompleteSetup(r.Context(), input.BootstrapToken, input.Password)
+			switch {
+			case err == nil:
+				writeJSON(w, http.StatusOK, map[string]bool{"setupCompleted": true})
+			case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLarge), errors.Is(err, auth.ErrInvalidPassword):
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			case errors.Is(err, auth.ErrInvalidBootstrap):
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "setup authorization is invalid or expired"})
+			case errors.Is(err, auth.ErrSetupUnavailable):
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "owner setup is not available"})
+			default:
+				logger.Error("owner setup failed", "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "owner setup could not be completed"})
+			}
+		})
+	}
 	mux.HandleFunc("GET /api/notebook", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"name": currentNotebookName(), "configured": currentRepository().Configured()})
 	})
@@ -557,14 +605,19 @@ func NewHandler(logger *slog.Logger, repositoryRoot string, versions ...string) 
 	})
 	mux.Handle("/", spaHandler(assets))
 
-	return requestLogger(logger, securityHeaders(sameOriginProtection(mux))), nil
+	return requestLogger(logger, securityHeaders(sameOriginProtection(setupRequiredBoundary(authService, mux)))), nil
 }
 
 const maxRequestBodySize = (10 << 20) + (64 << 10)
 const maxAssetRequestBodySize = (10 << 20) + (1 << 20)
+const maxAuthRequestBodySize = 4 << 10
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	return decodeJSONWithLimit(w, r, target, maxRequestBodySize)
+}
+
+func decodeJSONWithLimit(w http.ResponseWriter, r *http.Request, target any, limit int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -648,6 +701,32 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		if strings.HasPrefix(r.URL.Path, "/api/") && w.Header().Get("Cache-Control") == "" {
 			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func setupRequiredBoundary(authService *auth.Service, next http.Handler) http.Handler {
+	if authService == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readOnlyMethod := r.Method == http.MethodGet || r.Method == http.MethodHead
+		if !strings.HasPrefix(r.URL.Path, "/api/") ||
+			(readOnlyMethod && r.URL.Path == "/api/health") ||
+			(readOnlyMethod && r.URL.Path == "/api/auth/status") ||
+			(r.Method == http.MethodPost && r.URL.Path == "/api/auth/setup") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		state, err := authService.State(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication state is unavailable"})
+			return
+		}
+		if state.Mode == auth.ModeLocal && !state.SetupCompleted {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "owner setup is required", "code": "setup_required"})
+			return
 		}
 		next.ServeHTTP(w, r)
 	})

@@ -1,9 +1,9 @@
 # RepoQuill single-owner authentication architecture
 
-Status: Milestone 19 Phase 1 architecture decision. Password setup, sessions,
-CSRF enforcement, throttling, browser/PWA login, recovery, and TOTP are added by
-later M19 phases. Alpha 2 must not be published until the complete M19 security
-gate passes.
+Status: Milestone 19 architecture decision. The operator-authorized password
+setup foundation is implemented by M19P2; sessions, CSRF enforcement,
+throttling, browser/PWA login, recovery, and TOTP are added by later phases.
+Alpha 2 must not be published until the complete M19 security gate passes.
 
 ## Decision and scope
 
@@ -107,8 +107,9 @@ operator-only recovery command requiring filesystem/container administration.
 Recovery changes authentication metadata only; it never moves, encrypts,
 deletes, or rewrites notebook repositories.
 
-M19P1 initializes and validates this metadata service but intentionally does
-not claim that authentication is complete. The current API boundary is replaced
-by the deny-by-default middleware in M19P3, and no Alpha 2 image may be released
-before all M19 phases and adversarial tests pass.
-
+M19P1 initializes and validates this metadata service. M19P2 adds the
+operator-controlled one-time bootstrap, versioned Argon2id credential, and a
+restricted first-run boundary that blocks all non-setup APIs. These foundations
+intentionally do not claim that authentication is complete. The post-setup API
+boundary is replaced by deny-by-default session middleware in M19P3, and no
+Alpha 2 image may be released before all M19 phases and adversarial tests pass.
