@@ -97,7 +97,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
   container:
-    name: Alpha 2 authentication and hardened container release gate
+    # Keep this check name stable: the protected main branch requires it.
+    name: Hardened container release gate
     runs-on: ubuntu-latest
     needs: [backend, frontend, secrets]
     steps:
