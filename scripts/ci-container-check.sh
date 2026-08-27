@@ -46,6 +46,7 @@ docker volume create "${volume_name}" >/dev/null
 volume_created=true
 
 start_container() {
+  local auth_mode="${1:-local}"
   docker run --detach \
     --name "${container_name}" \
     --read-only \
@@ -57,6 +58,8 @@ start_container() {
     --env REPOQUILL_REPOSITORY=/data/repos \
     --env REPOQUILL_NOTEBOOKS_DIR=/data/notebooks \
     --env REPOQUILL_NOTEBOOK_METADATA=/data/app/notebooks.json \
+    --env "REPOQUILL_AUTH_MODE=${auth_mode}" \
+    --env REPOQUILL_AUTH_METADATA=/data/app/auth.db \
     --env REPOQUILL_KEYS_DIR=/data/keys \
     --env REPOQUILL_SSH_KNOWN_HOSTS=/data/keys/known_hosts \
     "${image}" >/dev/null
@@ -86,7 +89,7 @@ wait_for_health() {
   exit 1
 }
 
-start_container
+start_container local
 port="$(wait_for_health)"
 
 runtime_uid="$(docker exec "${container_name}" id -u)"
@@ -94,6 +97,43 @@ if [[ "${runtime_uid}" == "0" ]]; then
   echo "Container process is running as root" >&2
   exit 1
 fi
+
+bootstrap_output="$(docker exec "${container_name}" repoquill auth bootstrap-token)"
+bootstrap_token="$(printf '%s\n' "${bootstrap_output}" | sed -n '2p')"
+unset bootstrap_output
+if [[ ! "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
+  echo "Container did not return a valid one-time bootstrap token" >&2
+  exit 1
+fi
+if docker logs "${container_name}" 2>&1 | grep --fixed-strings --quiet "${bootstrap_token}"; then
+  echo "Container wrote the bootstrap token to normal server logs" >&2
+  exit 1
+fi
+unset bootstrap_token
+
+auth_status="$(curl --fail --silent --show-error "http://127.0.0.1:${port}/api/auth/status")"
+if [[ "${auth_status}" != *'"mode":"local"'* || "${auth_status}" != *'"setupRequired":true'* ]]; then
+  echo "Fresh local-auth container did not require owner setup: ${auth_status}" >&2
+  exit 1
+fi
+blocked_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data '{"path":"Must stay blocked.md","type":"file"}' \
+  "http://127.0.0.1:${port}/api/repository/entries")"
+if [[ "${blocked_status}" != "403" ]]; then
+  echo "Fresh local-auth container exposed protected APIs before setup (HTTP ${blocked_status})" >&2
+  exit 1
+fi
+
+docker rm --force "${container_name}" >/dev/null
+container_created=false
+
+# The persistence portion is intentionally run in explicitly disabled mode.
+# M19P2's local mode is expected to remain locked until operator-authorized
+# setup, while M19P3 adds normal post-setup sessions to this smoke test.
+start_container disabled
+port="$(wait_for_health)"
 
 curl --fail --silent --show-error \
   --request POST \
@@ -104,7 +144,7 @@ curl --fail --silent --show-error \
 docker rm --force "${container_name}" >/dev/null
 container_created=false
 
-start_container
+start_container disabled
 port="$(wait_for_health)"
 curl --fail --silent --show-error \
   "http://127.0.0.1:${port}/api/repository/file?path=Release%20check.md" \

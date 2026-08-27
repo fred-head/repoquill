@@ -64,6 +64,14 @@ func TestModeTransitionInvalidatesAuthenticationArtifacts(t *testing.T) {
 	`, []byte("hash-not-token"), now, now, now, now); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.db.ExecContext(ctx, `
+		INSERT INTO auth_password_credentials(
+			owner_principal, algorithm, algorithm_version, memory_kib, iterations,
+			parallelism, salt, password_hash, created_at, updated_at
+		) VALUES (?, 'argon2id', 19, 65536, 3, 2, ?, ?, ?, ?)
+	`, OwnerPrincipal, make([]byte, 16), make([]byte, 32), now, now); err != nil {
+		t.Fatal(err)
+	}
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +91,13 @@ func TestModeTransitionInvalidatesAuthenticationArtifacts(t *testing.T) {
 	}
 	if sessions != 0 {
 		t.Fatalf("mode transition retained %d sessions", sessions)
+	}
+	var credentials int
+	if err := disabled.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_password_credentials`).Scan(&credentials); err != nil {
+		t.Fatal(err)
+	}
+	if credentials != 0 {
+		t.Fatalf("mode transition retained %d password credentials", credentials)
 	}
 }
 
@@ -121,6 +136,38 @@ func TestServiceRejectsImplicitDisabledMode(t *testing.T) {
 	if err == nil {
 		service.Close()
 		t.Fatal("expected implicit disabled mode to be rejected")
+	}
+}
+
+func TestVersionOneMetadataMigratesToPasswordCredentialSchema(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "auth.db")
+	service := openTestService(t, Config{Mode: ModeLocal, MetadataPath: path})
+	if _, err := service.db.ExecContext(ctx, `DROP TABLE auth_password_credentials`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.ExecContext(ctx, `DELETE FROM auth_schema_migrations WHERE version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated := openTestService(t, Config{Mode: ModeLocal, MetadataPath: path})
+	defer migrated.Close()
+	state, err := migrated.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.SchemaVersion != currentSchemaVersion || state.SetupCompleted {
+		t.Fatalf("unsafe migrated state: %#v", state)
+	}
+	var tableCount int
+	if err := migrated.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'auth_password_credentials'`).Scan(&tableCount); err != nil {
+		t.Fatal(err)
+	}
+	if tableCount != 1 {
+		t.Fatal("password credential schema was not restored by migration")
 	}
 }
 

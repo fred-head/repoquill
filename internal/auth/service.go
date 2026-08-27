@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 type State struct {
 	Mode           Mode
@@ -78,6 +78,23 @@ var migrations = []migration{
 				occurred_at TEXT NOT NULL,
 				outcome TEXT NOT NULL,
 				details TEXT NOT NULL DEFAULT ''
+			) STRICT`,
+		},
+	},
+	{
+		version: 2,
+		statements: []string{
+			`CREATE TABLE auth_password_credentials (
+				owner_principal TEXT PRIMARY KEY CHECK (owner_principal = 'owner'),
+				algorithm TEXT NOT NULL CHECK (algorithm = 'argon2id'),
+				algorithm_version INTEGER NOT NULL,
+				memory_kib INTEGER NOT NULL,
+				iterations INTEGER NOT NULL,
+				parallelism INTEGER NOT NULL,
+				salt BLOB NOT NULL,
+				password_hash BLOB NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
 			) STRICT`,
 		},
 	},
@@ -247,6 +264,7 @@ func (s *Service) reconcileConfiguration(ctx context.Context) error {
 			`DELETE FROM auth_sessions`,
 			`DELETE FROM auth_recovery_artifacts`,
 			`DELETE FROM auth_throttle_state`,
+			`DELETE FROM auth_password_credentials`,
 		} {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("invalidate authentication state: %w", err)
