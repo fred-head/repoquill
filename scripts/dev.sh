@@ -64,6 +64,7 @@ echo "Notebook: ${notebook_root}"
   REPOQUILL_NOTEBOOK_METADATA="${app_directory}/notebooks.json" \
   REPOQUILL_AUTH_MODE="${REPOQUILL_AUTH_MODE:-local}" \
   REPOQUILL_AUTH_METADATA="${app_directory}/auth.db" \
+  REPOQUILL_SESSION_COOKIE_SECURE="false" \
   REPOQUILL_KEYS_DIR="${keys_directory}" \
   REPOQUILL_SSH_KNOWN_HOSTS="${known_hosts_file}" \
   GOCACHE="/tmp/repoquill-go-cache" \
