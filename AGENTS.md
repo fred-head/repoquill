@@ -2321,6 +2321,16 @@ roles, invitations, email addresses, or email-based recovery.
   changes without creating request loops,
 - keep the service worker limited to the application shell and never cache auth
   APIs, API responses, sessions, notes, or credentials,
+- show the running RepoQuill version unobtrusively at the bottom of Settings,
+  using the backend-reported build version as the source of truth and displaying
+  `dev` for unversioned local builds,
+- optionally show a shortened build/commit identifier when it is supplied by
+  the release build, without exposing host or repository metadata; a version
+  link may point to the matching public GitHub release,
+- keep version information secondary to application and security state, but
+  make it selectable and accessible so users can include it in diagnostics,
+- verify that a stale frontend and newer backend can be distinguished without
+  misreporting the condition as an authentication, save, or Git sync failure,
 - support multiple tabs, installed PWA windows, mobile browsers, password
   managers, keyboard navigation, and assistive technology.
 

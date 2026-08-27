@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -218,6 +219,85 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			}
 			_ = authService.RecordSecurityEvent(r.Context(), "session_revoke_all", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 			writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
+		})
+		mux.HandleFunc("GET /api/auth/sessions", func(w http.ResponseWriter, r *http.Request) {
+			records, err := authService.Sessions(r.Context(), sessions.CurrentHash(r.Context()))
+			if err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "sessions are unavailable"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"sessions": records})
+		})
+		mux.HandleFunc("DELETE /api/auth/sessions/others", func(w http.ResponseWriter, r *http.Request) {
+			if err := authService.RevokeOtherSessions(r.Context(), sessions.CurrentHash(r.Context())); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session revocation failed"})
+				return
+			}
+			_ = authService.RecordSecurityEvent(r.Context(), "session_revoke_others", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
+			writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
+		})
+		mux.HandleFunc("DELETE /api/auth/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+			err := authService.RevokeSession(r.Context(), r.PathValue("id"), sessions.CurrentHash(r.Context()))
+			switch {
+			case err == nil:
+				writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
+			case errors.Is(err, sql.ErrNoRows):
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			default:
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			}
+		})
+		mux.HandleFunc("GET /api/auth/security", func(w http.ResponseWriter, r *http.Request) {
+			settings, err := authService.SessionSettings(r.Context())
+			if err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "security settings are unavailable"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"sessionSettings": settings})
+		})
+		mux.HandleFunc("PUT /api/auth/security/session-settings", func(w http.ResponseWriter, r *http.Request) {
+			var input struct {
+				CurrentPassword string `json:"currentPassword"`
+				IdleHours       int    `json:"idleHours"`
+				LifetimeHours   int    `json:"lifetimeHours"`
+				RememberDays    int    `json:"rememberDays"`
+			}
+			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			if err := authService.VerifyPassword(r.Context(), input.CurrentPassword); err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
+				return
+			}
+			settings := auth.SessionSettings{IdleHours: input.IdleHours, LifetimeHours: input.LifetimeHours, RememberDays: input.RememberDays}
+			if err := authService.UpdateSessionSettings(r.Context(), settings); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			_ = authService.RecordSecurityEvent(r.Context(), "session_settings", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
+			writeJSON(w, http.StatusOK, map[string]any{"sessionSettings": settings})
+		})
+		mux.HandleFunc("PUT /api/auth/password", func(w http.ResponseWriter, r *http.Request) {
+			var input struct {
+				CurrentPassword string `json:"currentPassword"`
+				NewPassword     string `json:"newPassword"`
+			}
+			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			err := sessions.ChangePassword(r.Context(), input.CurrentPassword, input.NewPassword)
+			switch {
+			case err == nil:
+				_ = authService.RecordSecurityEvent(r.Context(), "password_change", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
+				writeJSON(w, http.StatusOK, map[string]any{"changed": true, "csrfToken": sessions.ExistingCSRFToken(r.Context())})
+			case errors.Is(err, auth.ErrAuthentication):
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
+			case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLarge), errors.Is(err, auth.ErrInvalidPassword):
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			default:
+				logger.Error("password change failed", "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "password change failed"})
+			}
 		})
 		mux.HandleFunc("POST /api/auth/setup", func(w http.ResponseWriter, r *http.Request) {
 			var input struct {

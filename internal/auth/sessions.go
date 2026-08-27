@@ -45,9 +45,9 @@ func NewSessions(service *Service, options SessionOptions) (*Sessions, error) {
 		return nil, errors.New("invalid session durations")
 	}
 	manager := scs.New()
-	manager.Store = &sqliteSessionStore{db: service.db, codec: manager.Codec}
+	manager.Store = &sqliteSessionStore{db: service.db, codec: manager.Codec, defaultIdle: options.IdleTimeout}
 	manager.Lifetime = options.RememberLifetime
-	manager.IdleTimeout = options.IdleTimeout
+	manager.IdleTimeout = 30 * 24 * time.Hour
 	manager.Cookie.Name = "repoquill_session"
 	if options.CookieSecure {
 		manager.Cookie.Name = "__Secure-repoquill_session"
@@ -82,17 +82,48 @@ func (s *Sessions) establish(ctx context.Context, remember bool, client string) 
 	if err := s.manager.RenewToken(ctx); err != nil {
 		return err
 	}
-	lifetime := s.options.Lifetime
+	settings, err := s.service.SessionSettings(ctx)
+	if err != nil {
+		return err
+	}
+	lifetime := time.Duration(settings.LifetimeHours) * time.Hour
 	if remember {
-		lifetime = s.options.RememberLifetime
+		lifetime = time.Duration(settings.RememberDays) * 24 * time.Hour
 	}
 	s.manager.SetDeadline(ctx, time.Now().Add(lifetime))
 	s.manager.RememberMe(ctx, remember)
 	s.manager.Put(ctx, sessionPrincipalKey, OwnerPrincipal)
 	s.manager.Put(ctx, "client", sanitizeClientDescription(client))
+	s.manager.Put(ctx, "idle_hours", settings.IdleHours)
+	s.manager.Put(ctx, "remember", remember)
 	s.manager.Remove(ctx, sessionCSRFKey)
-	_, err := s.CSRFToken(ctx)
+	_, err = s.CSRFToken(ctx)
 	return err
+}
+
+func (s *Sessions) CurrentHash(ctx context.Context) []byte {
+	token := s.manager.Token(ctx)
+	if token == "" {
+		return nil
+	}
+	hash := sessionHash(token)
+	return append([]byte(nil), hash[:]...)
+}
+
+func (s *Sessions) ChangePassword(ctx context.Context, currentPassword, newPassword string) error {
+	currentHash := s.CurrentHash(ctx)
+	if err := s.service.ChangePassword(ctx, currentPassword, newPassword, currentHash); err != nil {
+		return err
+	}
+	remember := s.manager.GetBool(ctx, "remember")
+	client := s.manager.GetString(ctx, "client")
+	if err := s.establish(ctx, remember, client); err != nil {
+		// The credential was already changed. Do not leave the old session alive
+		// if rotating it unexpectedly fails.
+		_ = s.manager.Destroy(ctx)
+		return err
+	}
+	return nil
 }
 
 func (s *Sessions) CSRFToken(ctx context.Context) (string, error) {
@@ -145,8 +176,9 @@ func sanitizeClientDescription(value string) string {
 }
 
 type sqliteSessionStore struct {
-	db    *sql.DB
-	codec scs.Codec
+	db          *sql.DB
+	codec       scs.Codec
+	defaultIdle time.Duration
 }
 
 func sessionHash(token string) [32]byte { return sha256.Sum256([]byte(token)) }
@@ -193,6 +225,15 @@ func (s *sqliteSessionStore) CommitCtx(ctx context.Context, token string, data [
 		absoluteExpiry = deadline.UTC().Format(time.RFC3339Nano)
 		if value, ok := values["client"].(string); ok {
 			client = sanitizeClientDescription(value)
+		}
+		idle := s.defaultIdle
+		if hours, ok := values["idle_hours"].(int); ok && hours >= 1 && hours <= 720 {
+			idle = time.Duration(hours) * time.Hour
+		}
+		if idleExpiry := time.Now().UTC().Add(idle); idleExpiry.Before(deadline) {
+			expires = idleExpiry.Format(time.RFC3339Nano)
+		} else {
+			expires = deadline.UTC().Format(time.RFC3339Nano)
 		}
 	}
 	hash := sessionHash(token)
