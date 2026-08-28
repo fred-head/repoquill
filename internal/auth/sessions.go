@@ -16,10 +16,13 @@ import (
 )
 
 const (
-	sessionPrincipalKey  = "principal"
-	sessionCSRFKey       = "csrf_token"
-	sessionMFAPendingKey = "mfa_pending"
+	sessionPrincipalKey          = "principal"
+	sessionCSRFKey               = "csrf_token"
+	sessionMFAPendingKey         = "mfa_pending"
+	sessionActivityWriteInterval = time.Minute
 )
+
+var errSessionInactive = errors.New("session is revoked or expired")
 
 type SessionOptions struct {
 	CookieSecure     bool
@@ -244,12 +247,52 @@ func (s *sqliteSessionStore) DeleteCtx(ctx context.Context, token string) error 
 func (s *sqliteSessionStore) FindCtx(ctx context.Context, token string) ([]byte, bool, error) {
 	hash := sessionHash(token)
 	var data []byte
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	err := s.db.QueryRowContext(ctx, `SELECT session_data FROM auth_sessions WHERE session_id_hash = ? AND revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?`, hash[:], now, now).Scan(&data)
+	var lastActivityText, absoluteExpiryText string
+	nowTime := time.Now().UTC()
+	now := nowTime.Format(time.RFC3339Nano)
+	err := s.db.QueryRowContext(ctx, `SELECT session_data, last_activity_at, absolute_expires_at FROM auth_sessions WHERE session_id_hash = ? AND revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?`, hash[:], now, now).Scan(&data, &lastActivityText, &absoluteExpiryText)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
-	return data, err == nil, err
+	if err != nil {
+		return nil, false, err
+	}
+	lastActivity, err := time.Parse(time.RFC3339Nano, lastActivityText)
+	if err != nil {
+		return nil, false, errors.New("stored session activity timestamp is invalid")
+	}
+	if nowTime.Sub(lastActivity) < sessionActivityWriteInterval {
+		return data, true, nil
+	}
+	absoluteExpiry, err := time.Parse(time.RFC3339Nano, absoluteExpiryText)
+	if err != nil {
+		return nil, false, errors.New("stored absolute session expiry is invalid")
+	}
+	idle := s.defaultIdle
+	if s.codec != nil {
+		_, values, decodeErr := s.codec.Decode(data)
+		if decodeErr != nil {
+			return nil, false, decodeErr
+		}
+		if hours, ok := values["idle_hours"].(int); ok && hours >= 1 && hours <= 720 {
+			idle = time.Duration(hours) * time.Hour
+		}
+	}
+	if idle <= 0 {
+		return data, true, nil
+	}
+	idleExpiry := nowTime.Add(idle)
+	if idleExpiry.After(absoluteExpiry) {
+		idleExpiry = absoluteExpiry
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET last_activity_at=?, idle_expires_at=? WHERE session_id_hash=? AND revoked_at IS NULL AND idle_expires_at>? AND absolute_expires_at>?`, now, idleExpiry.Format(time.RFC3339Nano), hash[:], now, now)
+	if err != nil {
+		return nil, false, err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return nil, false, nil
+	}
+	return data, true, nil
 }
 
 func (s *sqliteSessionStore) CommitCtx(ctx context.Context, token string, data []byte, expiry time.Time) error {
@@ -277,8 +320,14 @@ func (s *sqliteSessionStore) CommitCtx(ctx context.Context, token string, data [
 		}
 	}
 	hash := sessionHash(token)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO auth_sessions (session_id_hash, created_at, last_activity_at, idle_expires_at, absolute_expires_at, client_description, session_data)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO auth_sessions (session_id_hash, created_at, last_activity_at, idle_expires_at, absolute_expires_at, client_description, session_data)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(session_id_hash) DO UPDATE SET last_activity_at=excluded.last_activity_at, idle_expires_at=excluded.idle_expires_at, absolute_expires_at=excluded.absolute_expires_at, client_description=excluded.client_description, session_data=excluded.session_data, revoked_at=NULL`, hash[:], now, now, expires, absoluteExpiry, client, data)
-	return err
+		ON CONFLICT(session_id_hash) DO UPDATE SET last_activity_at=excluded.last_activity_at, idle_expires_at=excluded.idle_expires_at, absolute_expires_at=excluded.absolute_expires_at, client_description=excluded.client_description, session_data=excluded.session_data WHERE auth_sessions.revoked_at IS NULL AND auth_sessions.idle_expires_at>? AND auth_sessions.absolute_expires_at>?`, hash[:], now, now, expires, absoluteExpiry, client, data, now, now)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return errSessionInactive
+	}
+	return nil
 }

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -61,4 +62,73 @@ func TestLoginThrottleBoundsConcurrentPasswordWork(t *testing.T) {
 		t.Fatal("login work remained locked")
 	}
 	throttle.End()
+}
+
+func TestSensitiveCredentialThrottleIsIndependentAndValidated(t *testing.T) {
+	service, err := Open(t.Context(), Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	throttle := NewLoginThrottle(service)
+	client := netip.MustParseAddr("203.0.113.10")
+	for range 4 {
+		if _, err := throttle.FailureOperation(t.Context(), ThrottleOperationSensitive, client); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if delay, err := throttle.CheckOperation(t.Context(), ThrottleOperationSensitive, client); err != nil || delay <= 0 {
+		t.Fatalf("sensitive throttle was not activated: delay=%v err=%v", delay, err)
+	}
+	if delay, err := throttle.CheckOperation(t.Context(), ThrottleOperationLogin, client); err != nil || delay != 0 {
+		t.Fatalf("sensitive attempts unexpectedly blocked normal login: delay=%v err=%v", delay, err)
+	}
+	if _, err := throttle.CheckOperation(t.Context(), "user-controlled", client); err == nil {
+		t.Fatal("invalid throttle operation was accepted")
+	}
+}
+
+func TestSecurityEventsAreCoalescedRetainedAndBounded(t *testing.T) {
+	service, err := Open(t.Context(), Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	for range 3 {
+		if err := service.RecordSecurityEvent(t.Context(), "login", "throttled", "client=stable"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := service.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM auth_security_events WHERE details='client=stable'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("duplicate security events were not coalesced: count=%d err=%v", count, err)
+	}
+
+	tx, err := service.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-securityEventRetention - time.Hour).UTC().Format(time.RFC3339Nano)
+	for index := 0; index < maximumStoredSecurityEvents+10; index++ {
+		occurredAt := time.Now().UTC().Format(time.RFC3339Nano)
+		if index == 0 {
+			occurredAt = old
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO auth_security_events(event_type,occurred_at,outcome,details) VALUES('test',?,'failure',?)`, occurredAt, fmt.Sprintf("event-%d", index)); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSecurityEvent(t.Context(), "maintenance", "success", "retention"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM auth_security_events`).Scan(&count); err != nil || count > maximumStoredSecurityEvents {
+		t.Fatalf("security event retention is unbounded: count=%d err=%v", count, err)
+	}
+	if err := service.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM auth_security_events WHERE occurred_at=?`, old).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("expired security event was retained: count=%d err=%v", count, err)
+	}
 }

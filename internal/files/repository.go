@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -31,7 +32,8 @@ type Node struct {
 }
 
 type Repository struct {
-	root string
+	root    string
+	trashMu sync.Mutex
 }
 
 type Markdown struct {
@@ -88,7 +90,7 @@ func readDirectory(root, relative string) ([]Node, error) {
 	nodes := make([]Node, 0, len(entries))
 	for _, entry := range entries {
 		lowerName := strings.ToLower(entry.Name())
-		if lowerName == ".git" || lowerName == "node_modules" || strings.HasSuffix(lowerName, ".assets") || entry.Type()&fs.ModeSymlink != 0 {
+		if lowerName == ".git" || lowerName == ".trash" || lowerName == "node_modules" || strings.HasSuffix(lowerName, ".assets") || entry.Type()&fs.ModeSymlink != 0 {
 			continue
 		}
 
@@ -181,14 +183,8 @@ func (r *Repository) WriteMarkdown(relative, content, expectedVersion string) (M
 }
 
 func (r *Repository) resolveMarkdown(relative string) (string, os.FileInfo, error) {
-	if !r.Configured() {
-		return "", nil, ErrNotConfigured
-	}
-	if relative == "" || hasControlCharacter(relative) || filepath.IsAbs(relative) || filepath.Clean(relative) != relative || relative == ".." || strings.HasPrefix(relative, "../") {
-		return "", nil, ErrInvalidPath
-	}
-	if strings.Contains(relative, `\`) || !strings.EqualFold(filepath.Ext(relative), ".md") {
-		return "", nil, ErrNotMarkdown
+	if err := r.validateRelative(relative, true); err != nil {
+		return "", nil, err
 	}
 
 	candidate := filepath.Join(r.root, filepath.FromSlash(relative))

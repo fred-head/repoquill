@@ -1837,6 +1837,10 @@ are Alpha 2 release blockers and must receive dedicated security review.
 Replace immediate destructive deletion in normal notebook workflows with a
 recoverable notebook-local trash mechanism.
 
+Implementation status: completed on the Alpha 2 development branch. Normal
+deletion now moves notes, folders, and owned assets into a confined
+notebook-local Trash with explicit restore and permanent-delete workflows.
+
 Requirements:
 
 - move deleted notes and folders into a notebook-local `.trash` area by
@@ -1867,6 +1871,11 @@ Completion criteria:
 ## Milestone 13 - Note Version History and Restore
 
 Expose the history Git already provides in a note-oriented interface.
+
+Implementation status: completed on the Alpha 2 development branch. The active
+note can now show its provider-independent Git history, readable historical
+content and differences, and restore a selected version as a new version-checked
+working-tree change.
 
 Requirements:
 
@@ -2065,6 +2074,11 @@ Make everyday save, synchronization, remote-change, and failure states
 understandable to users who have no Git knowledge. Git remains visible only in
 notebook connection settings, optional diagnostics, and other deliberately
 technical views.
+
+Implementation status: completed on the Alpha 2 development branch. The compact
+status bar now opens a human-readable synchronization panel, successful external
+changes are summarized without replacing the active note, and technical Git
+details remain optional.
 
 Requirements:
 
@@ -2399,6 +2413,14 @@ roles, invitations, email addresses, or email-based recovery.
 Implementation status: completed on the Alpha 2 development branch. The exact
 release candidate must still pass the full CI, scan, container, and manual
 preflight gate before an Alpha 2 tag may be published.
+
+The post-review cleanup additionally applies persistent progressive throttling
+to sensitive password and MFA checks, bounds and coalesces security-event
+storage, binds expiring MFA enrollment to the initiating session, prevents
+expired-session resurrection during activity updates, fails closed on
+authentication-state read errors, raises the new-password minimum to 15
+characters with basic weak-value rejection, and quarantines a malformed MFA key
+only during an explicit recovery operation.
 
 - add focused unit, integration, frontend, and end-to-end tests for setup,
   login, logout, expiration, remember-me, revocation, restart persistence,

@@ -99,7 +99,8 @@ func TestPasswordValidationRejectsWeakOrExcessiveInputsBeforeHashing(t *testing.
 		{"short", ErrPasswordTooShort},
 		{strings.Repeat("x", maximumPasswordBytes+1), ErrPasswordTooLarge},
 		{string([]byte{0xff, 0xfe, 0xfd}), ErrInvalidPassword},
-		{strings.Repeat(" ", minimumPasswordRunes), nil},
+		{strings.Repeat(" ", minimumPasswordRunes), ErrPasswordTooWeak},
+		{"passwordpassword", ErrPasswordTooWeak},
 	}
 	for _, test := range tests {
 		if err := ValidatePassword(test.password); !errors.Is(err, test.want) {
@@ -116,7 +117,7 @@ func TestPasswordUsesVersionedArgon2idParametersAndUpgrades(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	password := "correct horse battery staple"
+	password := "violet meadow lantern orbit"
 	if err := service.CompleteSetup(ctx, token.Value, password); err != nil {
 		t.Fatal(err)
 	}

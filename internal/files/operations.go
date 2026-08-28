@@ -3,9 +3,9 @@ package files
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 )
@@ -149,16 +149,37 @@ func (r *Repository) resolveEntry(relative string) (string, os.FileInfo, error) 
 	if err := r.validateRelative(relative, false); err != nil {
 		return "", nil, err
 	}
-	candidate := filepath.Join(r.root, filepath.FromSlash(relative))
-	resolved, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
-		return "", nil, err
+	current := r.root
+	parts := strings.Split(relative, "/")
+	var info os.FileInfo
+	for index, part := range parts {
+		entries, err := os.ReadDir(current)
+		if err != nil {
+			return "", nil, err
+		}
+		var matched fs.DirEntry
+		for _, entry := range entries {
+			if entry.Name() == part {
+				matched = entry
+				break
+			}
+		}
+		if matched == nil {
+			return "", nil, os.ErrNotExist
+		}
+		if matched.Type()&fs.ModeSymlink != 0 || index < len(parts)-1 && !matched.IsDir() {
+			return "", nil, ErrInvalidPath
+		}
+		current = filepath.Join(current, matched.Name())
+		info, err = matched.Info()
+		if err != nil {
+			return "", nil, err
+		}
 	}
-	if resolved != filepath.Clean(candidate) || !isWithinRoot(r.root, resolved) || resolved == r.root {
+	if info == nil || !isWithinRoot(r.root, current) || current == r.root {
 		return "", nil, ErrInvalidPath
 	}
-	info, err := os.Stat(resolved)
-	return resolved, info, err
+	return current, info, nil
 }
 
 func (r *Repository) resolveNew(relative string, markdown bool) (string, error) {
@@ -193,19 +214,7 @@ func (r *Repository) validateRelative(relative string, markdown bool) error {
 	if !r.Configured() {
 		return ErrNotConfigured
 	}
-	if relative == "" || hasControlCharacter(relative) || strings.Contains(relative, `\`) || path.IsAbs(relative) || path.Clean(relative) != relative || relative == "." {
-		return ErrInvalidPath
-	}
-	for _, part := range strings.Split(relative, "/") {
-		lowerPart := strings.ToLower(part)
-		if part == "" || part == "." || part == ".." || lowerPart == ".git" || lowerPart == "node_modules" {
-			return ErrInvalidPath
-		}
-	}
-	if markdown && !strings.EqualFold(path.Ext(relative), ".md") {
-		return ErrNotMarkdown
-	}
-	return nil
+	return validatePortableEntryPath(relative, markdown)
 }
 
 func noteBase(markdownPath string) string {

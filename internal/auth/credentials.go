@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
@@ -22,18 +24,27 @@ const (
 	bootstrapArtifactKind  = "bootstrap-setup"
 	bootstrapTokenBytes    = 32
 	passwordSaltBytes      = 16
-	minimumPasswordRunes   = 12
+	minimumPasswordRunes   = 15
 	maximumPasswordBytes   = 1024
 )
 
 var (
 	ErrSetupUnavailable = errors.New("owner setup is unavailable")
 	ErrInvalidBootstrap = errors.New("invalid or expired setup authorization")
-	ErrPasswordTooShort = errors.New("password must contain at least 12 characters")
+	ErrPasswordTooShort = errors.New("password must contain at least 15 characters")
 	ErrPasswordTooLarge = errors.New("password must not exceed 1024 bytes")
 	ErrInvalidPassword  = errors.New("password must be valid UTF-8")
+	ErrPasswordTooWeak  = errors.New("password is too common or easily guessed")
 	ErrAuthentication   = errors.New("authentication failed")
 )
+
+var commonPasswords = map[string]struct{}{
+	"123456789012345": {}, "1234567890123456": {}, "12345678901234567890": {},
+	"adminadminadmin": {}, "administrator": {}, "changemechangeme": {},
+	"correcthorsebatterystaple": {}, "iloveyouiloveyou": {}, "letmeinletmeinletmein": {},
+	"passwordpassword": {}, "password123456": {}, "password123456789": {},
+	"qwertyqwertyqwerty": {}, "repoquillrepoquill": {}, "welcomewelcome": {},
+}
 
 type PasswordParameters struct {
 	MemoryKiB   uint32
@@ -250,7 +261,35 @@ func ValidatePassword(password string) error {
 	if utf8.RuneCountInString(password) < minimumPasswordRunes {
 		return ErrPasswordTooShort
 	}
+	if passwordIsEasilyGuessed(password) {
+		return ErrPasswordTooWeak
+	}
 	return nil
+}
+
+func passwordIsEasilyGuessed(password string) bool {
+	normalized := strings.Map(func(value rune) rune {
+		if unicode.IsSpace(value) {
+			return -1
+		}
+		return unicode.ToLower(value)
+	}, password)
+	if _, common := commonPasswords[normalized]; common {
+		return true
+	}
+	var first rune
+	allSame := true
+	for index, value := range []rune(password) {
+		if index == 0 {
+			first = value
+			continue
+		}
+		if value != first {
+			allSame = false
+			break
+		}
+	}
+	return allSame
 }
 
 func (s *Service) validateBootstrapToken(ctx context.Context, token string) error {

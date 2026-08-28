@@ -1,4 +1,4 @@
-# Local authentication setup foundation
+# Local authentication and recovery
 
 Status: Milestone 19 Phases 2-9. Setup/login, protected sessions, browser/PWA
 reauthentication, password/session administration, optional TOTP, and explicit
@@ -112,7 +112,9 @@ canonical notes or assets.
 
 Disabling or replacing MFA requires the current password plus a current TOTP or
 unused recovery code. A replacement remains pending, leaving the existing
-factor and recovery codes valid until the new authenticator is confirmed.
+factor and recovery codes valid until the new authenticator is confirmed. A
+pending enrollment expires after 15 minutes, is bound to the browser session
+that began it, and can be cancelled explicitly from Settings.
 
 ## Explicit disabled mode and upgrades
 
@@ -136,9 +138,17 @@ mode.
 ## Password policy and storage
 
 RepoQuill accepts pasted passphrases, Unicode, and leading or trailing
-whitespace without modification. It requires at least 12 Unicode characters
-and rejects inputs larger than 1024 UTF-8 bytes before password hashing. It
-does not impose composition rules or scheduled password changes.
+whitespace without modification. New and changed passwords require at least 15
+Unicode characters, reject a local set of common or trivially repeated values,
+and reject inputs larger than 1024 UTF-8 bytes before password hashing. It does
+not impose composition rules or scheduled password changes. Existing shorter
+passwords remain valid until deliberately replaced so an upgrade cannot lock
+the owner out.
+
+Login and every sensitive password/TOTP verification share bounded credential
+work and persistent progressive throttling. Repeated identical security events
+are coalesced, records older than 90 days are removed, and the event table is
+limited to the newest 2,000 entries to prevent unauthenticated disk growth.
 
 Passwords use Argon2id from `golang.org/x/crypto/argon2` with:
 
@@ -181,8 +191,10 @@ the minimum supported CPU while retaining at least the documented memory-hard
 profile. Any cost reduction requires a security review; increases are applied
 through the transparent upgrade path.
 
-## Remaining release limitation
+## Release gate
 
 Local password authentication, optional TOTP, recovery, and explicit disabled
-mode are functional, but the adversarial M19P9 verification gate is not
-complete. Do not treat this development branch as a finished Alpha 2 release.
+mode have passed the Milestone 19 implementation review. Every exact Alpha 2
+candidate remains blocked until its source commit and built container pass the
+full CI, scan, and manual release preflight. Do not treat an arbitrary
+development-branch build as a published Alpha 2 release.

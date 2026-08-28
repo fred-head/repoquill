@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path"
@@ -112,6 +113,49 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 	}
 
 	mux := http.NewServeMux()
+	beginCredentialAttempt := func(w http.ResponseWriter, r *http.Request, operation string) (netip.Addr, func(), bool) {
+		clientIP := requestIdentity.ClientIP(r)
+		errorMessage := "too many authentication attempts"
+		errorCode := "authentication_throttled"
+		if operation == auth.ThrottleOperationLogin {
+			errorMessage = "too many login attempts"
+			errorCode = "login_throttled"
+		}
+		if !loginThrottle.Begin() {
+			w.Header().Set("Retry-After", "1")
+			_ = authService.RecordSecurityEvent(r.Context(), operation, "throttled", "client="+auth.ClientReference(clientIP))
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": errorMessage, "code": errorCode, "retryAfterSeconds": 1})
+			return clientIP, func() {}, false
+		}
+		retryAfter, err := loginThrottle.CheckOperation(r.Context(), operation, clientIP)
+		if err != nil {
+			loginThrottle.End()
+			logger.Error("credential throttle unavailable", "operation", operation, "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication is unavailable"})
+			return clientIP, func() {}, false
+		}
+		if retryAfter > 0 {
+			loginThrottle.End()
+			seconds := int64((retryAfter + time.Second - 1) / time.Second)
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
+			_ = authService.RecordSecurityEvent(r.Context(), operation, "throttled", "client="+auth.ClientReference(clientIP))
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": errorMessage, "code": errorCode, "retryAfterSeconds": seconds})
+			return clientIP, func() {}, false
+		}
+		return clientIP, loginThrottle.End, true
+	}
+	recordCredentialFailure := func(w http.ResponseWriter, r *http.Request, operation string, clientIP netip.Addr) bool {
+		delay, err := loginThrottle.FailureOperation(r.Context(), operation, clientIP)
+		if err != nil {
+			logger.Error("record credential throttle failed", "operation", operation, "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication is unavailable"})
+			return false
+		}
+		if delay > 0 {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int64((delay+time.Second-1)/time.Second)))
+		}
+		return true
+	}
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": version})
@@ -150,27 +194,11 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "login is not available", "code": "login_unavailable"})
 				return
 			}
-			clientIP := requestIdentity.ClientIP(r)
-			if !loginThrottle.Begin() {
-				w.Header().Set("Retry-After", "1")
-				_ = authService.RecordSecurityEvent(r.Context(), "login", "throttled", "client="+auth.ClientReference(clientIP))
-				writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many login attempts", "code": "login_throttled", "retryAfterSeconds": 1})
+			clientIP, release, allowed := beginCredentialAttempt(w, r, auth.ThrottleOperationLogin)
+			if !allowed {
 				return
 			}
-			defer loginThrottle.End()
-			retryAfter, throttleErr := loginThrottle.Check(r.Context(), clientIP)
-			if throttleErr != nil {
-				logger.Error("login throttle unavailable", "error", throttleErr)
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication is unavailable"})
-				return
-			}
-			if retryAfter > 0 {
-				seconds := int64((retryAfter + time.Second - 1) / time.Second)
-				w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
-				_ = authService.RecordSecurityEvent(r.Context(), "login", "throttled", "client="+auth.ClientReference(clientIP))
-				writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many login attempts", "code": "login_throttled", "retryAfterSeconds": seconds})
-				return
-			}
+			defer release()
 			err = sessions.Login(r.Context(), input.Password, input.RememberDevice, r.UserAgent())
 			if errors.Is(err, auth.ErrMFARequired) {
 				_ = authService.RecordSecurityEvent(r.Context(), "login_password", "success", "client="+auth.ClientReference(clientIP))
@@ -178,14 +206,10 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				return
 			}
 			if errors.Is(err, auth.ErrAuthentication) {
-				delay, recordErr := loginThrottle.Failure(r.Context(), clientIP)
-				if recordErr != nil {
-					logger.Error("record login throttle failed", "error", recordErr)
+				if !recordCredentialFailure(w, r, auth.ThrottleOperationLogin, clientIP) {
+					return
 				}
 				_ = authService.RecordSecurityEvent(r.Context(), "login", "failure", "client="+auth.ClientReference(clientIP))
-				if delay > 0 {
-					w.Header().Set("Retry-After", fmt.Sprintf("%d", int64((delay+time.Second-1)/time.Second)))
-				}
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
 				return
 			}
@@ -195,7 +219,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication is unavailable"})
 				return
 			}
-			if err := loginThrottle.Success(r.Context(), clientIP); err != nil {
+			if err := loginThrottle.SuccessOperation(r.Context(), auth.ThrottleOperationLogin, clientIP); err != nil {
 				logger.Warn("clear login throttle failed", "error", err)
 			}
 			_ = authService.RecordSecurityEvent(r.Context(), "login", "success", "client="+auth.ClientReference(clientIP))
@@ -208,25 +232,20 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
 				return
 			}
-			clientIP := requestIdentity.ClientIP(r)
-			if !loginThrottle.Begin() {
-				w.Header().Set("Retry-After", "1")
-				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many login attempts", "code": "login_throttled"})
+			clientIP, release, allowed := beginCredentialAttempt(w, r, auth.ThrottleOperationLogin)
+			if !allowed {
 				return
 			}
-			defer loginThrottle.End()
-			if retry, err := loginThrottle.Check(r.Context(), clientIP); err != nil || retry > 0 {
-				w.Header().Set("Retry-After", "1")
-				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many login attempts", "code": "login_throttled"})
-				return
-			}
+			defer release()
 			if err := sessions.CompleteMFA(r.Context(), input.Code); err != nil {
-				_, _ = loginThrottle.Failure(r.Context(), clientIP)
+				if !recordCredentialFailure(w, r, auth.ThrottleOperationLogin, clientIP) {
+					return
+				}
 				_ = authService.RecordSecurityEvent(r.Context(), "login_mfa", "failure", "client="+auth.ClientReference(clientIP))
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
 				return
 			}
-			_ = loginThrottle.Success(r.Context(), clientIP)
+			_ = loginThrottle.SuccessOperation(r.Context(), auth.ThrottleOperationLogin, clientIP)
 			_ = authService.RecordSecurityEvent(r.Context(), "login_mfa", "success", "client="+auth.ClientReference(clientIP))
 			writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "csrfToken": sessions.ExistingCSRFToken(r.Context())})
 		})
@@ -309,12 +328,29 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session durations are outside the allowed range"})
 				return
 			}
+			clientIP, release, allowed := beginCredentialAttempt(w, r, auth.ThrottleOperationSensitive)
+			if !allowed {
+				return
+			}
+			defer release()
 			if err := authService.VerifyPassword(r.Context(), input.CurrentPassword); err != nil {
+				if !recordCredentialFailure(w, r, auth.ThrottleOperationSensitive, clientIP) {
+					return
+				}
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
 				return
 			}
-			if enabled, _ := authService.MFAEnabled(r.Context()); enabled {
+			enabled, stateErr := authService.MFAEnabled(r.Context())
+			if stateErr != nil {
+				logger.Error("read MFA state for session settings failed", "error", stateErr)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication is unavailable"})
+				return
+			}
+			if enabled {
 				if authService.VerifySecondFactor(r.Context(), input.MFACode) != nil {
+					if !recordCredentialFailure(w, r, auth.ThrottleOperationSensitive, clientIP) {
+						return
+					}
 					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
 					return
 				}
@@ -323,6 +359,9 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			if err := authService.UpdateSessionSettings(r.Context(), settings); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
+			}
+			if err := loginThrottle.SuccessOperation(r.Context(), auth.ThrottleOperationSensitive, clientIP); err != nil {
+				logger.Warn("clear sensitive credential throttle failed", "error", err)
 			}
 			_ = authService.RecordSecurityEvent(r.Context(), "session_settings", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 			writeJSON(w, http.StatusOK, map[string]any{"sessionSettings": settings})
@@ -340,8 +379,22 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			if enabled, _ := authService.MFAEnabled(r.Context()); enabled {
+			clientIP, release, allowed := beginCredentialAttempt(w, r, auth.ThrottleOperationSensitive)
+			if !allowed {
+				return
+			}
+			defer release()
+			enabled, stateErr := authService.MFAEnabled(r.Context())
+			if stateErr != nil {
+				logger.Error("read MFA state for password change failed", "error", stateErr)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication is unavailable"})
+				return
+			}
+			if enabled {
 				if err := authService.VerifyPassword(r.Context(), input.CurrentPassword); err != nil || authService.VerifySecondFactor(r.Context(), input.MFACode) != nil {
+					if !recordCredentialFailure(w, r, auth.ThrottleOperationSensitive, clientIP) {
+						return
+					}
 					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
 					return
 				}
@@ -349,11 +402,17 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			err := sessions.ChangePassword(r.Context(), input.CurrentPassword, input.NewPassword)
 			switch {
 			case err == nil:
+				if clearErr := loginThrottle.SuccessOperation(r.Context(), auth.ThrottleOperationSensitive, clientIP); clearErr != nil {
+					logger.Warn("clear sensitive credential throttle failed", "error", clearErr)
+				}
 				_ = authService.RecordSecurityEvent(r.Context(), "password_change", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 				writeJSON(w, http.StatusOK, map[string]any{"changed": true, "csrfToken": sessions.ExistingCSRFToken(r.Context())})
 			case errors.Is(err, auth.ErrAuthentication):
+				if !recordCredentialFailure(w, r, auth.ThrottleOperationSensitive, clientIP) {
+					return
+				}
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
-			case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLarge), errors.Is(err, auth.ErrInvalidPassword):
+			case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLarge), errors.Is(err, auth.ErrInvalidPassword), errors.Is(err, auth.ErrPasswordTooWeak):
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			default:
 				logger.Error("password change failed", "error", err)
@@ -368,11 +427,20 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
 				return
 			}
-			enrollment, err := authService.BeginMFAEnrollment(r.Context(), input.CurrentPassword, input.CurrentFactor)
+			clientIP, release, allowed := beginCredentialAttempt(w, r, auth.ThrottleOperationSensitive)
+			if !allowed {
+				return
+			}
+			defer release()
+			enrollment, err := authService.BeginMFAEnrollment(r.Context(), input.CurrentPassword, input.CurrentFactor, sessions.CurrentHash(r.Context()))
 			if err != nil {
+				if !recordCredentialFailure(w, r, auth.ThrottleOperationSensitive, clientIP) {
+					return
+				}
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
 				return
 			}
+			_ = loginThrottle.SuccessOperation(r.Context(), auth.ThrottleOperationSensitive, clientIP)
 			writeJSON(w, http.StatusOK, enrollment)
 		})
 		mux.HandleFunc("POST /api/auth/mfa/confirm", func(w http.ResponseWriter, r *http.Request) {
@@ -383,16 +451,32 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
 				return
 			}
-			if err := authService.ConfirmMFAEnrollment(r.Context(), input.Code, input.RecoveryCodesStored); err != nil {
+			clientIP, release, allowed := beginCredentialAttempt(w, r, auth.ThrottleOperationSensitive)
+			if !allowed {
+				return
+			}
+			defer release()
+			if err := authService.ConfirmMFAEnrollment(r.Context(), input.Code, input.RecoveryCodesStored, sessions.CurrentHash(r.Context())); err != nil {
+				if !recordCredentialFailure(w, r, auth.ThrottleOperationSensitive, clientIP) {
+					return
+				}
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "MFA enrollment could not be confirmed"})
 				return
 			}
+			_ = loginThrottle.SuccessOperation(r.Context(), auth.ThrottleOperationSensitive, clientIP)
 			if err := sessions.RotateCurrent(r.Context()); err != nil {
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session rotation failed"})
 				return
 			}
 			_ = authService.RecordSecurityEvent(r.Context(), "mfa_enabled", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 			writeJSON(w, http.StatusOK, map[string]any{"mfaEnabled": true, "csrfToken": sessions.ExistingCSRFToken(r.Context())})
+		})
+		mux.HandleFunc("DELETE /api/auth/mfa/enrollment", func(w http.ResponseWriter, r *http.Request) {
+			if err := authService.CancelMFAEnrollment(r.Context(), sessions.CurrentHash(r.Context())); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "MFA enrollment could not be cancelled"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"cancelled": true})
 		})
 		mux.HandleFunc("DELETE /api/auth/mfa", func(w http.ResponseWriter, r *http.Request) {
 			var input struct {
@@ -402,7 +486,15 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
 				return
 			}
+			clientIP, release, allowed := beginCredentialAttempt(w, r, auth.ThrottleOperationSensitive)
+			if !allowed {
+				return
+			}
+			defer release()
 			if err := authService.DisableMFA(r.Context(), input.CurrentPassword, input.Code); err != nil {
+				if !recordCredentialFailure(w, r, auth.ThrottleOperationSensitive, clientIP) {
+					return
+				}
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
 				return
 			}
@@ -421,11 +513,20 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
 				return
 			}
+			clientIP, release, allowed := beginCredentialAttempt(w, r, auth.ThrottleOperationSensitive)
+			if !allowed {
+				return
+			}
+			defer release()
 			codes, err := authService.RegenerateRecoveryCodes(r.Context(), input.CurrentPassword, input.Code)
 			if err != nil {
+				if !recordCredentialFailure(w, r, auth.ThrottleOperationSensitive, clientIP) {
+					return
+				}
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed", "code": "invalid_credentials"})
 				return
 			}
+			_ = loginThrottle.SuccessOperation(r.Context(), auth.ThrottleOperationSensitive, clientIP)
 			writeJSON(w, http.StatusOK, map[string]any{"recoveryCodes": codes})
 		})
 		mux.HandleFunc("POST /api/auth/setup", func(w http.ResponseWriter, r *http.Request) {
@@ -446,7 +547,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				}
 				_ = authService.RecordSecurityEvent(r.Context(), "setup", "success", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 				writeJSON(w, http.StatusOK, map[string]any{"setupCompleted": true, "authenticated": true, "csrfToken": sessions.ExistingCSRFToken(r.Context())})
-			case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLarge), errors.Is(err, auth.ErrInvalidPassword):
+			case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLarge), errors.Is(err, auth.ErrInvalidPassword), errors.Is(err, auth.ErrPasswordTooWeak):
 				_ = authService.RecordSecurityEvent(r.Context(), "setup", "failure", "client="+auth.ClientReference(requestIdentity.ClientIP(r)))
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			case errors.Is(err, auth.ErrInvalidBootstrap):
@@ -582,6 +683,49 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"path": filePath, "content": markdown.Content, "version": markdown.Version})
 	})
+	mux.HandleFunc("GET /api/repository/history", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		history, err := currentGit().NoteHistoryWithStatus(ctx, r.URL.Query().Get("path"))
+		if err != nil {
+			writeHistoryError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, history)
+	})
+	mux.HandleFunc("GET /api/repository/history/version", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		version, err := currentGit().NoteVersion(ctx, r.URL.Query().Get("path"), r.URL.Query().Get("version"))
+		if err != nil {
+			writeHistoryError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, version)
+	})
+	mux.HandleFunc("POST /api/repository/history/restore", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Path            string `json:"path"`
+			VersionID       string `json:"versionId"`
+			ExpectedVersion string `json:"expectedVersion"`
+		}
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		version, err := currentGit().NoteVersion(ctx, input.Path, input.VersionID)
+		if err != nil {
+			writeHistoryError(w, err)
+			return
+		}
+		markdown, err := currentRepository().WriteMarkdown(input.Path, version.Content, input.ExpectedVersion)
+		if err != nil {
+			writeRepositoryError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"path": input.Path, "content": markdown.Content, "version": markdown.Version})
+	})
 	mux.HandleFunc("POST /api/repository/entries", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
 			Path string `json:"path"`
@@ -611,11 +755,36 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		writeJSON(w, http.StatusOK, map[string]string{"path": input.Target})
 	})
 	mux.HandleFunc("DELETE /api/repository/entry", func(w http.ResponseWriter, r *http.Request) {
-		if err := currentRepository().Delete(r.URL.Query().Get("path")); err != nil {
+		item, err := currentRepository().MoveToTrash(r.URL.Query().Get("path"))
+		if err != nil {
 			writeRepositoryError(w, err)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, http.StatusOK, item)
+	})
+	mux.HandleFunc("GET /api/repository/trash", func(w http.ResponseWriter, _ *http.Request) {
+		items, err := currentRepository().TrashItems()
+		if err != nil {
+			writeRepositoryError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	})
+	mux.HandleFunc("POST /api/repository/trash/{trashID}/restore", func(w http.ResponseWriter, r *http.Request) {
+		item, err := currentRepository().RestoreTrashItem(r.PathValue("trashID"))
+		if err != nil {
+			writeRepositoryError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+	})
+	mux.HandleFunc("DELETE /api/repository/trash/{trashID}", func(w http.ResponseWriter, r *http.Request) {
+		item, err := currentRepository().DeleteTrashItem(r.PathValue("trashID"))
+		if err != nil {
+			writeRepositoryError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
 	})
 	mux.HandleFunc("POST /api/repository/assets", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxAssetRequestBodySize)
@@ -973,6 +1142,10 @@ func writeRepositoryError(w http.ResponseWriter, err error) {
 		status, message = http.StatusBadRequest, "entry type must be file or directory"
 	case errors.Is(err, files.ErrAlreadyExists):
 		status, message = http.StatusConflict, err.Error()
+	case errors.Is(err, files.ErrRestoreCollision):
+		status, message = http.StatusConflict, "The original location is already in use. Rename or move the existing item before restoring."
+	case errors.Is(err, files.ErrInvalidTrashID):
+		status, message = http.StatusBadRequest, "invalid trash item"
 	case errors.Is(err, files.ErrFileTooLarge):
 		status, message = http.StatusRequestEntityTooLarge, err.Error()
 	case errors.Is(err, files.ErrAssetTooLarge):
@@ -985,6 +1158,22 @@ func writeRepositoryError(w http.ResponseWriter, err error) {
 		status, message = http.StatusNotFound, "Markdown file not found"
 	case errors.Is(err, os.ErrPermission):
 		status, message = http.StatusForbidden, "repository path is not readable"
+	}
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func writeHistoryError(w http.ResponseWriter, err error) {
+	status := http.StatusServiceUnavailable
+	message := "Version history is not available for this notebook."
+	switch {
+	case errors.Is(err, gitrepo.ErrInvalidNotePath):
+		status, message = http.StatusBadRequest, "invalid note history path"
+	case errors.Is(err, gitrepo.ErrHistoryVersionMissing):
+		status, message = http.StatusNotFound, "This note version is no longer available."
+	case errors.Is(err, gitrepo.ErrHistoryFileTooLarge):
+		status, message = http.StatusRequestEntityTooLarge, "This historical note is too large to display."
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		status, message = http.StatusServiceUnavailable, "Version history took too long to load. Try again."
 	}
 	writeJSON(w, status, map[string]string{"error": message})
 }

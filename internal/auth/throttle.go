@@ -11,7 +11,14 @@ import (
 	"time"
 )
 
-const loginThrottleWindow = 15 * time.Minute
+const (
+	loginThrottleWindow         = 15 * time.Minute
+	securityEventRetention      = 90 * 24 * time.Hour
+	securityEventCoalesceWindow = time.Minute
+	maximumStoredSecurityEvents = 2000
+	ThrottleOperationLogin      = "login"
+	ThrottleOperationSensitive  = "sensitive"
+)
 
 type LoginThrottle struct {
 	service *Service
@@ -35,9 +42,16 @@ func (t *LoginThrottle) Begin() bool {
 func (t *LoginThrottle) End() { <-t.active }
 
 func (t *LoginThrottle) Check(ctx context.Context, client netip.Addr) (time.Duration, error) {
+	return t.CheckOperation(ctx, ThrottleOperationLogin, client)
+}
+
+func (t *LoginThrottle) CheckOperation(ctx context.Context, operation string, client netip.Addr) (time.Duration, error) {
+	if err := validateThrottleOperation(operation); err != nil {
+		return 0, err
+	}
 	now := t.now().UTC()
 	maximum := time.Duration(0)
-	for _, key := range throttleKeys(client) {
+	for _, key := range throttleKeys(operation, client) {
 		var next sql.NullString
 		err := t.service.db.QueryRowContext(ctx, `SELECT next_allowed_at FROM auth_throttle_state WHERE scope = ? AND key_hash = ?`, key.scope, key.hash[:]).Scan(&next)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -61,6 +75,13 @@ func (t *LoginThrottle) Check(ctx context.Context, client netip.Addr) (time.Dura
 }
 
 func (t *LoginThrottle) Failure(ctx context.Context, client netip.Addr) (time.Duration, error) {
+	return t.FailureOperation(ctx, ThrottleOperationLogin, client)
+}
+
+func (t *LoginThrottle) FailureOperation(ctx context.Context, operation string, client netip.Addr) (time.Duration, error) {
+	if err := validateThrottleOperation(operation); err != nil {
+		return 0, err
+	}
 	now := t.now().UTC()
 	tx, err := t.service.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -68,7 +89,7 @@ func (t *LoginThrottle) Failure(ctx context.Context, client netip.Addr) (time.Du
 	}
 	defer tx.Rollback()
 	maximum := time.Duration(0)
-	for _, key := range throttleKeys(client) {
+	for _, key := range throttleKeys(operation, client) {
 		attempts, started, err := loadThrottleState(ctx, tx, key)
 		if err != nil {
 			return 0, err
@@ -98,7 +119,14 @@ func (t *LoginThrottle) Failure(ctx context.Context, client netip.Addr) (time.Du
 }
 
 func (t *LoginThrottle) Success(ctx context.Context, client netip.Addr) error {
-	for _, key := range throttleKeys(client) {
+	return t.SuccessOperation(ctx, ThrottleOperationLogin, client)
+}
+
+func (t *LoginThrottle) SuccessOperation(ctx context.Context, operation string, client netip.Addr) error {
+	if err := validateThrottleOperation(operation); err != nil {
+		return err
+	}
+	for _, key := range throttleKeys(operation, client) {
 		if _, err := t.service.db.ExecContext(ctx, `DELETE FROM auth_throttle_state WHERE scope = ? AND key_hash = ?`, key.scope, key.hash[:]); err != nil {
 			return err
 		}
@@ -112,14 +140,23 @@ type throttleKey struct {
 	threshold int
 }
 
-func throttleKeys(client netip.Addr) []throttleKey {
+func throttleKeys(operation string, client netip.Addr) []throttleKey {
 	clientValue := "unknown"
 	if client.IsValid() {
 		clientValue = client.String()
 	}
-	clientHash := sha256.Sum256([]byte("login-client\x00" + clientValue))
-	globalHash := sha256.Sum256([]byte("login-global"))
-	return []throttleKey{{scope: "login_client", hash: clientHash, threshold: 3}, {scope: "login_global", hash: globalHash, threshold: 10}}
+	clientHash := sha256.Sum256([]byte("credential-client\x00" + operation + "\x00" + clientValue))
+	globalHash := sha256.Sum256([]byte("credential-global\x00" + operation))
+	return []throttleKey{{scope: operation + "_client", hash: clientHash, threshold: 3}, {scope: operation + "_global", hash: globalHash, threshold: 10}}
+}
+
+func validateThrottleOperation(operation string) error {
+	switch operation {
+	case ThrottleOperationLogin, ThrottleOperationSensitive:
+		return nil
+	default:
+		return errors.New("invalid credential throttle operation")
+	}
 }
 
 func loadThrottleState(ctx context.Context, tx *sql.Tx, key throttleKey) (int, time.Time, error) {
@@ -164,9 +201,38 @@ func (s *Service) RecordSecurityEvent(ctx context.Context, eventType, outcome, d
 	if len(eventType) > 64 || len(outcome) > 32 || len(details) > 256 {
 		return errors.New("security event is too large")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO auth_security_events (event_type, occurred_at, outcome, details) VALUES (?, ?, ?, ?)`, eventType, time.Now().UTC().Format(time.RFC3339Nano), outcome, details)
-	if err == nil {
-		s.logger.Info("authentication security event", "eventType", eventType, "outcome", outcome, "details", details)
+	now := time.Now().UTC()
+	var previous string
+	err := s.db.QueryRowContext(ctx, `SELECT occurred_at FROM auth_security_events WHERE event_type=? AND outcome=? AND details=? ORDER BY id DESC LIMIT 1`, eventType, outcome, details).Scan(&previous)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
 	}
-	return err
+	if err == nil {
+		occurredAt, parseErr := time.Parse(time.RFC3339Nano, previous)
+		if parseErr != nil {
+			return errors.New("stored security event timestamp is invalid")
+		}
+		if now.Sub(occurredAt) < securityEventCoalesceWindow {
+			return nil
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO auth_security_events (event_type, occurred_at, outcome, details) VALUES (?, ?, ?, ?)`, eventType, now.Format(time.RFC3339Nano), outcome, details); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_security_events WHERE occurred_at < ?`, now.Add(-securityEventRetention).Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_security_events WHERE id NOT IN (SELECT id FROM auth_security_events ORDER BY id DESC LIMIT ?)`, maximumStoredSecurityEvents); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.logger.Info("authentication security event", "eventType", eventType, "outcome", outcome, "details", details)
+	return nil
 }

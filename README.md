@@ -7,15 +7,16 @@ Each notebook is an ordinary Git repository, so your notes remain readable and
 versioned even without RepoQuill.
 
 > **Alpha software:** RepoQuill is ready for careful self-hosted testing. Alpha
-> 2 development includes a single-owner local authentication boundary, but is
-> not release-ready until the remaining MFA and security-gate work is complete.
+> 2 development includes a security-reviewed single-owner local authentication
+> boundary. Each exact release candidate must still pass the complete CI,
+> vulnerability-scan, container, and manual preflight gate before publication.
 > Back up `/data`, pin a release version, and read the
 > [known limitations](KNOWN-LIMITATIONS.md) before using important notebooks.
 
 ## Features
 
 - Live rendered Markdown editing with CommonMark and GFM
-- Folders, note creation, rename, move, delete, and multiple open note tabs
+- Folders, note creation, rename, move, recoverable Trash, and multiple open note tabs
 - Formatting toolbar and keyboard-/touch-friendly slash commands
 - Clipboard screenshot paste and mobile image selection
 - Portable per-note `.assets` directories with explicit unused-asset cleanup
@@ -23,6 +24,7 @@ versioned even without RepoQuill.
 - Managed SSH deploy keys and explicit SSH host fingerprint approval
 - Manual and configurable automatic commit, pull/rebase, and push workflows
 - Conflict-safe saves with visible local-save and Git-sync status
+- Note-focused Git version history with readable comparison and safe restore
 - Full-text search across note names, folders, and Markdown content
 - Responsive desktop/mobile UI, dark/light mode, and installable online-first PWA
 - Multi-architecture Docker images for `linux/amd64` and `linux/arm64`
@@ -86,8 +88,10 @@ docker compose exec repoquill repoquill auth bootstrap-token
 ```
 
 The token is printed once and expires after 15 minutes. Later sign-ins need only
-the password. Security settings let the owner change the password, configure
-session lifetimes, inspect browser sessions, and revoke other devices.
+the password. New passwords require at least 15 characters and reject a small
+local set of commonly guessed values. Security settings let the owner change
+the password, configure session lifetimes, inspect browser sessions, and revoke
+other devices.
 
 `REPOQUILL_SESSION_COOKIE_SECURE=true` is the safe default for an HTTPS reverse
 proxy. For deliberate plain-HTTP localhost testing only, set it to `false`.
@@ -210,7 +214,9 @@ docker compose exec repoquill repoquill auth reset-mfa
 ```
 
 The TOTP secret is encrypted with `/data/app/auth.key`, outside SQLite. Back up
-that file with `/data/app/auth.db`; neither contains notebook content. See the
+that file with `/data/app/auth.db`; neither contains notebook content. An
+explicit `reset-mfa` quarantines a malformed key before generating its
+replacement. See the
 [local authentication guide](docs/security/local-authentication-setup.md).
 
 `REPOQUILL_AUTH_MODE=disabled` is accepted only as an explicit operator choice
