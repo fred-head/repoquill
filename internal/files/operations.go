@@ -3,6 +3,7 @@ package files
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -148,16 +149,37 @@ func (r *Repository) resolveEntry(relative string) (string, os.FileInfo, error) 
 	if err := r.validateRelative(relative, false); err != nil {
 		return "", nil, err
 	}
-	candidate := filepath.Join(r.root, filepath.FromSlash(relative))
-	resolved, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
-		return "", nil, err
+	current := r.root
+	parts := strings.Split(relative, "/")
+	var info os.FileInfo
+	for index, part := range parts {
+		entries, err := os.ReadDir(current)
+		if err != nil {
+			return "", nil, err
+		}
+		var matched fs.DirEntry
+		for _, entry := range entries {
+			if entry.Name() == part {
+				matched = entry
+				break
+			}
+		}
+		if matched == nil {
+			return "", nil, os.ErrNotExist
+		}
+		if matched.Type()&fs.ModeSymlink != 0 || index < len(parts)-1 && !matched.IsDir() {
+			return "", nil, ErrInvalidPath
+		}
+		current = filepath.Join(current, matched.Name())
+		info, err = matched.Info()
+		if err != nil {
+			return "", nil, err
+		}
 	}
-	if resolved != filepath.Clean(candidate) || !isWithinRoot(r.root, resolved) || resolved == r.root {
+	if info == nil || !isWithinRoot(r.root, current) || current == r.root {
 		return "", nil, ErrInvalidPath
 	}
-	info, err := os.Stat(resolved)
-	return resolved, info, err
+	return current, info, nil
 }
 
 func (r *Repository) resolveNew(relative string, markdown bool) (string, error) {

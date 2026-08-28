@@ -104,12 +104,14 @@ if [[ "${runtime_uid}" == "0" ]]; then
 fi
 
 bootstrap_output="$(docker exec "${container_name}" repoquill auth bootstrap-token)"
-bootstrap_token="$(printf '%s\n' "${bootstrap_output}" | sed -n '2p')"
+mapfile -t bootstrap_token_lines < <(printf '%s\n' "${bootstrap_output}" | grep -E '^[A-Za-z0-9_-]{43}$' || true)
 unset bootstrap_output
-if [[ ! "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
+if [[ "${#bootstrap_token_lines[@]}" -ne 1 ]]; then
   echo "Container did not return a valid one-time bootstrap token" >&2
   exit 1
 fi
+bootstrap_token="${bootstrap_token_lines[0]}"
+unset bootstrap_token_lines
 if docker logs "${container_name}" 2>&1 | grep --fixed-strings --quiet "${bootstrap_token}"; then
   echo "Container wrote the bootstrap token to normal server logs" >&2
   exit 1

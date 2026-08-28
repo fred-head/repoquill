@@ -20,6 +20,12 @@ func TestTrashAndRestoreNoteWithAssets(t *testing.T) {
 	if item.OriginalPath != "Folder/Note.md" || item.Type != "file" || item.ID == "" || item.Size == 0 {
 		t.Fatalf("unexpected trash item: %#v", item)
 	}
+	if _, err := os.Stat(filepath.Join(root, ".trash", item.ID, "content", "item")); err != nil {
+		t.Fatalf("trash content was not stored under a server-generated path: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".trash", item.ID, "content", "Folder", "Note.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("user-provided path leaked into the trash storage layout: %v", err)
+	}
 	for _, removed := range []string{"Folder/Note.md", "Folder/Note.assets"} {
 		if _, err := os.Stat(filepath.Join(root, removed)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s remained in the normal notebook: %v", removed, err)

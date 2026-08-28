@@ -86,3 +86,16 @@ func TestNoteHistoryRejectsPathsAndUnknownVersions(t *testing.T) {
 		t.Fatalf("unknown history version was accepted: %v", err)
 	}
 }
+
+func TestNoteHistoryRejectsSymlinkedCurrentNote(t *testing.T) {
+	root, _ := testRepository(t)
+	outside := filepath.Join(t.TempDir(), "Outside.md")
+	writeFile(t, outside, "outside")
+	if err := os.Symlink(outside, filepath.Join(root, "Linked.md")); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := service.NoteHistory(context.Background(), "Linked.md"); !errors.Is(err, ErrInvalidNotePath) {
+		t.Fatalf("symlinked history note was accepted: %v", err)
+	}
+}

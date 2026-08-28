@@ -3,7 +3,10 @@ package git
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -91,19 +94,57 @@ func (s *Service) NoteVersion(ctx context.Context, notePath, versionID string) (
 }
 
 func (s *Service) noteHistory(ctx context.Context, notePath string) ([]NoteHistoryEntry, error) {
-	if err := validateHistoryNotePath(notePath); err != nil {
+	if err := s.validateRoot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.validateRoot(ctx); err != nil {
+	canonicalPath, err := canonicalHistoryNotePath(s.root, notePath)
+	if err != nil {
 		return nil, err
 	}
 
 	format := historyRecordPrefix + "%H\t%aI\t%s"
-	output, err := s.run(ctx, "inspect note history", "log", "--follow", "-n", "100", "--format="+format, "--name-only", "--", notePath)
+	output, err := s.run(ctx, "inspect note history", "log", "--follow", "-n", "100", "--format="+format, "--name-only", "--", canonicalPath)
 	if err != nil {
 		return nil, ErrHistoryUnavailable
 	}
 	return parseNoteHistory(output), nil
+}
+
+func canonicalHistoryNotePath(root, value string) (string, error) {
+	if err := validateHistoryNotePath(value); err != nil {
+		return "", err
+	}
+	current := root
+	canonical := make([]string, 0, strings.Count(value, "/")+1)
+	parts := strings.Split(value, "/")
+	for index, part := range parts {
+		entries, err := os.ReadDir(current)
+		if err != nil {
+			return "", ErrHistoryUnavailable
+		}
+		var matched fs.DirEntry
+		for _, entry := range entries {
+			if entry.Name() == part {
+				matched = entry
+				break
+			}
+		}
+		if matched == nil {
+			return "", ErrHistoryVersionMissing
+		}
+		if matched.Type()&fs.ModeSymlink != 0 || index < len(parts)-1 && !matched.IsDir() {
+			return "", ErrInvalidNotePath
+		}
+		if index == len(parts)-1 {
+			info, err := matched.Info()
+			if err != nil || !info.Mode().IsRegular() {
+				return "", ErrInvalidNotePath
+			}
+		}
+		canonical = append(canonical, matched.Name())
+		current = filepath.Join(current, matched.Name())
+	}
+	return strings.Join(canonical, "/"), nil
 }
 
 func parseNoteHistory(output string) []NoteHistoryEntry {

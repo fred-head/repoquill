@@ -100,8 +100,8 @@ func (r *Repository) MoveToTrash(relative string) (TrashItem, error) {
 	cleanupPending := func() { _ = os.RemoveAll(pendingRoot) }
 
 	contentRoot := filepath.Join(pendingRoot, trashContentName)
-	trashedPath := filepath.Join(contentRoot, filepath.FromSlash(relative))
-	if err := os.MkdirAll(filepath.Dir(trashedPath), 0o755); err != nil {
+	trashedPath := filepath.Join(contentRoot, "item")
+	if err := os.Mkdir(contentRoot, 0o755); err != nil {
 		cleanupPending()
 		return TrashItem{}, err
 	}
@@ -289,7 +289,7 @@ func (r *Repository) loadTrashItem(id string) (resolvedTrashItem, error) {
 		return resolvedTrashItem{}, ErrInvalidPath
 	}
 	contentRoot := filepath.Join(itemRoot, trashContentName)
-	contentPath := filepath.Join(contentRoot, filepath.FromSlash(metadata.OriginalPath))
+	contentPath := filepath.Join(contentRoot, "item")
 	resolved, err := filepath.EvalSymlinks(contentPath)
 	if err != nil || resolved != filepath.Clean(contentPath) || !isWithinRoot(contentRoot, resolved) {
 		return resolvedTrashItem{}, ErrInvalidPath
