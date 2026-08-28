@@ -43,7 +43,7 @@ func (r *Repository) Search(query string) ([]SearchResult, error) {
 			}
 			return nil
 		}
-		if entry.IsDir() && (name == ".git" || name == "node_modules" || strings.HasSuffix(name, ".assets")) {
+		if entry.IsDir() && (name == ".git" || name == ".trash" || name == "node_modules" || strings.HasSuffix(name, ".assets")) {
 			return filepath.SkipDir
 		}
 		relative, err := filepath.Rel(r.root, current)

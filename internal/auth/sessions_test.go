@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -77,6 +78,7 @@ func TestSQLiteSessionStoreRejectsExpiredSessions(t *testing.T) {
 		t.Fatalf("idle-expired session remained usable: ok=%v err=%v", ok, err)
 	}
 
+	token = "absolute-expired-opaque-session"
 	if err := store.CommitCtx(t.Context(), token, []byte("session"), time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -85,5 +87,58 @@ func TestSQLiteSessionStoreRejectsExpiredSessions(t *testing.T) {
 	}
 	if _, ok, err := store.FindCtx(t.Context(), token); err != nil || ok {
 		t.Fatalf("absolute-expired session remained usable: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestSQLiteSessionStoreDoesNotResurrectRevokedSession(t *testing.T) {
+	service, err := Open(t.Context(), Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	store := &sqliteSessionStore{db: service.db, defaultIdle: time.Hour}
+	const token = "revoked-session-token"
+	if err := store.CommitCtx(t.Context(), token, []byte("before"), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteCtx(t.Context(), token); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitCtx(t.Context(), token, []byte("stale-request"), time.Now().Add(time.Hour)); !errors.Is(err, errSessionInactive) {
+		t.Fatalf("stale request resurrected revoked session: %v", err)
+	}
+	if _, found, err := store.FindCtx(t.Context(), token); err != nil || found {
+		t.Fatalf("revoked session became active: found=%v err=%v", found, err)
+	}
+}
+
+func TestSQLiteSessionStoreRefreshesIdleActivityWithoutExtendingAbsoluteExpiry(t *testing.T) {
+	service, err := Open(t.Context(), Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	store := &sqliteSessionStore{db: service.db, defaultIdle: time.Hour}
+	const token = "active-session-token"
+	absolute := time.Now().Add(30 * time.Minute).UTC()
+	if err := store.CommitCtx(t.Context(), token, []byte("session"), absolute); err != nil {
+		t.Fatal(err)
+	}
+	oldActivity := time.Now().Add(-10 * time.Minute).UTC()
+	if _, err := service.db.ExecContext(t.Context(), `UPDATE auth_sessions SET last_activity_at=?, idle_expires_at=?`, oldActivity.Format(time.RFC3339Nano), time.Now().Add(5*time.Minute).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.FindCtx(t.Context(), token); err != nil || !found {
+		t.Fatalf("active session was not found: found=%v err=%v", found, err)
+	}
+	var activityText, idleText, absoluteText string
+	if err := service.db.QueryRowContext(t.Context(), `SELECT last_activity_at, idle_expires_at, absolute_expires_at FROM auth_sessions`).Scan(&activityText, &idleText, &absoluteText); err != nil {
+		t.Fatal(err)
+	}
+	activity, _ := time.Parse(time.RFC3339Nano, activityText)
+	idleExpiry, _ := time.Parse(time.RFC3339Nano, idleText)
+	storedAbsolute, _ := time.Parse(time.RFC3339Nano, absoluteText)
+	if !activity.After(oldActivity) || idleExpiry.After(storedAbsolute) || storedAbsolute.Sub(absolute) > time.Second || absolute.Sub(storedAbsolute) > time.Second {
+		t.Fatalf("unexpected activity refresh: activity=%v idle=%v absolute=%v", activity, idleExpiry, storedAbsolute)
 	}
 }

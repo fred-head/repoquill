@@ -123,7 +123,7 @@ func (r *Repository) cleanupCandidates() ([]UnreferencedAsset, error) {
 			return nil
 		}
 		name := strings.ToLower(entry.Name())
-		if current != r.root && (name == ".git" || name == "node_modules") {
+		if current != r.root && (name == ".git" || name == ".trash" || name == "node_modules") {
 			return filepath.SkipDir
 		}
 		if !strings.HasSuffix(name, ".assets") {
@@ -173,7 +173,7 @@ func (r *Repository) assetReferences() (map[string]bool, map[string]bool, error)
 		}
 		if entry.IsDir() {
 			name := strings.ToLower(entry.Name())
-			if current != r.root && (name == ".git" || name == "node_modules" || strings.HasSuffix(name, ".assets")) {
+			if current != r.root && (name == ".git" || name == ".trash" || name == "node_modules" || strings.HasSuffix(name, ".assets")) {
 				return filepath.SkipDir
 			}
 			return nil

@@ -1,14 +1,28 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestInsecureSessionCookieSettingEmitsStartupWarning(t *testing.T) {
+	var logs bytes.Buffer
+	service, err := Open(t.Context(), Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db"), CookieSecure: false}, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	if !strings.Contains(logs.String(), "session cookies are not marked Secure") {
+		t.Fatalf("insecure cookie configuration was not warned: %s", logs.String())
+	}
+}
 
 func TestServiceCreatesRestartSafeConfinedMetadata(t *testing.T) {
 	ctx := context.Background()

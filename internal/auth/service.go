@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 5
+const currentSchemaVersion = 6
 
 type State struct {
 	Mode           Mode
@@ -131,6 +131,13 @@ var migrations = []migration{
 			) STRICT`,
 		},
 	},
+	{
+		version: 6,
+		statements: []string{
+			`ALTER TABLE auth_mfa_configuration ADD COLUMN pending_expires_at TEXT`,
+			`ALTER TABLE auth_mfa_configuration ADD COLUMN pending_session_hash BLOB`,
+		},
+	},
 }
 
 func Open(ctx context.Context, config Config, logger *slog.Logger) (*Service, error) {
@@ -165,6 +172,9 @@ func Open(ctx context.Context, config Config, logger *slog.Logger) (*Service, er
 		return nil, err
 	}
 	service := &Service{db: db, config: config, logger: logger, encryptionKey: encryptionKey}
+	if !config.CookieSecure {
+		logger.Warn("authentication session cookies are not marked Secure; use this setting only for explicit local HTTP development", "setting", "REPOQUILL_SESSION_COOKIE_SECURE", "value", false)
+	}
 	if err := service.initialize(ctx); err != nil {
 		_ = db.Close()
 		return nil, err

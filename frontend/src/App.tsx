@@ -9,7 +9,11 @@ const MarkdownEditor = lazy(() => import('./components/editor/MarkdownEditor').t
 type Health = 'checking' | 'online' | 'offline'
 type SaveStatus = 'saved' | 'unsaved' | 'saving' | 'error' | 'conflict'
 type GitState = 'clean' | 'local_changes' | 'remote_changes' | 'diverged' | 'synced' | 'sync_failed' | 'conflict' | 'invalid'
-type GitStatus = { state: GitState; branch?: string; ahead?: number; behind?: number; conflictFiles?: string[]; message?: string; lastSyncedAt?: string }
+type ReceivedChange = { kind: 'added' | 'updated' | 'moved' | 'deleted'; path: string; fromPath?: string }
+type GitStatus = { state: GitState; branch?: string; ahead?: number; behind?: number; conflictFiles?: string[]; message?: string; lastSyncedAt?: string; receivedChanges?: ReceivedChange[] }
+type NoteHistoryEntry = { versionId: string; timestamp: string; summary: string; path: string }
+type NoteHistoryVersion = NoteHistoryEntry & { content: string }
+type NoteHistoryResult = { entries: NoteHistoryEntry[]; limited: boolean }
 type Theme = 'dark' | 'light'
 type TreeNode = { name: string; path: string; type: 'directory' | 'file'; children?: TreeNode[] }
 type FileResponse = { path: string; content: string; version: string }
@@ -17,6 +21,7 @@ type Draft = FileResponse & { savedContent: string }
 type MenuState = { entry: TreeNode; x: number; y: number }
 type CleanupAsset = { path: string; size: number }
 type CleanupFailure = { path: string; error: string }
+type TrashItem = { id:string; originalPath:string; type:'file'|'directory'; deletedAt:string; size:number }
 type GitAuthType = 'managed-ssh' | 'existing-server-ssh'
 type ConnectionResult = { state: string; message: string }
 type HostKeyInfo = { keyType: string; fingerprint: string }
@@ -120,6 +125,15 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   const [saveError, setSaveError] = useState<string>()
   const [gitStatus, setGitStatus] = useState<GitStatus>({ state: 'invalid', message: 'Checking Git status…' })
   const [gitSyncing, setGitSyncing] = useState(false)
+	const [syncDetailsOpen, setSyncDetailsOpen] = useState(false)
+	const [lastSuccessfulSyncAt, setLastSuccessfulSyncAt] = useState<string>()
+	const [lastSyncAttemptAt, setLastSyncAttemptAt] = useState<string>()
+	const [lastSyncError, setLastSyncError] = useState<string>()
+	const [nextScheduledSyncAt, setNextScheduledSyncAt] = useState<string>()
+	const [receivedChanges, setReceivedChanges] = useState<ReceivedChange[]>([])
+  const [historyPath, setHistoryPath] = useState<string>()
+  const [editorRevision, setEditorRevision] = useState(0)
+  const [trashOpen, setTrashOpen] = useState(false)
   const [operationError, setOperationError] = useState<string>()
   const [operationBusy, setOperationBusy] = useState(false)
   const [selectedItem, setSelectedItem] = useState<TreeNode>()
@@ -240,7 +254,10 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       const status = await responseJSON<GitStatus>(response)
       gitStatusRef.current = status
       setGitStatus(status)
-      if (status.lastSyncedAt) lastSuccessfulSync.current = Date.parse(status.lastSyncedAt) || 0
+		if (status.lastSyncedAt) {
+			lastSuccessfulSync.current = Date.parse(status.lastSyncedAt) || 0
+			setLastSuccessfulSyncAt(status.lastSyncedAt)
+		}
     } catch (error) {
       const status: GitStatus = { state: 'sync_failed', message: messageFrom(error) }
       gitStatusRef.current = status
@@ -342,11 +359,23 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     saveSyncPreferences(localStorage, syncPreferences)
   }, [syncPreferences])
 
-  useEffect(() => {
-    if (syncPreferences.scheduledMinutes === 0) return
-    const interval = globalThis.setInterval(() => { void syncRepositoryRef.current() }, syncPreferences.scheduledMinutes * 60_000)
-    return () => globalThis.clearInterval(interval)
-  }, [syncPreferences.scheduledMinutes])
+	useEffect(() => {
+		if (syncPreferences.scheduledMinutes === 0) {
+			const clearSchedule = globalThis.setTimeout(() => setNextScheduledSyncAt(undefined), 0)
+			return () => globalThis.clearTimeout(clearSchedule)
+		}
+		const intervalMilliseconds = syncPreferences.scheduledMinutes * 60_000
+		const scheduleNext = () => setNextScheduledSyncAt(new Date(Date.now() + intervalMilliseconds).toISOString())
+		const initialSchedule = globalThis.setTimeout(scheduleNext, 0)
+		const interval = globalThis.setInterval(() => {
+			scheduleNext()
+			void syncRepositoryRef.current()
+		}, intervalMilliseconds)
+		return () => {
+			globalThis.clearTimeout(initialSchedule)
+			globalThis.clearInterval(interval)
+		}
+	}, [syncPreferences.scheduledMinutes])
 
   useEffect(() => {
     if (addNotebookOpen && syncPreferences.syncOnNotebookSwitch) void syncRepositoryRef.current()
@@ -406,6 +435,8 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     if (syncPromise.current) return syncPromise.current
     const operation = (async () => {
       setGitSyncing(true)
+		setLastSyncAttemptAt(new Date().toISOString())
+		setLastSyncError(undefined)
       try {
         do {
           syncRequested.current = false
@@ -415,9 +446,14 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
           const result = await responseJSON<GitStatus>(response)
           gitStatusRef.current = result
           setGitStatus(result)
-          if (result.state !== 'synced') return false
+			if (result.state !== 'synced') {
+				setLastSyncError(result.message ?? 'Synchronization needs attention.')
+				return false
+			}
 
           lastSuccessfulSync.current = result.lastSyncedAt ? Date.parse(result.lastSyncedAt) || Date.now() : Date.now()
+			setLastSuccessfulSyncAt(result.lastSyncedAt ?? new Date().toISOString())
+			if (result.receivedChanges?.length) setReceivedChanges(result.receivedChanges)
           lastSyncedGeneration.current = syncedGeneration
           await loadTree()
 
@@ -425,7 +461,10 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
           const inspected = await responseJSON<GitStatus>(statusResponse)
           gitStatusRef.current = inspected
           setGitStatus(inspected)
-          if (inspected.lastSyncedAt) lastSuccessfulSync.current = Date.parse(inspected.lastSyncedAt) || lastSuccessfulSync.current
+			if (inspected.lastSyncedAt) {
+				lastSuccessfulSync.current = Date.parse(inspected.lastSyncedAt) || lastSuccessfulSync.current
+				setLastSuccessfulSyncAt(inspected.lastSyncedAt)
+			}
           if (localChangeGeneration.current !== syncedGeneration || inspected.state === 'local_changes' || inspected.state === 'diverged') {
             syncRequested.current = true
           }
@@ -435,6 +474,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         const status: GitStatus = { state: 'sync_failed', message: messageFrom(error) }
         gitStatusRef.current = status
         setGitStatus(status)
+		setLastSyncError(messageFrom(error))
         return false
       } finally {
         setGitSyncing(false)
@@ -490,6 +530,9 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     setNoteError(undefined)
     setSaveStatus('saved')
     setExpandedFolders(new Set())
+		setReceivedChanges([])
+		setLastSyncError(undefined)
+    setHistoryPath(undefined)
     await loadTree()
     await loadNotebookInfo()
     await loadNotebooks()
@@ -517,6 +560,9 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       setExpandedFolders(new Set())
       setNotebookName(notebook.name)
       setActiveNotebookID(notebook.id)
+		setReceivedChanges([])
+		setLastSyncError(undefined)
+    setHistoryPath(undefined)
       if (syncPreferences.syncOnNotebookSwitch) await syncRepository()
       await loadTree()
       await refreshGitStatus()
@@ -745,8 +791,8 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   }
 
   async function deleteEntry(entry: TreeNode) {
-    const assetWarning = entry.type === 'file' ? ' Its owned .assets directory will also be deleted if present.' : ' Everything inside this folder will also be deleted.'
-    if (!window.confirm(`Permanently delete “${entry.path}”?${assetWarning}`)) return
+    const assetNotice = entry.type === 'file' ? ' Its owned image assets will move with it.' : ' Everything inside this folder will move with it.'
+    if (!window.confirm(`Move “${entry.path}” to Trash?${assetNotice} You can restore it later.`)) return
     if (!(await saveDraft())) return
     setOperationBusy(true)
     setOperationError(undefined)
@@ -889,6 +935,29 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     if (await saveDraft()) updateReadOnly(true)
   }
 
+  async function openVersionHistory() {
+    if (!selectedPath || !(await saveDraft())) return
+    setHistoryPath(selectedPath)
+  }
+
+  async function restoreNoteVersion(versionId: string) {
+    const draft = activeDraft.current
+    if (!draft || draft.path !== historyPath) throw new Error('The active note changed. Reopen version history and try again.')
+    const response = await apiFetch('/api/repository/history/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: draft.path, versionId, expectedVersion: draft.version }),
+    })
+    const restored = await responseJSON<FileResponse>(response)
+    activeDraft.current = { ...restored, savedContent: restored.content }
+    setNote(restored)
+    setEditorRevision((current) => current + 1)
+    setSaveStatus('saved')
+    setSaveError(undefined)
+    localChangeGeneration.current += 1
+    await refreshGitStatus()
+  }
+
   function updateReadOnly(value: boolean, path = selectedPath) {
     setReadOnly(value)
     if (path) setTabs((current) => current.map((tab) => tab.path === path ? { ...tab, readOnly: value } : tab))
@@ -914,12 +983,13 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100 lg:h-screen lg:flex-row lg:overflow-hidden">
       {mobileNavigationOpen && <button type="button" aria-label="Close notebook navigation" className="fixed inset-0 z-30 bg-black/65 lg:hidden" onClick={() => setMobileNavigationOpen(false)} />}
       <aside aria-label="Notebook navigation" className={`fixed inset-y-0 left-0 z-40 flex w-[min(20rem,calc(100vw-3rem))] shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 shadow-2xl transition-transform duration-200 lg:static lg:z-auto lg:w-80 lg:translate-x-0 lg:bg-zinc-900/60 lg:shadow-none ${mobileNavigationOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <header className="relative border-b border-zinc-800 px-5 py-5"><div className="flex items-center justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-xs font-semibold uppercase tracking-[0.22em] text-amber-400">RepoQuill</p><button type="button" aria-haspopup="menu" aria-expanded={notebookSwitcherOpen} onClick={() => setNotebookSwitcherOpen((open) => !open)} className="mt-1 flex min-h-9 max-w-full items-center gap-2 rounded-md pr-2 text-left text-lg font-semibold outline-none hover:text-amber-200 focus-visible:ring-2 focus-visible:ring-amber-500"><span className="truncate">{notebookName}</span><span aria-hidden="true" className="text-xs text-zinc-500">▾</span></button></div><div className="flex items-center gap-2"><button type="button" onClick={() => setSettingsOpen(true)} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Settings" title="Settings"><SettingsIcon /></button><button type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button><StatusDot health={health} /></div></div>{notebookSwitcherOpen && <><button type="button" aria-label="Close notebook switcher" className="fixed inset-0 z-20 cursor-default" onClick={() => setNotebookSwitcherOpen(false)} /><div role="menu" aria-label="Notebooks" className="absolute top-[4.8rem] right-3 left-3 z-30 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl">{notebooks.map((notebook) => <button key={notebook.id} type="button" role="menuitemradio" aria-checked={notebook.id === activeNotebookID} onClick={() => void switchNotebook(notebook)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-zinc-200 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"><span className="w-4 text-amber-400" aria-hidden="true">{notebook.id === activeNotebookID ? '✓' : ''}</span><span className="truncate">{notebook.name}</span></button>)}<div className="my-1 border-t border-zinc-700" /><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setAddNotebookOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-amber-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">+ Add Notebook</button><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setManageNotebooksOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Manage Notebooks</button></div></>}</header>
-        <div className="relative grid grid-cols-[1fr_1fr_auto_auto] gap-1.5 border-b border-zinc-800 p-3">
+        <header className="relative border-b border-zinc-800 px-5 py-5"><div className="flex items-center justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-xs font-semibold uppercase tracking-[0.22em] text-amber-400">RepoQuill</p><button type="button" aria-haspopup="menu" aria-expanded={notebookSwitcherOpen} onClick={() => setNotebookSwitcherOpen((open) => !open)} className="mt-1 flex min-h-9 max-w-full items-center gap-2 rounded-md pr-2 text-left text-lg font-semibold outline-none hover:text-amber-200 focus-visible:ring-2 focus-visible:ring-amber-500"><span className="truncate">Notebooks</span><span aria-hidden="true" className="text-sm text-zinc-500">▾</span></button></div><div className="flex items-center gap-2"><button type="button" onClick={() => setSettingsOpen(true)} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Settings" title="Settings"><SettingsIcon /></button><button type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button><StatusDot health={health} /></div></div>{notebookSwitcherOpen && <><button type="button" aria-label="Close notebook switcher" className="fixed inset-0 z-20 cursor-default" onClick={() => setNotebookSwitcherOpen(false)} /><div role="menu" aria-label="Notebooks" className="absolute top-[4.8rem] right-3 left-3 z-30 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl">{notebooks.map((notebook) => <button key={notebook.id} type="button" role="menuitemradio" aria-checked={notebook.id === activeNotebookID} onClick={() => void switchNotebook(notebook)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-zinc-200 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"><span className="w-4 text-amber-400" aria-hidden="true">{notebook.id === activeNotebookID ? '✓' : ''}</span><span className="truncate">{notebook.name}</span></button>)}<div className="my-1 border-t border-zinc-700" /><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setAddNotebookOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-amber-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">+ Add Notebook</button><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setManageNotebooksOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Manage Notebooks</button></div></>}</header>
+        <div className="relative grid grid-cols-[1fr_1fr_auto_auto_auto] gap-1.5 border-b border-zinc-800 p-3">
           <TreeAction disabled={operationBusy || notebookConfigured === false} onClick={() => void createEntry('file')}>New Note</TreeAction>
           <TreeAction disabled={operationBusy || notebookConfigured === false} onClick={() => void createEntry('directory')}>New Folder</TreeAction>
           <TreeAction label="Refresh tree" disabled={operationBusy || notebookConfigured === false} onClick={() => void loadTree()}>↻</TreeAction>
           <TreeAction label="Selected item actions" disabled={operationBusy || !selectedItem} onClick={() => setOverflowOpen((open) => !open)}>•••</TreeAction>
+          <TreeAction label="Open Trash" disabled={operationBusy || notebookConfigured === false} onClick={() => setTrashOpen(true)}>♲</TreeAction>
           {overflowOpen && <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="Close action menu" onClick={() => setOverflowOpen(false)} />}
           {overflowOpen && selectedItem && <div className="absolute top-12 right-3 z-30"><ActionMenu entry={selectedItem} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={(entry) => { setOverflowOpen(false); void deleteEntry(entry) }} /></div>}
         </div>
@@ -935,8 +1005,8 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
           {operationError && <div className="mb-3 rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{operationError}</div>}
           {searchQuery.trim() && <SearchResults query={searchQuery.trim()} results={searchResults} loading={searchLoading} error={searchError} onSelect={selectSearchResult} />}
           {!searchQuery.trim() && <>
-          {treeLoading && <SidebarMessage>Loading repository…</SidebarMessage>}
-          {notebookConfigured === false && <div className="rounded-lg border border-zinc-700 bg-zinc-950/40 p-4 text-sm text-zinc-300"><p className="font-medium text-zinc-100">No notebook yet</p><p className="mt-1 text-xs leading-5 text-zinc-500">Connect an existing Git repository to start taking notes.</p><button type="button" className="mt-3 min-h-10 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 hover:bg-amber-400" onClick={() => setAddNotebookOpen(true)}>Add Notebook</button></div>}
+          {treeLoading && <SidebarMessage>Loading notebook…</SidebarMessage>}
+          {notebookConfigured === false && <div className="rounded-lg border border-zinc-700 bg-zinc-950/40 p-4 text-sm text-zinc-300"><p className="font-medium text-zinc-100">No notebook yet</p><p className="mt-1 text-xs leading-5 text-zinc-500">Connect an existing notebook to start taking notes.</p><button type="button" className="mt-3 min-h-10 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 hover:bg-amber-400" onClick={() => setAddNotebookOpen(true)}>Add Notebook</button></div>}
           {treeError && notebookConfigured !== false && <div className="rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200"><p>{treeError}</p><button className="mt-3 rounded-md bg-red-900/60 px-3 py-1.5 text-xs hover:bg-red-800" onClick={() => void loadTree()}>Try again</button></div>}
           {!treeLoading && !treeError && <button type="button" className={`mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${!selectedItem ? 'bg-amber-400/15 text-amber-200' : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'}`} onClick={() => { setSelectedItem(undefined); setOverflowOpen(false) }}><span aria-hidden="true">⌂</span><span className="truncate">{notebookName}</span></button>}
           {!treeLoading && !treeError && entries.length === 0 && <SidebarMessage>No Markdown files found.</SidebarMessage>}
@@ -949,27 +1019,31 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         <div className="sticky top-0 z-10 bg-zinc-950/90 backdrop-blur">
         <header className="flex items-center justify-between gap-2 border-b border-zinc-800 px-3 py-3 sm:gap-4 sm:px-8">
           <div className="flex min-w-0 items-center gap-2"><button type="button" aria-label="Open notebook navigation" aria-expanded={mobileNavigationOpen} onClick={() => setMobileNavigationOpen(true)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 lg:hidden">☰</button><p className="min-w-0 truncate text-sm text-zinc-400">{selectedPath ?? 'Select a Markdown file'}</p></div>
-          <div className="flex shrink-0 items-center gap-2">{selectedPath && <><button type="button" onClick={() => void toggleReadOnly()} className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${readOnly ? 'border-amber-500 bg-amber-400/15 text-amber-200' : 'border-zinc-700 text-zinc-200 hover:bg-zinc-800'}`} aria-pressed={readOnly}>{readOnly ? '🔒 Read only' : '✎ Edit'}</button><button type="button" disabled={readOnly || saveStatus === 'saved' || saveStatus === 'saving'} onClick={() => void saveDraft()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">Save</button></>}<button type="button" disabled={notebookConfigured === false || gitSyncing || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict'} onClick={() => void syncRepository()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">{gitSyncing ? 'Syncing…' : 'Sync'}</button></div>
+          <div className="flex shrink-0 items-center gap-2">{selectedPath && <><button type="button" onClick={() => void toggleReadOnly()} className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${readOnly ? 'border-amber-500 bg-amber-400/15 text-amber-200' : 'border-zinc-700 text-zinc-200 hover:bg-zinc-800'}`} aria-pressed={readOnly}>{readOnly ? '🔒 Read only' : '✎ Edit'}</button><button type="button" disabled={readOnly || saveStatus === 'saved' || saveStatus === 'saving'} onClick={() => void saveDraft()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">Save</button><button type="button" onClick={() => void openVersionHistory()} aria-label="Version history" title="Version history" className="min-h-9 rounded-md border border-zinc-700 px-2.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"><span aria-hidden="true">↶</span><span className="ml-1 hidden sm:inline">History</span></button></>}<button type="button" disabled={notebookConfigured === false || gitSyncing || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict'} onClick={() => void syncRepository()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">{gitSyncing ? 'Syncing…' : 'Sync'}</button></div>
         </header>
         {tabs.length > 0 && <NoteTabs tabs={tabs} activePath={selectedPath} onActivate={(path) => void activateTab(path)} onClose={(path) => void closeTab(path)} />}
         </div>
         {(!browserOnline || health === 'offline') && <div role="status" className="border-b border-amber-800/70 bg-amber-950/40 px-4 py-2 text-sm text-amber-100 sm:px-8"><strong>Offline.</strong> RepoQuill is online-first; viewing may continue, but editing and synchronization require the server connection.</div>}
         {recoveryDraft && <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-800/70 bg-amber-950/30 px-4 py-2 text-xs text-amber-100 sm:px-8"><span>An unsaved recovery draft for <strong>{recoveryDraft.path}</strong> was preserved after authentication ended.</span><span className="flex gap-2"><button type="button" onClick={()=>void restoreRecoveryDraft()} className="min-h-9 rounded border border-amber-700 px-3 hover:bg-amber-900/40">Review draft</button><button type="button" onClick={discardRecoveryDraft} className="min-h-9 rounded px-3 text-zinc-400 hover:bg-zinc-800">Discard</button></span></div>}
         {installPrompt && !installPromptDismissed && <div className="flex items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-300 sm:px-8"><span>Install RepoQuill for a standalone app experience.</span><div className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => void installApplication()} className="min-h-9 rounded-md border border-zinc-600 px-3 font-medium hover:bg-zinc-800">Install app</button><button type="button" onClick={dismissInstallPrompt} aria-label="Dismiss install suggestion" title="Dismiss" className="flex min-h-9 min-w-9 items-center justify-center rounded-md text-lg text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200">×</button></div></div>}
+		{receivedChanges.length > 0 && <ReceivedChangesNotice changes={receivedChanges} onOpen={(path) => void openNote(path, 'new')} onDismiss={() => setReceivedChanges([])} />}
         <article className={`mx-auto w-full max-w-4xl flex-1 px-5 sm:px-8 ${selectedPath ? 'pt-2 pb-8 sm:pt-2 sm:pb-12' : 'py-8 sm:py-12'}`}>
           {!selectedPath && <EmptyState notebookConfigured={notebookConfigured !== false} onAddNotebook={() => setAddNotebookOpen(true)} />}
           {noteLoading && <p className="text-sm text-zinc-400">Loading note…</p>}
           {noteError && <ErrorMessage>{noteError}</ErrorMessage>}
-          {saveError && <ErrorMessage>{saveStatus === 'conflict' ? 'Save stopped: the file changed outside RepoQuill. Your edits remain in the editor; copy them somewhere safe before reloading the page to resolve the conflict.' : `Save failed: ${saveError}`}</ErrorMessage>}
-          {!noteLoading && note && <Suspense fallback={<p className="text-sm text-zinc-400">Loading editor…</p>}><MarkdownEditor key={`${note.path}:${readOnly ? 'read' : 'edit'}`} documentKey={`${note.path}:${readOnly ? 'read' : 'edit'}`} notePath={note.path} markdown={note.content} readOnly={readOnly} onChange={updateDraft} /></Suspense>}
+		  {saveError && <ErrorMessage>{saveStatus === 'conflict' ? 'This note changed elsewhere. Your version is still preserved in this editor and has not overwritten the other version. Review both versions before choosing the result.' : `This note could not be saved on the RepoQuill server. Your current editor content is still visible. Try saving again before leaving the note. Details: ${saveError}`}</ErrorMessage>}
+          {!noteLoading && note && <Suspense fallback={<p className="text-sm text-zinc-400">Loading editor…</p>}><MarkdownEditor key={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} documentKey={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} notePath={note.path} markdown={note.content} readOnly={readOnly} onChange={updateDraft} /></Suspense>}
         </article>
-        {selectedPath && note && <DocumentStatusBar status={saveStatus} gitStatus={gitStatus} gitSyncing={gitSyncing} markdown={note.content} />}
+		{selectedPath && note && <DocumentStatusBar status={saveStatus} gitStatus={gitStatus} gitSyncing={gitSyncing} markdown={note.content} onOpenSyncDetails={() => setSyncDetailsOpen(true)} />}
       </main>
       {contextMenu && <div className="fixed inset-0 z-40" onClick={() => setContextMenu(undefined)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined) }}><div className="fixed" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><ActionMenu entry={contextMenu.entry} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={(entry) => { setContextMenu(undefined); void deleteEntry(entry) }} /></div></div>}
       {moveEntry && <FolderPicker entries={entries} notebookName={notebookName} moving={moveEntry} destination={moveDestination} onDestination={setMoveDestination} onCancel={() => setMoveEntry(undefined)} onConfirm={() => void confirmMove()} />}
       {settingsOpen && <SettingsDialog mode="settings" authMode={authMode} runningVersion={runningVersion} onLoggedOut={onLoggedOut} autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} syncPreferences={syncPreferences} onSyncPreferences={setSyncPreferences} onClose={() => setSettingsOpen(false)} />}
       {addNotebookOpen && <SettingsDialog mode="onboarding" autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} onNotebookAdded={async () => { await activateClonedNotebook(); setAddNotebookOpen(false) }} onClose={() => setAddNotebookOpen(false)} />}
       {manageNotebooksOpen && <ManageNotebooksDialog notebooks={notebooks} activeNotebookID={activeNotebookID} onRemoved={loadNotebooks} onClose={() => setManageNotebooksOpen(false)} />}
+	  {syncDetailsOpen && <SynchronizationDetailsPanel saveStatus={saveStatus} gitStatus={gitStatus} syncing={gitSyncing} browserOnline={browserOnline && health !== 'offline'} lastSuccessfulSyncAt={lastSuccessfulSyncAt} lastSyncAttemptAt={lastSyncAttemptAt} lastSyncError={lastSyncError} nextScheduledSyncAt={nextScheduledSyncAt} receivedChanges={receivedChanges} onSync={() => void syncRepository()} onOpenNote={(path) => void openNote(path, 'new')} onOpenSettings={() => { setSyncDetailsOpen(false); setSettingsOpen(true) }} onCheckConnection={() => { setSyncDetailsOpen(false); setManageNotebooksOpen(true) }} onClose={() => setSyncDetailsOpen(false)} />}
+      {historyPath && note?.path === historyPath && <NoteHistoryDialog notePath={historyPath} currentContent={note.content} onRestore={restoreNoteVersion} onClose={() => setHistoryPath(undefined)} />}
+      {trashOpen && <TrashDialog onChanged={loadTree} onClose={() => setTrashOpen(false)} />}
     </div>
   )
 }
@@ -1172,28 +1246,30 @@ export function SettingsDialog({ mode = 'settings', authMode = 'disabled', runni
             </form>
           </section>}
 
-          {mode === 'settings' && <section className="order-4 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="ssh-keys-title">
-            <div className="flex items-start justify-between gap-3"><div><h3 id="ssh-keys-title" className="text-sm font-semibold text-zinc-200">Git / SSH</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Managed keys remain on the server. Only their public halves are shown here.</p></div><button type="button" disabled={managedKeysBusy} onClick={() => void loadManagedKeys()} className="min-h-10 shrink-0 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">{managedKeys ? 'Refresh' : 'Load keys'}</button></div>
+		  {mode === 'settings' && <section className="order-5 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="ssh-keys-title">
+			<div className="flex items-start justify-between gap-3"><div><h3 id="ssh-keys-title" className="text-sm font-semibold text-zinc-200">Advanced</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Connection credentials and Git/SSH diagnostics. Most users do not need these controls after notebook setup.</p></div><button type="button" disabled={managedKeysBusy} onClick={() => void loadManagedKeys()} className="min-h-10 shrink-0 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">{managedKeys ? 'Refresh' : 'Load keys'}</button></div>
             {managedKeysError && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{managedKeysError}</p>}
             {managedKeysBusy && !managedKeys && <p className="mt-3 text-xs text-zinc-500">Loading managed keys…</p>}
             {managedKeys && <div className="mt-3 space-y-2">{managedKeys.length === 0 ? <p className="rounded-md border border-zinc-800 p-3 text-xs text-zinc-500">No managed SSH keys found.</p> : managedKeys.map((key) => <div key={key.keyId} className="rounded-md border border-zinc-800 p-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-mono text-xs text-zinc-300">{key.keyId.slice(0, 12)}…</p><p className={`mt-1 text-xs ${key.assigned ? 'text-emerald-400' : 'text-amber-300'}`}>{key.assigned ? `Assigned to ${key.notebookName || 'notebook'}` : 'Unused'}</p><p className="mt-1 text-[11px] text-zinc-500">Created {new Date(key.createdAt).toLocaleString()}</p></div><div className="flex flex-wrap gap-1"><button type="button" onClick={() => void navigator.clipboard.writeText(key.publicKey)} className="min-h-10 rounded-md px-3 text-xs text-amber-300 hover:bg-zinc-800">Copy public key</button><button type="button" disabled={key.assigned} title={key.assigned ? 'Assigned keys cannot be deleted' : undefined} onClick={() => setDeleteKey(key)} className="min-h-10 rounded-md px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:cursor-not-allowed disabled:opacity-35">Delete</button></div></div><details className="mt-2"><summary className="cursor-pointer text-xs text-zinc-500">Show public key</summary><code className="mt-2 block break-all rounded bg-zinc-950 p-2 text-[11px] leading-5 text-zinc-400">{key.publicKey}</code></details></div>)}</div>}
           </section>}
 
           {mode === 'settings' && <section className="order-1">
-            <h3 className="text-sm font-semibold text-zinc-200">Editor</h3>
+			<h3 className="text-sm font-semibold text-zinc-200">General</h3>
             <label className="mt-4 block text-sm text-zinc-300">Auto-lock notes<select value={autoLockMinutes} onChange={(event) => onAutoLockMinutes(parseAutoLockMinutes(event.target.value))} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-amber-500">{autoLockOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
             <p className="mt-2 text-xs leading-5 text-zinc-500">Switch an editable note to Read only after no document changes. Reading, scrolling, and text selection do not reset the timer.</p>
-            <div className="mt-5 border-t border-zinc-800 pt-5"><h3 className="text-sm font-semibold text-zinc-200">Git synchronization</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Local saves remain independent. Automatic Git sync commits, fetches, rebases, and pushes using the active notebook.</p><label className="mt-4 block text-sm text-zinc-300">Scheduled sync<select aria-label="Scheduled sync" value={syncPreferences.scheduledMinutes} onChange={(event) => onSyncPreferences({ ...syncPreferences, scheduledMinutes: Number(event.target.value) as SyncPreferences['scheduledMinutes'] })} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100"><option value={0}>Off</option><option value={5}>Every 5 minutes</option><option value={15}>Every 15 minutes</option><option value={30}>Every 30 minutes</option><option value={60}>Every hour</option></select></label><label className="mt-4 block text-sm text-zinc-300">Sync after editing inactivity<select aria-label="Sync after editing inactivity" value={syncPreferences.inactivityMinutes} onChange={(event) => onSyncPreferences({ ...syncPreferences, inactivityMinutes: Number(event.target.value) as SyncPreferences['inactivityMinutes'] })} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100"><option value={0}>Off</option><option value={1}>1 minute</option><option value={2}>2 minutes</option><option value={5}>5 minutes</option><option value={10}>10 minutes</option></select></label><label className="mt-4 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncOnNotebookSwitch} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncOnNotebookSwitch: event.target.checked })} className="h-5 w-5 accent-amber-500" />Sync before switching notebooks</label><label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncOnClose} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncOnClose: event.target.checked })} className="h-5 w-5 accent-amber-500" />Best-effort sync when closing the tab</label><p className="mt-2 text-xs leading-5 text-zinc-500">Browsers cannot guarantee completion during tab or browser shutdown. Unsaved editor content still triggers the normal leave warning instead of starting Git sync.</p></div>
+			<div className="mt-5 border-t border-zinc-800 pt-5"><h3 className="text-sm font-semibold text-zinc-200">Synchronization</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Saving writes a note to this RepoQuill server. Synchronization separately exchanges those saved changes with the connected service.</p><label className="mt-4 block text-sm text-zinc-300">Scheduled synchronization<select aria-label="Scheduled sync" value={syncPreferences.scheduledMinutes} onChange={(event) => onSyncPreferences({ ...syncPreferences, scheduledMinutes: Number(event.target.value) as SyncPreferences['scheduledMinutes'] })} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100"><option value={0}>Off</option><option value={5}>Every 5 minutes</option><option value={15}>Every 15 minutes</option><option value={30}>Every 30 minutes</option><option value={60}>Every hour</option></select></label><label className="mt-4 block text-sm text-zinc-300">Synchronize after editing inactivity<select aria-label="Sync after editing inactivity" value={syncPreferences.inactivityMinutes} onChange={(event) => onSyncPreferences({ ...syncPreferences, inactivityMinutes: Number(event.target.value) as SyncPreferences['inactivityMinutes'] })} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100"><option value={0}>Off</option><option value={1}>1 minute</option><option value={2}>2 minutes</option><option value={5}>5 minutes</option><option value={10}>10 minutes</option></select></label><label className="mt-4 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncOnNotebookSwitch} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncOnNotebookSwitch: event.target.checked })} className="h-5 w-5 accent-amber-500" />Synchronize before switching notebooks</label><label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncOnClose} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncOnClose: event.target.checked })} className="h-5 w-5 accent-amber-500" />Best-effort synchronization when closing the tab</label><p className="mt-2 text-xs leading-5 text-zinc-500">Browsers cannot guarantee completion during tab or browser shutdown. Unsaved editor content still triggers the normal leave warning instead of starting synchronization.</p></div>
             <label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncOnStartup} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncOnStartup: event.target.checked })} className="h-5 w-5 accent-amber-500" />Sync when RepoQuill opens</label>
             <label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncOnFocus} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncOnFocus: event.target.checked })} className="h-5 w-5 accent-amber-500" />Sync when returning to the tab</label>
             <label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncBeforeOpeningNote} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncBeforeOpeningNote: event.target.checked })} className="h-5 w-5 accent-amber-500" />Background sync after switching notes</label>
           </section>}
 
+		  {mode === 'settings' && <section className="order-2 mt-6 border-t border-zinc-800 pt-5"><h3 className="text-sm font-semibold text-zinc-200">Notebooks</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Add, switch, and manage notebooks from the Notebooks menu in the main sidebar. Connection internals remain under Advanced after setup.</p></section>}
+
           {mode === 'settings' && <SecurityPanel authMode={authMode} runningVersion={runningVersion} onLoggedOut={onLoggedOut} />}
 
-          {mode === 'settings' && <section className="order-3 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="maintenance-title">
+		  {mode === 'settings' && <section className="order-4 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="maintenance-title">
             <div className="flex items-start justify-between gap-4">
-              <div><h3 id="maintenance-title" className="text-sm font-semibold text-zinc-200">Maintenance</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Find image files in note-specific asset folders that are no longer referenced by Markdown.</p></div>
+			  <div><h3 id="maintenance-title" className="text-sm font-semibold text-zinc-200">Storage and recovery</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Review image files in note-specific asset folders that are no longer referenced by Markdown. Nothing is removed without confirmation.</p></div>
               <button type="button" disabled={cleanupBusy} onClick={() => void scanAssets()} className="min-h-10 shrink-0 rounded-md border border-zinc-700 px-3 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">{cleanupBusy ? 'Scanning…' : cleanupAssets ? 'Scan again' : 'Scan'}</button>
             </div>
 
@@ -1211,7 +1287,7 @@ export function SettingsDialog({ mode = 'settings', authMode = 'disabled', runni
         <footer className="flex shrink-0 justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">{mode === 'onboarding' ? 'Cancel' : 'Done'}</button></footer>
       </div>
 
-      {confirmCleanup && <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/75 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmCleanup(false) }}><div role="alertdialog" aria-modal="true" aria-labelledby="cleanup-confirm-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="cleanup-confirm-title" className="text-lg font-semibold">Delete {selectedCount} unreferenced {selectedCount === 1 ? 'asset' : 'assets'}?</h2><p className="mt-3 text-sm leading-6 text-zinc-400">These files will be removed from the repository working tree. Previously committed files may be recoverable through Git; new uncommitted files may not be.</p><div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" onClick={() => setConfirmCleanup(false)} className="min-h-11 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => void deleteSelectedAssets()} className="min-h-11 rounded-md bg-red-800 px-4 text-sm font-medium text-white hover:bg-red-700">Delete assets</button></div></div></div>}
+      {confirmCleanup && <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/75 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmCleanup(false) }}><div role="alertdialog" aria-modal="true" aria-labelledby="cleanup-confirm-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="cleanup-confirm-title" className="text-lg font-semibold">Delete {selectedCount} unreferenced {selectedCount === 1 ? 'asset' : 'assets'}?</h2><p className="mt-3 text-sm leading-6 text-zinc-400">These files will be removed from the active notebook. Files included in an earlier synchronization may be recoverable from its version history; newly added files may not be.</p><div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" onClick={() => setConfirmCleanup(false)} className="min-h-11 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => void deleteSelectedAssets()} className="min-h-11 rounded-md bg-red-800 px-4 text-sm font-medium text-white hover:bg-red-700">Delete assets</button></div></div></div>}
       {deleteKey && <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/75 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setDeleteKey(undefined) }}><div role="alertdialog" aria-modal="true" aria-labelledby="delete-key-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="delete-key-title" className="text-lg font-semibold">Delete unused SSH key?</h2><p className="mt-3 text-sm leading-6 text-zinc-400">The private and public key files for <span className="font-mono text-zinc-300">{deleteKey.keyId.slice(0, 12)}…</span> will be permanently removed from RepoQuill. Also remove its deploy-key entry from the Git provider if it was added there.</p><div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" onClick={() => setDeleteKey(undefined)} className="min-h-11 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => void deleteUnusedManagedKey()} className="min-h-11 rounded-md bg-red-800 px-4 text-sm font-medium text-white hover:bg-red-700">Delete key</button></div></div></div>}
     </div>
   )
@@ -1259,7 +1335,7 @@ function SecurityPanel({ authMode, runningVersion, onLoggedOut }: { authMode:'lo
   async function logout(){setBusy(true);try{await responseJSON(await apiFetch('/api/auth/logout',{method:'POST'}));onLoggedOut()}catch(caught){setError(messageFrom(caught));setBusy(false)}}
 
   const version = runningVersion || 'dev'
-  return <section className="order-2 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="security-title"><h3 id="security-title" className="text-sm font-semibold text-zinc-200">Security</h3>{authMode==='disabled'?<p role="alert" className="mt-3 rounded-md border border-amber-700/70 bg-amber-950/25 p-3 text-xs leading-5 text-amber-200"><strong>Built-in authentication is disabled.</strong> Restrict access through localhost, a private LAN/VPN/Tailscale network, or a deliberately configured external protection layer. Interactive forward-auth may expire independently and return login HTML to this PWA.</p>:<div className="mt-3 space-y-5">{error&&<p role="alert" className="rounded-md border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}{notice&&<p role="status" className="rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3 text-xs text-emerald-300">{notice}</p>}<MFASettings enabled={mfaEnabled} busy={busy} setBusy={setBusy} onChanged={async()=>{await load()}} onLoggedOut={onLoggedOut} setError={setError} setNotice={setNotice}/><form onSubmit={(event)=>void changePassword(event)} className="space-y-3 rounded-md border border-zinc-800 p-3"><h4 className="text-sm font-medium">Change password</h4><p className="text-xs leading-5 text-zinc-500">Your current password confirms this sensitive change. All other sessions are revoked.</p><SecurityPassword name="currentPassword" label="Current password" autoComplete="current-password"/>{mfaEnabled&&<SecurityCode name="passwordMfaCode" label="Authenticator or recovery code"/>}<SecurityPassword name="newPassword" label="New password" autoComplete="new-password"/><SecurityPassword name="confirmNewPassword" label="Confirm new password" autoComplete="new-password"/><button disabled={busy} className="min-h-10 rounded-md border border-zinc-700 px-3 text-xs hover:bg-zinc-800 disabled:opacity-50">Change password</button></form>{settings&&<form onSubmit={(event)=>void saveDurations(event)} className="space-y-3 rounded-md border border-zinc-800 p-3"><h4 className="text-sm font-medium">Session durations</h4><label className="block text-xs text-zinc-300">Normal login lifetime<input type="number" min="1" max="24" value={settings.lifetimeHours} onChange={(event)=>setSettings({...settings,lifetimeHours:Number(event.target.value)})} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2"/> hours</label><label className="block text-xs text-zinc-300">Idle timeout<input type="number" min="1" max="720" value={settings.idleHours} onChange={(event)=>setSettings({...settings,idleHours:Number(event.target.value)})} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2"/> hours</label><label className="block text-xs text-zinc-300">Remembered device lifetime<input type="number" min="1" max="90" value={settings.rememberDays} onChange={(event)=>setSettings({...settings,rememberDays:Number(event.target.value)})} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2"/> days</label><SecurityPassword name="settingsPassword" label="Current password to save" autoComplete="current-password"/>{mfaEnabled&&<SecurityCode name="settingsMfaCode" label="Authenticator or recovery code"/>}<button disabled={busy} className="min-h-10 rounded-md border border-zinc-700 px-3 text-xs hover:bg-zinc-800 disabled:opacity-50">Save durations</button></form>}<div className="rounded-md border border-zinc-800 p-3"><div className="flex items-center justify-between gap-2"><div><h4 className="text-sm font-medium">Browser sessions</h4><p className="mt-1 text-xs text-zinc-500">Device descriptions use only the browser user agent.</p></div><button type="button" disabled={busy} onClick={()=>void revoke('/api/auth/sessions/others')} className="min-h-10 rounded px-2 text-xs text-amber-300 hover:bg-zinc-800">Sign out others</button></div><ul className="mt-3 space-y-2">{sessions.filter((session)=>!session.revokedAt).map((session)=><li key={session.id} className="rounded border border-zinc-800 p-2 text-xs"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-zinc-300">{session.clientDescription||'Unknown client'} {session.current&&<span className="text-emerald-400">· Current</span>}</p><p className="mt-1 text-zinc-500">Active {new Date(session.lastActivityAt).toLocaleString()}</p></div>{!session.current&&<button type="button" disabled={busy} onClick={()=>void revoke(`/api/auth/sessions/${encodeURIComponent(session.id)}`)} className="min-h-9 shrink-0 rounded px-2 text-red-300 hover:bg-red-950/40">Revoke</button>}</div></li>)}</ul><button type="button" disabled={busy} onClick={()=>void logout()} className="mt-4 min-h-10 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40">Sign out this device</button></div></div>}<div className="mt-6 border-t border-zinc-800 pt-4 text-[11px] text-zinc-500"><p className="select-text">RepoQuill {version}</p>{version!=='dev'&&<a className="mt-1 inline-block text-amber-400 hover:underline" href={`https://github.com/fred-head/repoquill/releases/tag/v${encodeURIComponent(version)}`} target="_blank" rel="noreferrer">View release</a>}</div></section>
+  return <section className="order-3 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="security-title"><h3 id="security-title" className="text-sm font-semibold text-zinc-200">Security</h3>{authMode==='disabled'?<p role="alert" className="mt-3 rounded-md border border-amber-700/70 bg-amber-950/25 p-3 text-xs leading-5 text-amber-200"><strong>Built-in authentication is disabled.</strong> Restrict access through localhost, a private LAN/VPN/Tailscale network, or a deliberately configured external protection layer. Interactive forward-auth may expire independently and return login HTML to this PWA.</p>:<div className="mt-3 space-y-5">{error&&<p role="alert" className="rounded-md border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}{notice&&<p role="status" className="rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3 text-xs text-emerald-300">{notice}</p>}<MFASettings enabled={mfaEnabled} busy={busy} setBusy={setBusy} onChanged={async()=>{await load()}} onLoggedOut={onLoggedOut} setError={setError} setNotice={setNotice}/><form onSubmit={(event)=>void changePassword(event)} className="space-y-3 rounded-md border border-zinc-800 p-3"><h4 className="text-sm font-medium">Change password</h4><p className="text-xs leading-5 text-zinc-500">Your current password confirms this sensitive change. All other sessions are revoked.</p><SecurityPassword name="currentPassword" label="Current password" autoComplete="current-password"/>{mfaEnabled&&<SecurityCode name="passwordMfaCode" label="Authenticator or recovery code"/>}<SecurityPassword name="newPassword" label="New password" autoComplete="new-password"/><SecurityPassword name="confirmNewPassword" label="Confirm new password" autoComplete="new-password"/><button disabled={busy} className="min-h-10 rounded-md border border-zinc-700 px-3 text-xs hover:bg-zinc-800 disabled:opacity-50">Change password</button></form>{settings&&<form onSubmit={(event)=>void saveDurations(event)} className="space-y-3 rounded-md border border-zinc-800 p-3"><h4 className="text-sm font-medium">Session durations</h4><label className="block text-xs text-zinc-300">Normal login lifetime<input type="number" min="1" max="24" value={settings.lifetimeHours} onChange={(event)=>setSettings({...settings,lifetimeHours:Number(event.target.value)})} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2"/> hours</label><label className="block text-xs text-zinc-300">Idle timeout<input type="number" min="1" max="720" value={settings.idleHours} onChange={(event)=>setSettings({...settings,idleHours:Number(event.target.value)})} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2"/> hours</label><label className="block text-xs text-zinc-300">Remembered device lifetime<input type="number" min="1" max="90" value={settings.rememberDays} onChange={(event)=>setSettings({...settings,rememberDays:Number(event.target.value)})} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2"/> days</label><SecurityPassword name="settingsPassword" label="Current password to save" autoComplete="current-password"/>{mfaEnabled&&<SecurityCode name="settingsMfaCode" label="Authenticator or recovery code"/>}<button disabled={busy} className="min-h-10 rounded-md border border-zinc-700 px-3 text-xs hover:bg-zinc-800 disabled:opacity-50">Save durations</button></form>}<div className="rounded-md border border-zinc-800 p-3"><div className="flex items-center justify-between gap-2"><div><h4 className="text-sm font-medium">Browser sessions</h4><p className="mt-1 text-xs text-zinc-500">Device descriptions use only the browser user agent.</p></div><button type="button" disabled={busy} onClick={()=>void revoke('/api/auth/sessions/others')} className="min-h-10 rounded px-2 text-xs text-amber-300 hover:bg-zinc-800">Sign out others</button></div><ul className="mt-3 space-y-2">{sessions.filter((session)=>!session.revokedAt).map((session)=><li key={session.id} className="rounded border border-zinc-800 p-2 text-xs"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-zinc-300">{session.clientDescription||'Unknown client'} {session.current&&<span className="text-emerald-400">· Current</span>}</p><p className="mt-1 text-zinc-500">Active {new Date(session.lastActivityAt).toLocaleString()}</p></div>{!session.current&&<button type="button" disabled={busy} onClick={()=>void revoke(`/api/auth/sessions/${encodeURIComponent(session.id)}`)} className="min-h-9 shrink-0 rounded px-2 text-red-300 hover:bg-red-950/40">Revoke</button>}</div></li>)}</ul><button type="button" disabled={busy} onClick={()=>void logout()} className="mt-4 min-h-10 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40">Sign out this device</button></div></div>}<div className="mt-6 border-t border-zinc-800 pt-4 text-[11px] text-zinc-500"><p className="select-text">RepoQuill {version}</p>{version!=='dev'&&<a className="mt-1 inline-block text-amber-400 hover:underline" href={`https://github.com/fred-head/repoquill/releases/tag/v${encodeURIComponent(version)}`} target="_blank" rel="noreferrer">View release</a>}</div></section>
 }
 
 type MFAEnrollment = { secret:string; qrCode:string; recoveryCodes:string[] }
@@ -1270,13 +1346,14 @@ function MFASettings({enabled,busy,setBusy,onChanged,onLoggedOut,setError,setNot
   async function confirm(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget;const data=new FormData(form);setBusy(true);setError(undefined);try{const result=await responseJSON<{csrfToken:string}>(await apiFetch('/api/auth/mfa/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:data.get('confirmationCode'),recoveryCodesStored:data.get('codesStored')==='on'})}));setCSRFToken(result.csrfToken);setEnrollment(undefined);setNotice('Two-factor authentication enabled.');notifyAuthChanged();await onChanged()}catch(caught){setError(messageFrom(caught))}finally{setBusy(false)}}
   async function disable(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget;const data=new FormData(form);setBusy(true);setError(undefined);try{await responseJSON(await apiFetch('/api/auth/mfa',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({currentPassword:data.get('disablePassword'),code:data.get('disableCode')})}));onLoggedOut()}catch(caught){setError(messageFrom(caught));setBusy(false)}}
   async function regenerate(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget;const data=new FormData(form);setBusy(true);setError(undefined);try{const result=await responseJSON<{recoveryCodes:string[]}>(await apiFetch('/api/auth/mfa/recovery-codes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({currentPassword:data.get('recoveryPassword'),code:data.get('recoveryCode')})}));setShownCodes(result.recoveryCodes);form.reset()}catch(caught){setError(messageFrom(caught))}finally{setBusy(false)}}
-  return <div className="rounded-md border border-zinc-800 p-3"><h4 className="text-sm font-medium">Two-factor authentication</h4><p className="mt-1 text-xs leading-5 text-zinc-500">{enabled?'Enabled. A code is required after your password.':'Optional. Use any standard TOTP authenticator app.'}</p>{!enrollment&&<form onSubmit={(event)=>void begin(event)} className="mt-3 space-y-3"><SecurityPassword name="mfaPassword" label="Current password" autoComplete="current-password"/>{enabled&&<SecurityCode name="currentFactor" label="Current authenticator or recovery code"/>}<button disabled={busy} className="min-h-10 rounded border border-zinc-700 px-3 text-xs hover:bg-zinc-800">{enabled?'Replace authenticator':'Set up authenticator'}</button></form>}{enrollment&&<form onSubmit={(event)=>void confirm(event)} className="mt-4 space-y-3 rounded border border-amber-800/60 p-3"><p className="text-xs text-zinc-300">Scan this QR code locally with your authenticator app.</p><img src={enrollment.qrCode} alt="TOTP enrollment QR code" className="mx-auto h-56 w-56 rounded bg-white p-2"/><p className="break-all font-mono text-xs text-zinc-400">Manual secret: {enrollment.secret}</p><RecoveryCodes codes={enrollment.recoveryCodes}/><label className="flex items-start gap-2 text-xs text-zinc-300"><input name="codesStored" type="checkbox" required className="mt-0.5 h-4 w-4"/>I stored these recovery codes safely.</label><SecurityCode name="confirmationCode" label="Current code from the new authenticator"/><button disabled={busy} className="min-h-10 rounded bg-amber-500 px-3 text-xs font-medium text-zinc-950">Enable MFA</button></form>}{enabled&&<><form onSubmit={(event)=>void regenerate(event)} className="mt-4 space-y-3 border-t border-zinc-800 pt-4"><h5 className="text-xs font-medium">Generate new recovery codes</h5><SecurityPassword name="recoveryPassword" label="Current password" autoComplete="current-password"/><SecurityCode name="recoveryCode" label="Authenticator or recovery code"/><button disabled={busy} className="min-h-10 rounded border border-zinc-700 px-3 text-xs">Regenerate codes</button></form>{shownCodes&&<RecoveryCodes codes={shownCodes}/>}<form onSubmit={(event)=>void disable(event)} className="mt-4 space-y-3 border-t border-zinc-800 pt-4"><h5 className="text-xs font-medium text-red-300">Disable MFA</h5><SecurityPassword name="disablePassword" label="Current password" autoComplete="current-password"/><SecurityCode name="disableCode" label="Authenticator or recovery code"/><button disabled={busy} className="min-h-10 rounded border border-red-900 px-3 text-xs text-red-300">Disable and sign out all devices</button></form></>}</div>
+  async function cancelEnrollment(){setBusy(true);setError(undefined);try{await responseJSON(await apiFetch('/api/auth/mfa/enrollment',{method:'DELETE'}));setEnrollment(undefined);setNotice('MFA setup cancelled.')}catch(caught){setError(messageFrom(caught))}finally{setBusy(false)}}
+  return <div className="rounded-md border border-zinc-800 p-3"><h4 className="text-sm font-medium">Two-factor authentication</h4><p className="mt-1 text-xs leading-5 text-zinc-500">{enabled?'Enabled. A code is required after your password.':'Optional. Use any standard TOTP authenticator app.'}</p>{!enrollment&&<form onSubmit={(event)=>void begin(event)} className="mt-3 space-y-3"><SecurityPassword name="mfaPassword" label="Current password" autoComplete="current-password"/>{enabled&&<SecurityCode name="currentFactor" label="Current authenticator or recovery code"/>}<button disabled={busy} className="min-h-10 rounded border border-zinc-700 px-3 text-xs hover:bg-zinc-800">{enabled?'Replace authenticator':'Set up authenticator'}</button></form>}{enrollment&&<form onSubmit={(event)=>void confirm(event)} className="mt-4 space-y-3 rounded border border-amber-800/60 p-3"><p className="text-xs text-zinc-300">Scan this QR code locally with your authenticator app.</p><img src={enrollment.qrCode} alt="TOTP enrollment QR code" className="mx-auto h-56 w-56 rounded bg-white p-2"/><p className="break-all font-mono text-xs text-zinc-400">Manual secret: {enrollment.secret}</p><RecoveryCodes codes={enrollment.recoveryCodes}/><label className="flex items-start gap-2 text-xs text-zinc-300"><input name="codesStored" type="checkbox" required className="mt-0.5 h-4 w-4"/>I stored these recovery codes safely.</label><SecurityCode name="confirmationCode" label="Current code from the new authenticator"/><div className="flex flex-wrap gap-2"><button disabled={busy} className="min-h-10 rounded bg-amber-500 px-3 text-xs font-medium text-zinc-950">Enable MFA</button><button type="button" disabled={busy} onClick={()=>void cancelEnrollment()} className="min-h-10 rounded border border-zinc-700 px-3 text-xs text-zinc-300">Cancel setup</button></div></form>}{enabled&&<><form onSubmit={(event)=>void regenerate(event)} className="mt-4 space-y-3 border-t border-zinc-800 pt-4"><h5 className="text-xs font-medium">Generate new recovery codes</h5><SecurityPassword name="recoveryPassword" label="Current password" autoComplete="current-password"/><SecurityCode name="recoveryCode" label="Authenticator or recovery code"/><button disabled={busy} className="min-h-10 rounded border border-zinc-700 px-3 text-xs">Regenerate codes</button></form>{shownCodes&&<RecoveryCodes codes={shownCodes}/>}<form onSubmit={(event)=>void disable(event)} className="mt-4 space-y-3 border-t border-zinc-800 pt-4"><h5 className="text-xs font-medium text-red-300">Disable MFA</h5><SecurityPassword name="disablePassword" label="Current password" autoComplete="current-password"/><SecurityCode name="disableCode" label="Authenticator or recovery code"/><button disabled={busy} className="min-h-10 rounded border border-red-900 px-3 text-xs text-red-300">Disable and sign out all devices</button></form></>}</div>
 }
 
 function RecoveryCodes({codes}:{codes:string[]}) { return <div className="rounded border border-zinc-700 bg-zinc-950 p-3"><p className="mb-2 text-xs font-medium text-amber-300">Recovery codes — shown once</p><ul className="grid gap-1 font-mono text-xs sm:grid-cols-2">{codes.map((code)=><li key={code}>{code}</li>)}</ul></div> }
 function SecurityCode({name,label}:{name:string;label:string}) { return <label className="block text-xs text-zinc-300">{label}<input name={name} required autoComplete="one-time-code" spellCheck={false} className="mt-1.5 min-h-10 w-full rounded border border-zinc-700 bg-zinc-950 px-3 font-mono text-sm"/></label> }
 
-function SecurityPassword({name,label,autoComplete}:{name:string;label:string;autoComplete:string}) { return <label className="block text-xs text-zinc-300">{label}<input name={name} type="password" required minLength={12} maxLength={1024} autoComplete={autoComplete} className="mt-1.5 min-h-10 w-full rounded border border-zinc-700 bg-zinc-950 px-3 text-sm"/></label> }
+function SecurityPassword({name,label,autoComplete}:{name:string;label:string;autoComplete:string}) { return <label className="block text-xs text-zinc-300">{label}<input name={name} type="password" required minLength={15} maxLength={1024} autoComplete={autoComplete} className="mt-1.5 min-h-10 w-full rounded border border-zinc-700 bg-zinc-950 px-3 text-sm"/></label> }
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -1374,7 +1451,7 @@ function SearchResults({ query, results, loading, error, onSelect }: { query: st
 }
 
 function ActionMenu({ entry, onOpenNewTab, onRename, onMove, onDelete }: { entry: TreeNode; onOpenNewTab: (entry: TreeNode) => void; onRename: (entry: TreeNode) => void; onMove: (entry: TreeNode) => void; onDelete: (entry: TreeNode) => void }) {
-  return <div role="menu" className="w-44 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-2xl">{entry.type === 'file' && <MenuButton onClick={() => onOpenNewTab(entry)}>Open in new tab</MenuButton>}<MenuButton onClick={() => onRename(entry)}>Rename</MenuButton><MenuButton onClick={() => onMove(entry)}>Move…</MenuButton><MenuButton danger onClick={() => onDelete(entry)}>Delete</MenuButton></div>
+  return <div role="menu" className="w-44 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-2xl">{entry.type === 'file' && <MenuButton onClick={() => onOpenNewTab(entry)}>Open in new tab</MenuButton>}<MenuButton onClick={() => onRename(entry)}>Rename</MenuButton><MenuButton onClick={() => onMove(entry)}>Move…</MenuButton><MenuButton danger onClick={() => onDelete(entry)}>Move to Trash</MenuButton></div>
 }
 
 function NoteTabs({ tabs, activePath, onActivate, onClose }: { tabs: NoteTab[]; activePath?: string; onActivate: (path: string) => void; onClose: (path: string) => void }) {
@@ -1399,15 +1476,205 @@ function FolderChoice({ label, depth, selected, onClick }: { label: string; dept
   return <button type="button" onClick={onClick} style={{ paddingLeft: `${0.75 + depth * 1.25}rem` }} className={`flex w-full items-center gap-2 rounded-md py-2 pr-3 text-left text-sm ${selected ? 'bg-amber-400/15 text-amber-200' : 'text-zinc-300 hover:bg-zinc-800'}`}><span aria-hidden="true">📁</span><span className="truncate">{label}</span></button>
 }
 
-export function DocumentStatusBar({ status, gitStatus, gitSyncing, markdown }: { status: SaveStatus; gitStatus: GitStatus; gitSyncing: boolean; markdown: string }) {
-  const labels: Record<SaveStatus, string> = { saved: 'Saved', unsaved: 'Unsaved', saving: 'Saving…', error: 'Save failed', conflict: 'Conflict' }
+function TrashDialog({ onChanged, onClose }: { onChanged:()=>Promise<void>; onClose:()=>void }) {
+  const [items, setItems] = useState<TrashItem[]>()
+  const [busyID, setBusyID] = useState<string>()
+  const [error, setError] = useState<string>()
+  const [notice, setNotice] = useState<string>()
+
+  const load = useCallback(async () => {
+    setError(undefined)
+    try {
+      const response = await apiFetch('/api/repository/trash')
+      setItems((await responseJSON<{items:TrashItem[]}>(response)).items)
+    } catch (caught) {
+      setError(messageFrom(caught))
+    }
+  }, [])
+
+  useEffect(() => {
+    queueMicrotask(() => void load())
+    const closeOnEscape = (event:globalThis.KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [load, onClose])
+
+  async function restore(item:TrashItem) {
+    setBusyID(item.id)
+    setError(undefined)
+    setNotice(undefined)
+    try {
+      const response = await apiFetch(`/api/repository/trash/${encodeURIComponent(item.id)}/restore`, { method:'POST' })
+      await responseJSON<TrashItem>(response)
+      setNotice(`Restored “${item.originalPath}”.`)
+      await Promise.all([load(), onChanged()])
+    } catch (caught) {
+      setError(messageFrom(caught))
+    } finally {
+      setBusyID(undefined)
+    }
+  }
+
+  async function permanentlyDelete(item:TrashItem) {
+    if (!window.confirm(`Permanently delete “${item.originalPath}”? This removes the trashed files from this notebook and cannot be undone in RepoQuill.`)) return
+    setBusyID(item.id)
+    setError(undefined)
+    setNotice(undefined)
+    try {
+      const response = await apiFetch(`/api/repository/trash/${encodeURIComponent(item.id)}`, { method:'DELETE' })
+      await responseJSON<TrashItem>(response)
+      setNotice(`Permanently deleted “${item.originalPath}”.`)
+      await load()
+    } catch (caught) {
+      setError(messageFrom(caught))
+    } finally {
+      setBusyID(undefined)
+    }
+  }
+
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="trash-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-5 py-4"><div><h2 id="trash-title" className="text-lg font-semibold">Trash</h2><p className="mt-1 text-xs leading-5 text-zinc-500">Deleted notes, folders, and their owned image assets remain ordinary notebook files until permanently deleted.</p></div><button type="button" autoFocus onClick={onClose} aria-label="Close Trash" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header><div className="overflow-y-auto p-4 sm:p-5">{error && <ErrorMessage>{error}</ErrorMessage>}{notice && <p role="status" className="mb-4 rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3 text-sm text-emerald-300">{notice}</p>}{items === undefined && !error && <p className="text-sm text-zinc-500">Loading Trash…</p>}{items?.length === 0 && <div className="rounded-md border border-zinc-800 p-5 text-center"><p className="text-sm text-zinc-300">Trash is empty.</p><p className="mt-1 text-xs text-zinc-500">Items you delete from the notebook tree will appear here.</p></div>}<ul className="space-y-2">{items?.map((item) => <li key={item.id} className="rounded-md border border-zinc-800 p-3"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><p className="break-all text-sm text-zinc-200"><span aria-hidden="true" className="mr-2">{item.type === 'directory' ? '📁' : '◇'}</span>{item.originalPath}</p><p className="mt-1 text-xs text-zinc-500">Deleted {new Date(item.deletedAt).toLocaleString()} · {formatBytes(item.size)}</p></div><div className="flex shrink-0 flex-wrap gap-2"><button type="button" disabled={busyID !== undefined} onClick={() => void restore(item)} className="min-h-10 rounded-md bg-amber-500 px-3 text-xs font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-40">{busyID === item.id ? 'Working…' : 'Restore'}</button><button type="button" disabled={busyID !== undefined} onClick={() => void permanentlyDelete(item)} className="min-h-10 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Permanently delete</button></div></div></li>)}</ul></div><footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Done</button></footer></section></div>
+}
+
+type NoteDiffLine = { kind: 'same' | 'removed' | 'added'; text: string }
+
+function NoteHistoryDialog({ notePath, currentContent, onRestore, onClose }: { notePath:string; currentContent:string; onRestore:(versionId:string)=>Promise<void>; onClose:()=>void }) {
+  const [entries, setEntries] = useState<NoteHistoryEntry[]>()
+  const [limited, setLimited] = useState(false)
+  const [selected, setSelected] = useState<NoteHistoryVersion>()
+  const [loadingVersion, setLoadingVersion] = useState(false)
+  const [restoring, setRestoring] = useState(false)
+  const [error, setError] = useState<string>()
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void apiFetch(`/api/repository/history?path=${encodeURIComponent(notePath)}`, { signal: controller.signal })
+      .then(responseJSON<NoteHistoryResult>)
+      .then((result) => { setEntries(result.entries); setLimited(result.limited) })
+      .catch((caught:unknown) => { if (!controller.signal.aborted) setError(messageFrom(caught)) })
+    const closeOnEscape = (event:globalThis.KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => { controller.abort(); window.removeEventListener('keydown', closeOnEscape) }
+  }, [notePath, onClose])
+
+  async function loadVersion(entry:NoteHistoryEntry) {
+    setLoadingVersion(true)
+    setError(undefined)
+    try {
+      const response = await apiFetch(`/api/repository/history/version?path=${encodeURIComponent(notePath)}&version=${encodeURIComponent(entry.versionId)}`)
+      setSelected(await responseJSON<NoteHistoryVersion>(response))
+    } catch (caught) {
+      setError(messageFrom(caught))
+    } finally {
+      setLoadingVersion(false)
+    }
+  }
+
+  async function restoreSelected() {
+    if (!selected || !window.confirm(`Restore the version from ${new Date(selected.timestamp).toLocaleString()}? Your current saved note will remain available in version history after the next synchronization.`)) return
+    setRestoring(true)
+    setError(undefined)
+    try {
+      await onRestore(selected.versionId)
+      onClose()
+    } catch (caught) {
+      setError(messageFrom(caught))
+    } finally {
+      setRestoring(false)
+    }
+  }
+
+  const diff = selected ? readableNoteDiff(selected.content, currentContent) : []
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-2 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="note-history-title" className="flex max-h-[94vh] w-full max-w-5xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3 sm:px-5"><div className="min-w-0"><h2 id="note-history-title" className="text-lg font-semibold">Version history</h2><p className="truncate text-xs text-zinc-500">{notePath}</p></div><button type="button" autoFocus onClick={onClose} aria-label="Close version history" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header><div className="grid min-h-0 flex-1 md:grid-cols-[17rem_1fr]"><aside aria-label="Note versions" className="max-h-56 overflow-y-auto border-b border-zinc-800 p-3 md:max-h-none md:border-r md:border-b-0">{entries === undefined && !error && <p className="p-2 text-sm text-zinc-500">Loading versions…</p>}{limited && <p role="status" className="mb-2 rounded border border-amber-800/60 bg-amber-950/25 p-2 text-xs leading-5 text-amber-200">This notebook has a shallow Git history, so older versions may not be available on this server.</p>}{entries?.length === 0 && <p className="p-2 text-sm leading-6 text-zinc-400">No synchronized versions are available for this note yet.</p>}<ul className="space-y-1">{entries?.map((entry) => <li key={entry.versionId}><button type="button" aria-pressed={selected?.versionId === entry.versionId} onClick={() => void loadVersion(entry)} className={`w-full rounded-md px-3 py-2 text-left ${selected?.versionId === entry.versionId ? 'bg-amber-400/15 text-amber-100' : 'text-zinc-300 hover:bg-zinc-800'}`}><span className="block text-xs font-medium">{new Date(entry.timestamp).toLocaleString()}</span><span className="mt-1 block truncate text-[11px] text-zinc-500">{entry.summary}</span>{entry.path !== notePath && <span className="mt-1 block truncate text-[11px] text-zinc-600">Previously: {entry.path}</span>}</button></li>)}</ul></aside><div className="min-h-0 overflow-y-auto p-4 sm:p-5">{error && <ErrorMessage>{error}</ErrorMessage>}{loadingVersion && <p className="text-sm text-zinc-500">Loading this version…</p>}{!selected && !loadingVersion && <div className="flex min-h-48 items-center justify-center text-center text-sm text-zinc-500">Choose a version to view its changes.</div>}{selected && !loadingVersion && <><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-medium text-zinc-200">Changes compared with the current note</h3><p className="mt-1 text-xs text-zinc-500">Removed lines use − and added lines use +. The underlying note remains ordinary Markdown.</p></div><button type="button" disabled={restoring} onClick={() => void restoreSelected()} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-50">{restoring ? 'Restoring…' : 'Restore this version'}</button></div><div role="region" aria-label="Version comparison" className="mt-4 overflow-x-auto rounded-md border border-zinc-800 bg-zinc-950"><pre className="min-w-max p-3 font-mono text-xs leading-5">{diff.map((line,index) => <span key={`${index}:${line.kind}`} className={`block whitespace-pre-wrap break-words ${line.kind === 'removed' ? 'bg-red-950/35 text-red-200' : line.kind === 'added' ? 'bg-emerald-950/30 text-emerald-200' : 'text-zinc-500'}`}><span aria-hidden="true" className="mr-2 inline-block w-3 select-none text-zinc-600">{line.kind === 'removed' ? '−' : line.kind === 'added' ? '+' : ' '}</span>{line.text || ' '}</span>)}</pre></div><details className="mt-4 rounded-md border border-zinc-800 p-3"><summary className="cursor-pointer text-sm text-zinc-300">View this complete Markdown version</summary><pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-400">{selected.content}</pre></details></>}</div></div></section></div>
+}
+
+function readableNoteDiff(previous:string, current:string):NoteDiffLine[] {
+  const before = previous.split('\n')
+  const after = current.split('\n')
+  if (before.length * after.length > 160_000 || before.length > 800 || after.length > 800) return coarseNoteDiff(before, after)
+  const columns = after.length + 1
+  const table = new Uint16Array((before.length + 1) * columns)
+  for (let left = before.length - 1; left >= 0; left -= 1) {
+    for (let right = after.length - 1; right >= 0; right -= 1) {
+      table[left * columns + right] = before[left] === after[right]
+        ? table[(left + 1) * columns + right + 1] + 1
+        : Math.max(table[(left + 1) * columns + right], table[left * columns + right + 1])
+    }
+  }
+  const result:NoteDiffLine[] = []
+  let left = 0
+  let right = 0
+  while (left < before.length && right < after.length && result.length < 1600) {
+    if (before[left] === after[right]) {
+      result.push({ kind:'same', text:before[left] }); left += 1; right += 1
+    } else if (table[(left + 1) * columns + right] >= table[left * columns + right + 1]) {
+      result.push({ kind:'removed', text:before[left] }); left += 1
+    } else {
+      result.push({ kind:'added', text:after[right] }); right += 1
+    }
+  }
+  while (left < before.length && result.length < 1600) result.push({ kind:'removed', text:before[left++] })
+  while (right < after.length && result.length < 1600) result.push({ kind:'added', text:after[right++] })
+  if (left < before.length || right < after.length) result.push({ kind:'same', text:'… comparison truncated …' })
+  return result
+}
+
+function coarseNoteDiff(before:string[], after:string[]):NoteDiffLine[] {
+  let prefix = 0
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1
+  let suffix = 0
+  while (suffix < before.length-prefix && suffix < after.length-prefix && before[before.length-1-suffix] === after[after.length-1-suffix]) suffix += 1
+  const result:NoteDiffLine[] = before.slice(0, Math.min(prefix, 100)).map((text) => ({ kind:'same', text }))
+  if (prefix > 100) result.push({ kind:'same', text:'… unchanged lines omitted …' })
+  result.push(...before.slice(prefix, before.length-suffix).slice(0, 700).map((text):NoteDiffLine => ({ kind:'removed', text })))
+  result.push(...after.slice(prefix, after.length-suffix).slice(0, 700).map((text):NoteDiffLine => ({ kind:'added', text })))
+  if (before.length-prefix-suffix > 700 || after.length-prefix-suffix > 700) result.push({ kind:'same', text:'… comparison truncated …' })
+  result.push(...before.slice(before.length-Math.min(suffix,100)).map((text):NoteDiffLine => ({ kind:'same', text })))
+  return result
+}
+
+type SyncPresentation = { label:string; happened:string; safety:string; next:string; attention:boolean }
+
+function synchronizationPresentation(status: GitStatus, syncing: boolean): SyncPresentation {
+	if (syncing) return { label: 'Synchronizing…', happened: 'RepoQuill is exchanging saved notebook changes with the connected service.', safety: 'Changes already saved on this server remain safe while this runs.', next: 'No action is needed.', attention: false }
+	switch (status.state) {
+	case 'clean':
+	case 'synced':
+		return { label: 'Everything is up to date', happened: 'The server and connected service have the same saved changes.', safety: 'Your synchronized notes are available in both places.', next: 'No action is needed.', attention: false }
+	case 'local_changes':
+		return { label: 'Changes waiting to synchronize', happened: 'This RepoQuill server contains saved changes that have not reached the connected service yet.', safety: 'The changes are saved on this server.', next: 'Choose Sync now or wait for the next automatic attempt.', attention: false }
+	case 'remote_changes':
+		return { label: 'New changes available', happened: 'The connected service contains newer notebook changes.', safety: 'RepoQuill has not overwritten your local files.', next: 'Choose Sync now to receive them.', attention: false }
+	case 'diverged':
+	case 'conflict':
+		return { label: 'Your decision is required', happened: 'Two sets of changes overlap and automatic synchronization has paused.', safety: 'RepoQuill has preserved the available versions instead of choosing one silently.', next: 'Review the affected notes before synchronization continues.', attention: true }
+	case 'sync_failed':
+		return { label: 'Synchronization could not finish', happened: 'RepoQuill could not complete the exchange with the connected service.', safety: 'Notes already saved on this RepoQuill server remain saved here.', next: 'Retry or check the notebook connection.', attention: true }
+	default:
+		return { label: 'Notebook is currently unavailable', happened: 'RepoQuill cannot inspect the notebook connection right now.', safety: 'No note content was deliberately removed.', next: 'Check the notebook connection and server storage.', attention: true }
+	}
+}
+
+function ReceivedChangesNotice({ changes, onOpen, onDismiss }: { changes:ReceivedChange[]; onOpen:(path:string)=>void; onDismiss:()=>void }) {
+	const counts = changes.reduce<Record<string, number>>((result, change) => ({ ...result, [change.kind]: (result[change.kind] ?? 0) + 1 }), {})
+	const summary = (['added', 'updated', 'moved', 'deleted'] as const).filter((kind) => counts[kind]).map((kind) => `${counts[kind]} ${kind}`).join(', ')
+	return <section role="status" aria-label="New notebook changes received" className="border-b border-sky-900/60 bg-sky-950/20 px-4 py-2 text-xs text-zinc-200 sm:px-8"><div className="flex items-center justify-between gap-3"><span><strong>New changes were received.</strong> {summary}.</span><button type="button" onClick={onDismiss} aria-label="Dismiss received changes" className="min-h-9 min-w-9 rounded text-zinc-500 hover:bg-zinc-800">×</button></div><ul className="mt-1 flex flex-wrap gap-1.5">{changes.slice(0, 6).map((change) => <li key={`${change.kind}:${change.fromPath ?? ''}:${change.path}`}>{change.kind !== 'deleted' && change.path.toLowerCase().endsWith('.md') ? <button type="button" onClick={() => onOpen(change.path)} title="Open in a note tab" className="min-h-8 rounded border border-zinc-700 px-2 text-zinc-300 hover:bg-zinc-800">{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</button> : <span className="inline-flex min-h-8 items-center rounded border border-zinc-800 px-2 text-zinc-500">{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</span>}</li>)}</ul></section>
+}
+
+function SynchronizationDetailsPanel({ saveStatus, gitStatus, syncing, browserOnline, lastSuccessfulSyncAt, lastSyncAttemptAt, lastSyncError, nextScheduledSyncAt, receivedChanges, onSync, onOpenNote, onOpenSettings, onCheckConnection, onClose }: { saveStatus:SaveStatus; gitStatus:GitStatus; syncing:boolean; browserOnline:boolean; lastSuccessfulSyncAt?:string; lastSyncAttemptAt?:string; lastSyncError?:string; nextScheduledSyncAt?:string; receivedChanges:ReceivedChange[]; onSync:()=>void; onOpenNote:(path:string)=>void; onOpenSettings:()=>void; onCheckConnection:()=>void; onClose:()=>void }) {
+	const presentation = synchronizationPresentation(gitStatus, syncing)
+	const locallySafe = saveStatus === 'saved'
+	return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="sync-details-title" className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between border-b border-zinc-800 px-5 py-4"><div><h2 id="sync-details-title" className="text-lg font-semibold">Synchronization</h2><p className="mt-1 text-xs text-zinc-500">Notebook save and connection details</p></div><button type="button" onClick={onClose} aria-label="Close synchronization details" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header><div className="overflow-y-auto p-5"><div role="status" className={`rounded-lg border p-4 ${presentation.attention ? 'border-amber-800/70 bg-amber-950/20' : 'border-zinc-800 bg-zinc-950/30'}`}><p className="font-medium text-zinc-100">{presentation.label}</p><p className="mt-2 text-sm leading-6 text-zinc-300">{presentation.happened}</p><p className="mt-2 text-sm leading-6 text-zinc-400"><strong className="text-zinc-300">Your notes:</strong> {presentation.safety}</p><p className="mt-2 text-sm leading-6 text-zinc-400"><strong className="text-zinc-300">Next:</strong> {presentation.next}</p></div><dl className="mt-4 grid gap-2 text-sm sm:grid-cols-2"><StatusDetail label="Saved on this server" value={locallySafe ? 'Yes' : saveStatus === 'saving' ? 'Saving…' : saveStatus === 'unsaved' ? 'Not yet' : 'Needs attention'} /><StatusDetail label="RepoQuill server" value={browserOnline ? 'Reachable' : 'Offline or unavailable'} /><StatusDetail label="Connected service" value={gitStatus.state === 'sync_failed' || gitStatus.state === 'invalid' ? 'Connection needs attention' : 'Available'} /><StatusDetail label="Synchronization" value={presentation.label} /><StatusDetail label="Last successful synchronization" value={formatStatusTime(lastSuccessfulSyncAt)} /><StatusDetail label="Next scheduled attempt" value={formatStatusTime(nextScheduledSyncAt, 'Not scheduled')} /></dl>{receivedChanges.length > 0 && <section className="mt-5"><h3 className="text-sm font-medium text-zinc-200">Recently received changes</h3><ul className="mt-2 space-y-1">{receivedChanges.map((change) => <li key={`${change.kind}:${change.fromPath ?? ''}:${change.path}`} className="flex min-h-10 items-center justify-between gap-2 rounded border border-zinc-800 px-3 text-xs"><span className="min-w-0 truncate text-zinc-400"><span className="mr-2 capitalize text-zinc-300">{change.kind}</span>{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</span>{change.kind !== 'deleted' && change.path.toLowerCase().endsWith('.md') && <button type="button" onClick={() => onOpenNote(change.path)} className="shrink-0 rounded px-2 py-1.5 text-amber-300 hover:bg-zinc-800">Open in tab</button>}</li>)}</ul></section>}{(gitStatus.state === 'conflict' || gitStatus.state === 'diverged') && <section className="mt-5 rounded border border-amber-800/60 p-3"><h3 className="text-sm font-medium text-amber-200">Changes need your review</h3><p className="mt-1 text-xs leading-5 text-zinc-400">Automatic synchronization stays paused. RepoQuill has not silently selected either version.</p>{gitStatus.conflictFiles?.length ? <ul className="mt-2 space-y-1 text-xs text-zinc-300">{gitStatus.conflictFiles.map((path) => <li key={path} className="flex items-center justify-between gap-2 rounded border border-zinc-800 px-3 py-2"><span className="min-w-0 truncate">{path}</span>{path.toLowerCase().endsWith('.md') && <button type="button" onClick={() => onOpenNote(path)} className="shrink-0 rounded px-2 py-1.5 text-amber-300 hover:bg-zinc-800">Review changes</button>}</li>)}</ul> : null}</section>}<div className="mt-5 flex flex-wrap gap-2"><button type="button" disabled={syncing || !browserOnline || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict' || gitStatus.state === 'conflict' || gitStatus.state === 'diverged'} onClick={onSync} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 disabled:opacity-40">{syncing ? 'Synchronizing…' : gitStatus.state === 'sync_failed' ? 'Retry synchronization' : 'Sync now'}</button>{(gitStatus.state === 'sync_failed' || gitStatus.state === 'invalid') && <button type="button" onClick={onCheckConnection} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Check connection</button>}<button type="button" onClick={onOpenSettings} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Open notebook settings</button></div><details className="mt-5 rounded border border-zinc-800 p-3 text-xs text-zinc-500"><summary className="cursor-pointer text-zinc-400">Technical details</summary><dl className="mt-3 grid gap-2"><StatusDetail label="Branch" value={gitStatus.branch || 'Unavailable'} /><StatusDetail label="Local commits ahead" value={String(gitStatus.ahead ?? 0)} /><StatusDetail label="Remote commits behind" value={String(gitStatus.behind ?? 0)} /><StatusDetail label="Last attempt" value={formatStatusTime(lastSyncAttemptAt)} />{(lastSyncError || gitStatus.message) && <StatusDetail label="Sanitized diagnostic" value={lastSyncError || gitStatus.message || ''} />}</dl></details></div></section></div>
+}
+
+function StatusDetail({ label, value }: { label:string; value:string }) { return <div className="rounded border border-zinc-800 p-3"><dt className="text-[11px] uppercase tracking-wide text-zinc-600">{label}</dt><dd className="mt-1 break-words text-xs text-zinc-300">{value}</dd></div> }
+function formatStatusTime(value?:string, fallback='Not yet'):string { if (!value) return fallback; const date=new Date(value); return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString() }
+
+export function DocumentStatusBar({ status, gitStatus, gitSyncing, markdown, onOpenSyncDetails = () => undefined }: { status: SaveStatus; gitStatus: GitStatus; gitSyncing: boolean; markdown: string; onOpenSyncDetails?:()=>void }) {
+  const labels: Record<SaveStatus, string> = { saved: 'Saved on this server', unsaved: 'Changes not saved yet', saving: 'Saving on this server…', error: 'Save could not finish', conflict: 'Your decision is required' }
   const colors: Record<SaveStatus, string> = { saved: 'text-emerald-400', unsaved: 'text-amber-300', saving: 'text-zinc-400', error: 'text-red-400', conflict: 'text-red-400' }
-  const gitLabels: Record<GitState, string> = { clean: 'Clean', local_changes: 'Local changes', remote_changes: 'Remote changes', diverged: 'Diverged', synced: 'Synced', sync_failed: 'Sync failed', conflict: 'Git conflict', invalid: 'Git unavailable' }
-  const gitLabel = gitSyncing ? 'Syncing…' : gitLabels[gitStatus.state]
-  const gitCritical = gitStatus.state === 'sync_failed' || gitStatus.state === 'conflict' || gitStatus.state === 'invalid'
-  const gitTitle = [gitStatus.message, gitStatus.conflictFiles?.length ? `Conflicts: ${gitStatus.conflictFiles.join(', ')}` : ''].filter(Boolean).join(' ')
+	const synchronization = synchronizationPresentation(gitStatus, gitSyncing)
   const stats = documentStats(markdown)
-  return <footer aria-label="Document status" className="sticky bottom-0 z-10 flex h-7 shrink-0 items-center gap-2.5 border-t border-zinc-800 bg-zinc-950/90 px-5 text-[11px] leading-none text-zinc-500 backdrop-blur sm:px-8"><span role="status" className={`font-medium ${colors[status]}`}>{labels[status]}</span><span aria-hidden="true" className="text-zinc-700">•</span><span role="status" aria-label={`Git: ${gitLabel}`} title={gitTitle || undefined} className={gitCritical ? 'font-medium text-red-400' : gitStatus.state === 'synced' ? 'font-medium text-emerald-400' : 'font-medium text-zinc-400'}>{gitLabel}</span><span aria-hidden="true" className="hidden text-zinc-700 sm:inline">•</span><span className="hidden sm:inline" aria-label={`${stats.words} words`}>{stats.words} words</span><span className="hidden md:inline" aria-label={`${stats.characters} characters`}>{stats.characters} characters</span><span className="hidden md:inline" aria-label={`${stats.lines} lines`}>{stats.lines} lines</span></footer>
+  return <footer aria-label="Document status" className="sticky bottom-0 z-10 flex h-7 shrink-0 items-center gap-2.5 border-t border-zinc-800 bg-zinc-950/90 px-5 text-[11px] leading-none text-zinc-500 backdrop-blur sm:px-8"><span role="status" className={`truncate font-medium ${colors[status]}`}>{labels[status]}</span><span aria-hidden="true" className="text-zinc-700">•</span><button type="button" onClick={onOpenSyncDetails} aria-label={`Synchronization: ${synchronization.label}. Open details`} title={`${synchronization.happened} ${synchronization.safety}`} className={`truncate rounded px-1 py-1 font-medium hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-amber-500 ${synchronization.attention ? 'text-red-400' : gitStatus.state === 'synced' || gitStatus.state === 'clean' ? 'text-emerald-400' : 'text-zinc-400'}`}>{synchronization.label}</button><span aria-hidden="true" className="hidden text-zinc-700 sm:inline">•</span><span className="hidden sm:inline" aria-label={`${stats.words} words`}>{stats.words} words</span><span className="hidden md:inline" aria-label={`${stats.characters} characters`}>{stats.characters} characters</span><span className="hidden md:inline" aria-label={`${stats.lines} lines`}>{stats.lines} lines</span></footer>
 }
 
 function StatusDot({ health }: { health: Health }) {

@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"log/slog"
 	"os"
@@ -22,7 +23,7 @@ func TestMFAEnrollmentEncryptionRecoveryAndDisable(t *testing.T) {
 	defer service.Close()
 	setupPassword(t, service, "a sufficiently long password")
 
-	enrollment, err := service.BeginMFAEnrollment(ctx, "a sufficiently long password", "")
+	enrollment, err := service.BeginMFAEnrollment(ctx, "a sufficiently long password", "", testMFASessionHash())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,10 +47,10 @@ func TestMFAEnrollmentEncryptionRecoveryAndDisable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.ConfirmMFAEnrollment(ctx, code, false); err == nil {
+	if err := service.ConfirmMFAEnrollment(ctx, code, false, testMFASessionHash()); err == nil {
 		t.Fatal("MFA enabled without recovery-code confirmation")
 	}
-	if err := service.ConfirmMFAEnrollment(ctx, code, true); err != nil {
+	if err := service.ConfirmMFAEnrollment(ctx, code, true, testMFASessionHash()); err != nil {
 		t.Fatal(err)
 	}
 	if enabled, _ := service.MFAEnabled(ctx); !enabled {
@@ -89,13 +90,13 @@ func TestReplacingMFAKeepsExistingFactorUntilConfirmation(t *testing.T) {
 	service := openTestService(t, Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")})
 	defer service.Close()
 	setupPassword(t, service, "a sufficiently long password")
-	first, _ := service.BeginMFAEnrollment(ctx, "a sufficiently long password", "")
+	first, _ := service.BeginMFAEnrollment(ctx, "a sufficiently long password", "", testMFASessionHash())
 	firstCode, _ := totp.GenerateCode(first.Secret, time.Now().UTC())
-	if err := service.ConfirmMFAEnrollment(ctx, firstCode, true); err != nil {
+	if err := service.ConfirmMFAEnrollment(ctx, firstCode, true, testMFASessionHash()); err != nil {
 		t.Fatal(err)
 	}
 
-	replacement, err := service.BeginMFAEnrollment(ctx, "a sufficiently long password", first.RecoveryCodes[0])
+	replacement, err := service.BeginMFAEnrollment(ctx, "a sufficiently long password", first.RecoveryCodes[0], testMFASessionHash())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,11 +107,52 @@ func TestReplacingMFAKeepsExistingFactorUntilConfirmation(t *testing.T) {
 		t.Fatal("existing recovery codes were invalidated before confirmation")
 	}
 	newCode, _ := totp.GenerateCode(replacement.Secret, time.Now().UTC())
-	if err := service.ConfirmMFAEnrollment(ctx, newCode, true); err != nil {
+	if err := service.ConfirmMFAEnrollment(ctx, newCode, true, testMFASessionHash()); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.VerifySecondFactor(ctx, first.RecoveryCodes[2]); !errors.Is(err, ErrMFAInvalid) {
 		t.Fatal("old recovery code survived completed replacement")
+	}
+}
+
+func TestMFAEnrollmentExpiresIsSessionBoundAndCanBeCancelled(t *testing.T) {
+	ctx := context.Background()
+	service := openTestService(t, Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")})
+	defer service.Close()
+	setupPassword(t, service, "a sufficiently long password")
+	sessionA := testMFASessionHash()
+	sessionB := sha256.Sum256([]byte("another-browser-session"))
+
+	enrollment, err := service.BeginMFAEnrollment(ctx, "a sufficiently long password", "", sessionA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.GenerateCode(enrollment.Secret, time.Now().UTC())
+	if err := service.ConfirmMFAEnrollment(ctx, code, true, sessionB[:]); !errors.Is(err, ErrMFAUnavailable) {
+		t.Fatalf("different session confirmed pending MFA enrollment: %v", err)
+	}
+	if _, err := service.db.ExecContext(ctx, `UPDATE auth_mfa_configuration SET pending_expires_at=?`, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ConfirmMFAEnrollment(ctx, code, true, sessionA); !errors.Is(err, ErrMFAUnavailable) {
+		t.Fatalf("expired MFA enrollment was accepted: %v", err)
+	}
+
+	if _, err := service.BeginMFAEnrollment(ctx, "a sufficiently long password", "", sessionA); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CancelMFAEnrollment(ctx, sessionB[:]); !errors.Is(err, ErrMFAUnavailable) {
+		t.Fatalf("another session cancelled enrollment: %v", err)
+	}
+	var pending int
+	if err := service.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_mfa_configuration WHERE pending_secret_nonce IS NOT NULL`).Scan(&pending); err != nil || pending != 1 {
+		t.Fatalf("another session cancelled enrollment: count=%d err=%v", pending, err)
+	}
+	if err := service.CancelMFAEnrollment(ctx, sessionA); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_recovery_artifacts WHERE kind='mfa_recovery_pending'`).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("pending recovery codes survived cancellation: count=%d err=%v", pending, err)
 	}
 }
 
@@ -120,9 +162,9 @@ func TestMissingMFAEncryptionKeyFailsClosed(t *testing.T) {
 	config := Config{Mode: ModeLocal, MetadataPath: filepath.Join(directory, "auth.db")}
 	service := openTestService(t, config)
 	setupPassword(t, service, "a sufficiently long password")
-	enrollment, _ := service.BeginMFAEnrollment(ctx, "a sufficiently long password", "")
+	enrollment, _ := service.BeginMFAEnrollment(ctx, "a sufficiently long password", "", testMFASessionHash())
 	code, _ := totp.GenerateCode(enrollment.Secret, time.Now().UTC())
-	if err := service.ConfirmMFAEnrollment(ctx, code, true); err != nil {
+	if err := service.ConfirmMFAEnrollment(ctx, code, true, testMFASessionHash()); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.Close(); err != nil {
@@ -154,18 +196,40 @@ func TestMissingMFAEncryptionKeyFailsClosed(t *testing.T) {
 	reopened.Close()
 }
 
+func TestExplicitMFARecoveryQuarantinesCorruptEncryptionKey(t *testing.T) {
+	directory := t.TempDir()
+	keyPath := filepath.Join(directory, "auth.key")
+	if err := os.WriteFile(keyPath, []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := Config{Mode: ModeLocal, MetadataPath: filepath.Join(directory, "auth.db"), EncryptionKeyPath: keyPath, AllowMFAKeyRecovery: true}
+	service, err := Open(t.Context(), config, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	key, err := os.ReadFile(keyPath)
+	if err != nil || len(key) != 32 {
+		t.Fatalf("replacement encryption key was not generated: bytes=%d err=%v", len(key), err)
+	}
+	quarantined, err := filepath.Glob(keyPath + ".invalid-*")
+	if err != nil || len(quarantined) != 1 {
+		t.Fatalf("corrupt encryption key was not quarantined: paths=%v err=%v", quarantined, err)
+	}
+}
+
 func TestTOTPClockWindowAndAtomicRecoveryCodeConsumption(t *testing.T) {
 	ctx := context.Background()
 	service := openTestService(t, Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")})
 	defer service.Close()
 	setupPassword(t, service, "a sufficiently long password")
-	enrollment, err := service.BeginMFAEnrollment(ctx, "a sufficiently long password", "")
+	enrollment, err := service.BeginMFAEnrollment(ctx, "a sufficiently long password", "", testMFASessionHash())
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	confirmation, _ := totp.GenerateCode(enrollment.Secret, now)
-	if err := service.ConfirmMFAEnrollment(ctx, confirmation, true); err != nil {
+	if err := service.ConfirmMFAEnrollment(ctx, confirmation, true, testMFASessionHash()); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.VerifySecondFactor(ctx, confirmation); !errors.Is(err, ErrMFAInvalid) {
@@ -217,12 +281,12 @@ func TestMFASecretsAreNotLoggedAndResetDoesNotTouchNotes(t *testing.T) {
 	}
 	defer service.Close()
 	setupPassword(t, service, "a sufficiently long password")
-	enrollment, err := service.BeginMFAEnrollment(t.Context(), "a sufficiently long password", "")
+	enrollment, err := service.BeginMFAEnrollment(t.Context(), "a sufficiently long password", "", testMFASessionHash())
 	if err != nil {
 		t.Fatal(err)
 	}
 	code, _ := totp.GenerateCode(enrollment.Secret, time.Now().UTC())
-	if err := service.ConfirmMFAEnrollment(t.Context(), code, true); err != nil {
+	if err := service.ConfirmMFAEnrollment(t.Context(), code, true, testMFASessionHash()); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.ResetMFA(t.Context()); err != nil {
@@ -249,4 +313,9 @@ func setupPassword(t *testing.T, service *Service, password string) {
 	if err := service.CompleteSetup(t.Context(), token.Value, password); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func testMFASessionHash() []byte {
+	digest := sha256.Sum256([]byte("repoquill-test-mfa-session"))
+	return digest[:]
 }

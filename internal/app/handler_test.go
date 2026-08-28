@@ -316,12 +316,13 @@ func TestPasswordFirstMFALoginAndRecoveryCode(t *testing.T) {
 	if err := service.CompleteSetup(t.Context(), bootstrap.Value, password); err != nil {
 		t.Fatal(err)
 	}
-	enrollment, err := service.BeginMFAEnrollment(t.Context(), password, "")
+	testSessionHash := make([]byte, 32)
+	enrollment, err := service.BeginMFAEnrollment(t.Context(), password, "", testSessionHash)
 	if err != nil {
 		t.Fatal(err)
 	}
 	code, _ := totp.GenerateCode(enrollment.Secret, time.Now().UTC())
-	if err := service.ConfirmMFAEnrollment(t.Context(), code, true); err != nil {
+	if err := service.ConfirmMFAEnrollment(t.Context(), code, true, testSessionHash); err != nil {
 		t.Fatal(err)
 	}
 	handler, err := NewHandlerWithAuth(logger, t.TempDir(), service)
@@ -771,11 +772,41 @@ func TestRepositoryMutationAPI(t *testing.T) {
 
 	deleted := httptest.NewRecorder()
 	handler.ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete, "/api/repository/entry?path=Moved.md", nil))
-	if deleted.Code != http.StatusNoContent {
+	var trashed struct {
+		ID string `json:"id"`
+	}
+	if deleted.Code != http.StatusOK || json.NewDecoder(deleted.Body).Decode(&trashed) != nil || trashed.ID == "" {
 		t.Fatalf("delete note failed: %d %s", deleted.Code, deleted.Body.String())
 	}
 	if _, err := os.Stat(filepath.Join(root, "Moved.md")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("deleted note still exists: %v", err)
+	}
+	trash := httptest.NewRecorder()
+	handler.ServeHTTP(trash, httptest.NewRequest(http.MethodGet, "/api/repository/trash", nil))
+	if trash.Code != http.StatusOK || !strings.Contains(trash.Body.String(), `"originalPath":"Moved.md"`) {
+		t.Fatalf("trash list failed: %d %s", trash.Code, trash.Body.String())
+	}
+	restored := httptest.NewRecorder()
+	handler.ServeHTTP(restored, httptest.NewRequest(http.MethodPost, "/api/repository/trash/"+trashed.ID+"/restore", nil))
+	if restored.Code != http.StatusOK {
+		t.Fatalf("restore note failed: %d %s", restored.Code, restored.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "Moved.md")); err != nil {
+		t.Fatalf("restored note is missing: %v", err)
+	}
+
+	deletedAgain := httptest.NewRecorder()
+	handler.ServeHTTP(deletedAgain, httptest.NewRequest(http.MethodDelete, "/api/repository/entry?path=Moved.md", nil))
+	var discarded struct {
+		ID string `json:"id"`
+	}
+	if deletedAgain.Code != http.StatusOK || json.NewDecoder(deletedAgain.Body).Decode(&discarded) != nil {
+		t.Fatalf("second trash operation failed: %d %s", deletedAgain.Code, deletedAgain.Body.String())
+	}
+	permanent := httptest.NewRecorder()
+	handler.ServeHTTP(permanent, httptest.NewRequest(http.MethodDelete, "/api/repository/trash/"+discarded.ID, nil))
+	if permanent.Code != http.StatusOK {
+		t.Fatalf("permanent deletion failed: %d %s", permanent.Code, permanent.Body.String())
 	}
 }
 
@@ -1051,6 +1082,67 @@ func runGitTest(t *testing.T, arguments ...string) {
 	}
 }
 
+func TestNoteHistoryAPIViewsAndRestoresWithoutRewritingHistory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Note.md"), []byte("first version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, "-C", root, "init", "-q")
+	runGitTest(t, "-C", root, "config", "user.name", "Test")
+	runGitTest(t, "-C", root, "config", "user.email", "test@example.invalid")
+	runGitTest(t, "-C", root, "add", "Note.md")
+	runGitTest(t, "-C", root, "commit", "-qm", "Create note")
+	if err := os.WriteFile(filepath.Join(root, "Note.md"), []byte("second version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, "-C", root, "commit", "-qam", "Update note")
+
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyResponse := httptest.NewRecorder()
+	handler.ServeHTTP(historyResponse, httptest.NewRequest(http.MethodGet, "/api/repository/history?path=Note.md", nil))
+	var history struct {
+		Limited bool `json:"limited"`
+		Entries []struct {
+			VersionID string `json:"versionId"`
+			Summary   string `json:"summary"`
+		} `json:"entries"`
+	}
+	if historyResponse.Code != http.StatusOK || json.NewDecoder(historyResponse.Body).Decode(&history) != nil || len(history.Entries) != 2 {
+		t.Fatalf("unexpected history response: %d %s", historyResponse.Code, historyResponse.Body.String())
+	}
+	if history.Limited {
+		t.Fatal("ordinary repository was incorrectly reported as shallow")
+	}
+
+	currentResponse := httptest.NewRecorder()
+	handler.ServeHTTP(currentResponse, httptest.NewRequest(http.MethodGet, "/api/repository/file?path=Note.md", nil))
+	var current struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(currentResponse.Body).Decode(&current); err != nil {
+		t.Fatal(err)
+	}
+	restoreBody, _ := json.Marshal(map[string]string{"path": "Note.md", "versionId": history.Entries[1].VersionID, "expectedVersion": current.Version})
+	restoreResponse := httptest.NewRecorder()
+	handler.ServeHTTP(restoreResponse, httptest.NewRequest(http.MethodPost, "/api/repository/history/restore", bytes.NewReader(restoreBody)))
+	if restoreResponse.Code != http.StatusOK || !strings.Contains(restoreResponse.Body.String(), "first version") {
+		t.Fatalf("restore failed: %d %s", restoreResponse.Code, restoreResponse.Body.String())
+	}
+	var commitCount string
+	command := exec.Command("git", "-C", root, "rev-list", "--count", "HEAD")
+	if output, commandErr := command.Output(); commandErr != nil {
+		t.Fatal(commandErr)
+	} else {
+		commitCount = strings.TrimSpace(string(output))
+	}
+	if commitCount != "2" {
+		t.Fatalf("restore rewrote history: %s commits", commitCount)
+	}
+}
+
 func TestFrontendFallback(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/notes/welcome", nil)
@@ -1102,6 +1194,7 @@ func TestEveryApplicationAPIRouteDeniesUnauthenticatedAccess(t *testing.T) {
 		{http.MethodPut, "/api/auth/password"},
 		{http.MethodPost, "/api/auth/mfa/enroll"},
 		{http.MethodPost, "/api/auth/mfa/confirm"},
+		{http.MethodDelete, "/api/auth/mfa/enrollment"},
 		{http.MethodDelete, "/api/auth/mfa"},
 		{http.MethodPost, "/api/auth/mfa/recovery-codes"},
 		{http.MethodGet, "/api/notebook"},
@@ -1112,9 +1205,15 @@ func TestEveryApplicationAPIRouteDeniesUnauthenticatedAccess(t *testing.T) {
 		{http.MethodGet, "/api/repository/search?q=secret"},
 		{http.MethodGet, "/api/repository/file?path=Secret.md"},
 		{http.MethodPut, "/api/repository/file"},
+		{http.MethodGet, "/api/repository/history?path=Secret.md"},
+		{http.MethodGet, "/api/repository/history/version?path=Secret.md&version=abc"},
+		{http.MethodPost, "/api/repository/history/restore"},
 		{http.MethodPost, "/api/repository/entries"},
 		{http.MethodPost, "/api/repository/move"},
 		{http.MethodDelete, "/api/repository/entry"},
+		{http.MethodGet, "/api/repository/trash"},
+		{http.MethodPost, "/api/repository/trash/example/restore"},
+		{http.MethodDelete, "/api/repository/trash/example"},
 		{http.MethodPost, "/api/repository/assets"},
 		{http.MethodGet, "/api/repository/asset"},
 		{http.MethodGet, "/api/repository/assets/unreferenced"},

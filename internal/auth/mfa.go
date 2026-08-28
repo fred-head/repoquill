@@ -24,8 +24,9 @@ import (
 )
 
 const (
-	mfaIssuer            = "RepoQuill"
-	mfaRecoveryCodeCount = 10
+	mfaIssuer             = "RepoQuill"
+	mfaRecoveryCodeCount  = 10
+	mfaEnrollmentLifetime = 15 * time.Minute
 )
 
 var (
@@ -48,12 +49,20 @@ func loadOrCreateEncryptionKey(config Config) ([]byte, error) {
 	value, err := os.ReadFile(keyPath)
 	if err == nil {
 		if len(value) != 32 {
-			return nil, errors.New("authentication encryption key must contain exactly 32 bytes")
+			if !config.AllowMFAKeyRecovery {
+				return nil, errors.New("authentication encryption key must contain exactly 32 bytes")
+			}
+			quarantinePath := fmt.Sprintf("%s.invalid-%s", keyPath, time.Now().UTC().Format("20060102T150405.000000000Z"))
+			if err := os.Rename(keyPath, quarantinePath); err != nil {
+				return nil, fmt.Errorf("quarantine invalid authentication encryption key: %w", err)
+			}
+			err = os.ErrNotExist
+		} else {
+			if err := os.Chmod(keyPath, 0o600); err != nil {
+				return nil, fmt.Errorf("secure authentication encryption key: %w", err)
+			}
+			return value, nil
 		}
-		if err := os.Chmod(keyPath, 0o600); err != nil {
-			return nil, fmt.Errorf("secure authentication encryption key: %w", err)
-		}
-		return value, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read authentication encryption key: %w", err)
@@ -144,7 +153,10 @@ func (s *Service) decryptSecret(nonce, ciphertext []byte) (string, error) {
 	return string(plain), nil
 }
 
-func (s *Service) BeginMFAEnrollment(ctx context.Context, currentPassword, currentFactor string) (MFAEnrollment, error) {
+func (s *Service) BeginMFAEnrollment(ctx context.Context, currentPassword, currentFactor string, sessionHash []byte) (MFAEnrollment, error) {
+	if len(sessionHash) != sha256.Size {
+		return MFAEnrollment{}, ErrMFAInvalid
+	}
 	s.credentialMu.Lock()
 	defer s.credentialMu.Unlock()
 	if err := s.VerifyPassword(ctx, currentPassword); err != nil {
@@ -171,13 +183,15 @@ func (s *Service) BeginMFAEnrollment(ctx context.Context, currentPassword, curre
 	if err != nil {
 		return MFAEnrollment{}, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	nowTime := time.Now().UTC()
+	now := nowTime.Format(time.RFC3339Nano)
+	expiresAt := nowTime.Add(mfaEnrollmentLifetime).Format(time.RFC3339Nano)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return MFAEnrollment{}, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO auth_mfa_configuration(id, enabled, pending_secret_nonce, pending_secret_ciphertext, created_at, updated_at) VALUES(1,0,?,?,?,?) ON CONFLICT(id) DO UPDATE SET pending_secret_nonce=excluded.pending_secret_nonce, pending_secret_ciphertext=excluded.pending_secret_ciphertext, updated_at=excluded.updated_at`, nonce, ciphertext, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO auth_mfa_configuration(id, enabled, pending_secret_nonce, pending_secret_ciphertext, pending_expires_at, pending_session_hash, created_at, updated_at) VALUES(1,0,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET pending_secret_nonce=excluded.pending_secret_nonce, pending_secret_ciphertext=excluded.pending_secret_ciphertext, pending_expires_at=excluded.pending_expires_at, pending_session_hash=excluded.pending_session_hash, updated_at=excluded.updated_at`, nonce, ciphertext, expiresAt, append([]byte(nil), sessionHash...), now, now); err != nil {
 		return MFAEnrollment{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_recovery_artifacts WHERE kind='mfa_recovery_pending'`); err != nil {
@@ -202,12 +216,20 @@ func (s *Service) BeginMFAEnrollment(ctx context.Context, currentPassword, curre
 	return MFAEnrollment{Secret: key.Secret(), QRCode: "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngData.Bytes()), RecoveryCodes: codes}, nil
 }
 
-func (s *Service) ConfirmMFAEnrollment(ctx context.Context, code string, recoveryCodesStored bool) error {
+func (s *Service) ConfirmMFAEnrollment(ctx context.Context, code string, recoveryCodesStored bool, sessionHash []byte) error {
 	if !recoveryCodesStored {
 		return errors.New("recovery-code storage must be confirmed")
 	}
-	var nonce, ciphertext []byte
-	if err := s.db.QueryRowContext(ctx, `SELECT pending_secret_nonce, pending_secret_ciphertext FROM auth_mfa_configuration WHERE id=1`).Scan(&nonce, &ciphertext); err != nil {
+	if len(sessionHash) != sha256.Size {
+		return ErrMFAUnavailable
+	}
+	var nonce, ciphertext, storedSessionHash []byte
+	var expiresAtText string
+	if err := s.db.QueryRowContext(ctx, `SELECT pending_secret_nonce, pending_secret_ciphertext, pending_expires_at, pending_session_hash FROM auth_mfa_configuration WHERE id=1`).Scan(&nonce, &ciphertext, &expiresAtText, &storedSessionHash); err != nil {
+		return ErrMFAUnavailable
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, expiresAtText)
+	if err != nil || !time.Now().UTC().Before(expiresAt) || subtle.ConstantTimeCompare(storedSessionHash, sessionHash) != 1 {
 		return ErrMFAUnavailable
 	}
 	secret, err := s.decryptSecret(nonce, ciphertext)
@@ -224,7 +246,7 @@ func (s *Service) ConfirmMFAEnrollment(ctx context.Context, code string, recover
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE auth_mfa_configuration SET enabled=1, secret_nonce=pending_secret_nonce, secret_ciphertext=pending_secret_ciphertext, pending_secret_nonce=NULL, pending_secret_ciphertext=NULL, last_totp_step=?, updated_at=? WHERE id=1 AND pending_secret_nonce IS NOT NULL`, step, now)
+	result, err := tx.ExecContext(ctx, `UPDATE auth_mfa_configuration SET enabled=1, secret_nonce=pending_secret_nonce, secret_ciphertext=pending_secret_ciphertext, pending_secret_nonce=NULL, pending_secret_ciphertext=NULL, pending_expires_at=NULL, pending_session_hash=NULL, last_totp_step=?, updated_at=? WHERE id=1 AND pending_secret_nonce IS NOT NULL AND pending_expires_at>? AND pending_session_hash=?`, step, now, now, sessionHash)
 	if err != nil {
 		return err
 	}
@@ -235,6 +257,28 @@ func (s *Service) ConfirmMFAEnrollment(ctx context.Context, code string, recover
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE auth_recovery_artifacts SET kind='mfa_recovery' WHERE kind='mfa_recovery_pending'`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Service) CancelMFAEnrollment(ctx context.Context, sessionHash []byte) error {
+	if len(sessionHash) != sha256.Size {
+		return ErrMFAUnavailable
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE auth_mfa_configuration SET pending_secret_nonce=NULL, pending_secret_ciphertext=NULL, pending_expires_at=NULL, pending_session_hash=NULL, updated_at=? WHERE id=1 AND pending_session_hash=?`, time.Now().UTC().Format(time.RFC3339Nano), sessionHash)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrMFAUnavailable
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_recovery_artifacts WHERE kind='mfa_recovery_pending'`); err != nil {
 		return err
 	}
 	return tx.Commit()

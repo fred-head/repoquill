@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 )
@@ -193,19 +192,7 @@ func (r *Repository) validateRelative(relative string, markdown bool) error {
 	if !r.Configured() {
 		return ErrNotConfigured
 	}
-	if relative == "" || hasControlCharacter(relative) || strings.Contains(relative, `\`) || path.IsAbs(relative) || path.Clean(relative) != relative || relative == "." {
-		return ErrInvalidPath
-	}
-	for _, part := range strings.Split(relative, "/") {
-		lowerPart := strings.ToLower(part)
-		if part == "" || part == "." || part == ".." || lowerPart == ".git" || lowerPart == "node_modules" {
-			return ErrInvalidPath
-		}
-	}
-	if markdown && !strings.EqualFold(path.Ext(relative), ".md") {
-		return ErrNotMarkdown
-	}
-	return nil
+	return validatePortableEntryPath(relative, markdown)
 }
 
 func noteBase(markdownPath string) string {

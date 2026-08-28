@@ -35,13 +35,20 @@ const (
 )
 
 type Status struct {
-	State         State    `json:"state"`
-	Branch        string   `json:"branch,omitempty"`
-	Ahead         int      `json:"ahead,omitempty"`
-	Behind        int      `json:"behind,omitempty"`
-	ConflictFiles []string `json:"conflictFiles,omitempty"`
-	Message       string   `json:"message,omitempty"`
-	LastSyncedAt  string   `json:"lastSyncedAt,omitempty"`
+	State           State            `json:"state"`
+	Branch          string           `json:"branch,omitempty"`
+	Ahead           int              `json:"ahead,omitempty"`
+	Behind          int              `json:"behind,omitempty"`
+	ConflictFiles   []string         `json:"conflictFiles,omitempty"`
+	Message         string           `json:"message,omitempty"`
+	LastSyncedAt    string           `json:"lastSyncedAt,omitempty"`
+	ReceivedChanges []ReceivedChange `json:"receivedChanges,omitempty"`
+}
+
+type ReceivedChange struct {
+	Kind     string `json:"kind"`
+	Path     string `json:"path"`
+	FromPath string `json:"fromPath,omitempty"`
 }
 
 type commandError struct {
@@ -131,6 +138,7 @@ func (s *Service) Sync(ctx context.Context) Status {
 	}
 
 	remoteRef := "refs/remotes/origin/" + branch
+	beforeIntegration, _ := s.revision(ctx, "HEAD")
 	if _, err := s.run(ctx, "inspect remote branch", "show-ref", "--verify", "--quiet", remoteRef); err == nil {
 		if _, err := s.run(ctx, "rebase", "rebase", "origin/"+branch); err != nil {
 			conflicts := s.conflictFiles(ctx)
@@ -141,12 +149,73 @@ func (s *Service) Sync(ctx context.Context) Status {
 			return s.fail(err)
 		}
 	}
+	afterIntegration, _ := s.revision(ctx, "HEAD")
+	receivedChanges := s.receivedChanges(ctx, beforeIntegration, afterIntegration)
 	if _, err := s.run(ctx, "push", "push", "--set-upstream", "origin", "HEAD:"+branch); err != nil {
 		return s.fail(err)
 	}
 	s.lastFailure = ""
 	s.lastSyncedAt = time.Now()
-	return Status{State: StateSynced, Branch: branch, LastSyncedAt: s.lastSyncedAt.UTC().Format(time.RFC3339)}
+	return Status{State: StateSynced, Branch: branch, LastSyncedAt: s.lastSyncedAt.UTC().Format(time.RFC3339), ReceivedChanges: receivedChanges}
+}
+
+var revisionPattern = regexp.MustCompile(`^[0-9a-fA-F]{40,64}$`)
+
+func (s *Service) revision(ctx context.Context, revision string) (string, error) {
+	output, err := s.run(ctx, "inspect revision", "rev-parse", "--verify", revision)
+	value := strings.TrimSpace(output)
+	if err != nil || !revisionPattern.MatchString(value) {
+		return "", errors.New("Git revision is unavailable")
+	}
+	return value, nil
+}
+
+func (s *Service) receivedChanges(ctx context.Context, before, after string) []ReceivedChange {
+	if before == "" || after == "" || before == after || !revisionPattern.MatchString(before) || !revisionPattern.MatchString(after) {
+		return nil
+	}
+	output, err := s.run(ctx, "inspect received changes", "diff", "--name-status", "-z", "-M", before, after, "--")
+	if err != nil {
+		return nil
+	}
+	parts := strings.Split(output, "\x00")
+	changes := make([]ReceivedChange, 0)
+	for index := 0; index < len(parts) && len(changes) < 100; {
+		status := parts[index]
+		index++
+		if status == "" || index >= len(parts) {
+			break
+		}
+		if strings.HasPrefix(status, "R") {
+			if index+1 >= len(parts) {
+				break
+			}
+			from, destination := parts[index], parts[index+1]
+			index += 2
+			if validSummaryPath(from) && validSummaryPath(destination) {
+				changes = append(changes, ReceivedChange{Kind: "moved", Path: destination, FromPath: from})
+			}
+			continue
+		}
+		changedPath := parts[index]
+		index++
+		if !validSummaryPath(changedPath) {
+			continue
+		}
+		kind := "updated"
+		switch status[0] {
+		case 'A':
+			kind = "added"
+		case 'D':
+			kind = "deleted"
+		}
+		changes = append(changes, ReceivedChange{Kind: kind, Path: changedPath})
+	}
+	return changes
+}
+
+func validSummaryPath(value string) bool {
+	return value != "" && !filepath.IsAbs(value) && value != ".." && !strings.HasPrefix(value, "../") && !strings.ContainsRune(value, '\x00')
 }
 
 func (s *Service) status(ctx context.Context) (Status, error) {

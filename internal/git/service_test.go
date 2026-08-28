@@ -52,9 +52,31 @@ func TestSyncIntegratesRemoteOnlyChanges(t *testing.T) {
 	if status.State != StateSynced {
 		t.Fatalf("remote sync failed: %#v", status)
 	}
+	if len(status.ReceivedChanges) != 1 || status.ReceivedChanges[0].Kind != "added" || status.ReceivedChanges[0].Path != "Remote.md" {
+		t.Fatalf("remote change summary missing or incorrect: %#v", status.ReceivedChanges)
+	}
 	content, err := os.ReadFile(filepath.Join(root, "Remote.md"))
 	if err != nil || string(content) != "from remote" {
 		t.Fatalf("remote content not integrated: %q, %v", content, err)
+	}
+}
+
+func TestSyncSummarizesRemoteRenameWithoutExposingRevisions(t *testing.T) {
+	root, remote := testRepository(t)
+	other := filepath.Join(t.TempDir(), "other")
+	run(t, "git", "clone", remote, other)
+	configureIdentity(t, other)
+	runGit(t, other, "mv", "Note.md", "Renamed.md")
+	runGit(t, other, "commit", "-m", "Rename note")
+	runGit(t, other, "push")
+
+	status := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil))).Sync(context.Background())
+	if status.State != StateSynced || len(status.ReceivedChanges) != 1 {
+		t.Fatalf("rename synchronization failed: %#v", status)
+	}
+	change := status.ReceivedChanges[0]
+	if change.Kind != "moved" || change.FromPath != "Note.md" || change.Path != "Renamed.md" {
+		t.Fatalf("remote rename summary incorrect: %#v", change)
 	}
 }
 
