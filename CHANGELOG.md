@@ -22,6 +22,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Responsive setup, login, reauthentication, Security settings, active-session
   administration, MFA enrollment/recovery, and visible disabled-mode guidance
   for browser and installed PWA use.
+- Recoverable Trash with deliberate restore, note-focused Git history with safe
+  restore, and portable internal note links with broken-link detection and
+  rename/move rewriting.
+- Complete notebook management and beginner-oriented provider-independent SSH
+  onboarding, including a guided GitHub deploy-key path.
+- Guided conflict review that preserves both sides and handles Markdown,
+  delete/modify, rename/move, images, and binary files without requiring normal
+  users to repair Git manually.
+- An original-asset image lightbox with accessible fit/actual-size inspection in
+  Edit, Read only, desktop, mobile, and installed PWA contexts.
+- Responsive Small, Medium, Large, and Full inline image presentation
+  presets that persist outside Git without changing Markdown or original image
+  assets, apply in Edit and Read only modes, and retain original-asset lightbox
+  inspection.
+
+### Changed
+
+- Human-readable synchronization details now distinguish locally saved content
+  from remote synchronization, report received changes, and keep note switching
+  responsive while Git work continues safely in the background.
+- Notes can be opened in session-scoped tabs; tabs follow supported note moves
+  and close safely when their files are deleted.
+- Fresh installations begin with explicit notebook onboarding instead of a
+  synthetic local notebook. Inactive legacy registrations can be removed
+  without deleting their files.
+- Alpha 2 deployment, authentication, onboarding, synchronization, conflict,
+  image, upgrade, recovery, and limitation documentation now matches the
+  implemented application.
+
+### Fixed
+
+- The browser-provided PWA installation suggestion can be dismissed, and the
+  choice remains dismissed in that browser.
 
 ## [0.1.0-alpha.1.security.1] - 2026-08-26
 
@@ -46,19 +79,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and rollback guidance.
 - Dependency updates follow an explicit human-review policy with complete
   functional, runtime, and security gates and no automatic merge or deployment.
-- Notes can be opened in a session-scoped tab strip using the context menu,
-  Ctrl/Cmd-click, or middle-click while retaining a single conflict-safe editor
-  instance. Tabs follow note moves and close safely when their files are deleted.
-- Fresh Docker installations now start with explicit notebook onboarding instead
-  of registering a synthetic local `repos` notebook. Existing explicitly
-  configured notebooks remain supported and unchanged.
-- Inactive legacy local notebook registrations can be removed from Manage
-  Notebooks without deleting their files.
-
-### Fixed
-
-- The browser-provided PWA installation suggestion can now be dismissed, and
-  the choice is retained in that browser.
 
 ## [0.1.0-alpha.1] - 2026-08-22
 

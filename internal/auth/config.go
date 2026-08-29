@@ -30,9 +30,9 @@ type Config struct {
 
 type EnvironmentLookup func(string) (string, bool)
 
-// ConfigFromEnvironment defines the fail-closed Alpha 1 migration behavior.
-// An absent mode selects local authentication, which later phases expose as
-// setup-required rather than silently retaining unauthenticated access.
+// ConfigFromEnvironment defines fail-closed migration from an installation
+// without built-in authentication. An absent mode selects local authentication
+// and setup-required rather than silently retaining unauthenticated access.
 func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 	if lookup == nil {
 		return Config{}, errors.New("authentication environment lookup is required")

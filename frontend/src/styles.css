@@ -126,6 +126,17 @@ body { margin: 0; min-width: 320px; }
 .repoquill-editor th { background: #27272a; font-weight: 650; color: #fafafa; }
 .repoquill-editor table:focus-within { outline: 1px solid rgb(245 158 11 / 55%); outline-offset: 2px; }
 milkdown-image-inline { display: inline-block; max-width: 100%; vertical-align: middle; }
+.repoquill-editor .milkdown-image-inline[data-presentation-size] { display: block; width: fit-content; }
+.repoquill-editor .milkdown-image-inline[data-presentation-size="small"] { max-width: 33.333%; }
+.repoquill-editor .milkdown-image-inline[data-presentation-size="medium"] { max-width: 50%; }
+.repoquill-editor .milkdown-image-inline[data-presentation-size="large"] { max-width: 75%; }
+.repoquill-editor .milkdown-image-inline[data-presentation-size="full"] { max-width: 100%; }
+.repoquill-editor .milkdown-image-inline[data-presentation-size] img { width: auto; max-width: 100%; }
+@media (max-width: 480px) {
+  .repoquill-editor .milkdown-image-inline[data-presentation-size="small"] { max-width: 50%; }
+  .repoquill-editor .milkdown-image-inline[data-presentation-size="medium"] { max-width: 66.667%; }
+  .repoquill-editor .milkdown-image-inline[data-presentation-size="large"] { max-width: 85%; }
+}
 
 .theme-light .repoquill-editor { color: #27272a; }
 .theme-light .repoquill-editor strong { color: #18181b; }

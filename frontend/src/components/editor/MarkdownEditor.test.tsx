@@ -21,6 +21,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
 })
 
 describe('MarkdownEditor read-only mode', () => {
@@ -90,11 +92,14 @@ describe('MarkdownEditor read-only mode', () => {
 
   it('replaces an image reference with a new asset and removes only its Markdown node', async () => {
     const onChange = vi.fn()
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ path: 'Note.assets/new-image.png' }),
-    } as Response)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.startsWith('/api/repository/image-presentations')) return Response.json({ presentations: {} })
+      if (url === '/api/repository/assets' || url.startsWith('/api/repository/assets?')) return Response.json({ path: 'Note.assets/new-image.png' })
+      if (url === '/api/repository/image-presentation' && init?.method === 'PUT') return Response.json({ image: 'Note.assets/new-image.png', size: 'full' })
+      if (url.startsWith('/api/repository/image-presentation?') && init?.method === 'DELETE') return new Response(null, { status: 204 })
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    })
     const markdown = 'Before ![Diagram](<Note.assets/old-image.png>) after'
     const view = render(<MarkdownEditor documentKey="image-edit" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} />)
     const image = await waitFor(() => {
@@ -111,13 +116,186 @@ describe('MarkdownEditor read-only mode', () => {
     const replacement = view.container.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement
     fireEvent.change(replacement, { target: { files: [new File(['replacement'], 'replacement.png', { type: 'image/png' })] } })
     await waitFor(() => expect(onChange.mock.calls.some(([value]) => String(value).includes('![Diagram]') && String(value).includes('Note.assets/new-image.png'))).toBe(true))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' })
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).startsWith('/api/repository/assets?') && init?.method === 'POST')).toBe(true)
 
     fireEvent.click(view.getByRole('button', { name: 'Remove image' }))
     await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0])).not.toContain('Note.assets/new-image.png'))
-    expect(fetchMock).toHaveBeenCalledTimes(1) // Removing the node never deletes either asset file.
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).startsWith('/api/repository/asset?') && init?.method === 'DELETE')).toBe(false) // Removing the node never deletes either asset file.
     fetchMock.mockRestore()
+  })
+
+  it('persists all four portable presentation presets without changing Markdown or the original lightbox asset', async () => {
+    const onChange = vi.fn()
+    let storedSize = 'medium'
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.startsWith('/api/repository/image-presentations')) return Response.json({ presentations: { 'Note.assets/diagram.png': storedSize, 'Note.assets/stale.png': 'small' } })
+      if (url === '/api/repository/image-presentation' && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { size: string }
+        storedSize = body.size
+        return Response.json({ image: 'Note.assets/diagram.png', size: storedSize })
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    })
+    const markdown = '![Topology](<Note.assets/diagram.png>)'
+    const view = render(<MarkdownEditor documentKey="sizes" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} />)
+    const inlineImage = await waitFor(() => {
+      const element = view.container.querySelector('.milkdown-image-inline img') as HTMLImageElement
+      expect(element.closest<HTMLElement>('.milkdown-image-inline')?.dataset.presentationSize).toBe('medium')
+      return element
+    })
+    fireEvent.pointerDown(inlineImage)
+    expect((await view.findByRole('button', { name: 'Medium image size' })).getAttribute('aria-pressed')).toBe('true')
+
+    for (const size of ['Small', 'Medium', 'Large', 'Full']) {
+      const button = view.getByRole('button', { name: `${size} image size` })
+      button.focus()
+      await userEvent.keyboard('{Enter}')
+      await waitFor(() => expect(inlineImage.closest<HTMLElement>('.milkdown-image-inline')?.dataset.presentationSize).toBe(size.toLowerCase()))
+      expect(button.getAttribute('aria-pressed')).toBe('true')
+      expect(onChange).not.toHaveBeenCalled()
+      fireEvent.click(view.getByRole('button', { name: 'View image' }))
+      const dialog = view.getByRole('dialog', { name: 'Topology' })
+      expect((dialog.querySelector('img') as HTMLImageElement).src).toContain('path=Note.assets%2Fdiagram.png')
+      fireEvent.click(view.getByRole('button', { name: 'Close image viewer' }))
+      await waitFor(() => expect(document.activeElement).toBe(view.getByRole('button', { name: 'View image' })))
+    }
+
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(4)
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+    expect(onChange).not.toHaveBeenCalled()
+
+    view.rerender(<MarkdownEditor documentKey="sizes-read" notePath="Note.md" markdown={markdown} readOnly onChange={onChange} />)
+    await waitFor(() => expect(view.container.querySelector('.milkdown-image-inline')?.getAttribute('data-presentation-size')).toBe('full'))
+    expect(view.queryByRole('group', { name: 'Image presentation size' })).toBeNull()
+    expect(onChange).not.toHaveBeenCalled()
+
+    view.unmount()
+    const reloaded = render(<MarkdownEditor documentKey="sizes-reload" notePath="Note.md" markdown={markdown} readOnly onChange={onChange} />)
+    await waitFor(() => expect(reloaded.container.querySelector('.milkdown-image-inline')?.getAttribute('data-presentation-size')).toBe('full'))
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the existing full presentation when metadata persistence fails', async () => {
+    const onChange = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (String(input).startsWith('/api/repository/image-presentations')) return Response.json({ presentations: {} })
+      if (init?.method === 'PUT') return Response.json({ error: 'Metadata volume is read only' }, { status: 503 })
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    })
+    const view = render(<MarkdownEditor documentKey="size-failure" notePath="Note.md" markdown="![Diagram](<Note.assets/image.png>)" readOnly={false} onChange={onChange} />)
+    const image = await waitFor(() => {
+      const element = view.container.querySelector('.milkdown-image-inline img') as HTMLImageElement
+      expect(element.closest<HTMLElement>('.milkdown-image-inline')?.dataset.presentationSize).toBe('full')
+      return element
+    })
+    fireEvent.pointerDown(image)
+    fireEvent.click(await view.findByRole('button', { name: 'Medium image size' }))
+    await waitFor(() => expect(view.getByRole('alert').textContent).toContain('Metadata volume is read only'))
+    expect(image.closest<HTMLElement>('.milkdown-image-inline')?.dataset.presentationSize).toBe('full')
+    expect(image.getAttribute('src')).toContain('Note.assets%2Fimage.png')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('opens the selected edit-mode image without changing Markdown and restores toolbar focus', async () => {
+    const onChange = vi.fn()
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ presentations: {} }))
+    const markdown = '![Network diagram](<Note.assets/diagram.png>)'
+    const view = render(<MarkdownEditor documentKey="image-view-edit" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} />)
+    const inlineImage = await waitFor(() => {
+      const element = view.container.querySelector('.repoquill-editor img') as HTMLImageElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+
+    fireEvent.pointerDown(inlineImage)
+    const viewButton = await view.findByRole('button', { name: 'View image' })
+    fireEvent.click(viewButton)
+
+    const viewerDialog = view.getByRole('dialog', { name: 'Network diagram' })
+    expect(viewerDialog).toBeTruthy()
+    expect((viewerDialog.querySelector('img') as HTMLImageElement).src).toContain('/api/repository/asset?note=Note.md&path=Note.assets%2Fdiagram.png')
+    expect(onChange).not.toHaveBeenCalled()
+    const closeButton = view.getByRole('button', { name: 'Close image viewer' })
+    const fitButton = view.getByRole('button', { name: 'Fit to screen' })
+    await waitFor(() => expect(document.activeElement).toBe(closeButton))
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(fitButton)
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(closeButton)
+    fireEvent.click(view.getByRole('button', { name: 'Actual size' }))
+    expect(view.container.querySelector('[data-size-mode="actual"]')).toBeTruthy()
+    expect(onChange).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true)
+
+    fireEvent.click(closeButton)
+    await waitFor(() => expect(view.queryByRole('dialog', { name: 'Network diagram' })).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(viewButton))
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('opens an empty-alt image directly in Read only and closes with Escape', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ presentations: {} }))
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="image-view-read" notePath="Note.md" markdown="![](<Note.assets/photo.png>)" readOnly onChange={onChange} />)
+    const inlineImage = await waitFor(() => {
+      const element = view.getByRole('button', { name: 'View note image' }) as HTMLImageElement
+      expect(element.tabIndex).toBe(0)
+      return element
+    })
+
+    fireEvent.click(inlineImage)
+    expect(view.getByRole('dialog', { name: 'Note image' })).toBeTruthy()
+    expect(view.getByRole('img', { name: 'Note image' })).toBeTruthy()
+    expect(view.container.querySelector('.ProseMirror')?.getAttribute('contenteditable')).toBe('false')
+    expect(onChange).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(view.queryByRole('dialog', { name: 'Note image' })).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(inlineImage))
+    expect(view.container.querySelector('.ProseMirror')?.getAttribute('contenteditable')).toBe('false')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('keeps a failed image view closable and leaves the note untouched', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ presentations: {} }))
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="image-view-error" notePath="Note.md" markdown="![Missing](<Note.assets/missing.png>)" readOnly onChange={onChange} />)
+    const inlineImage = await waitFor(() => view.getByRole('button', { name: 'View image: Missing' }))
+    fireEvent.click(inlineImage)
+    fireEvent.error(view.getByRole('img', { name: 'Missing' }))
+
+    expect(view.getByRole('alert').textContent).toContain('could not be loaded')
+    expect(view.getByRole('alert').textContent).toContain('Markdown were not changed')
+    expect(view.getByRole('button', { name: 'Close image viewer' })).toBeTruthy()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('supports backdrop close, narrow viewports, rotation, and closes on note context changes', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ presentations: {} }))
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 })
+    const onChange = vi.fn()
+    const properties = { notePath: 'Mobile.md', markdown: '![Mobile](<Mobile.assets/image.png>)', readOnly: true, onChange }
+    const view = render(<MarkdownEditor documentKey="mobile-a" {...properties} />)
+    const inlineImage = await waitFor(() => view.getByRole('button', { name: 'View image: Mobile' }))
+    fireEvent.keyDown(inlineImage, { key: 'Enter' })
+    const dialog = view.getByRole('dialog', { name: 'Mobile' })
+    expect(view.getByRole('button', { name: 'Fit to screen' }).getAttribute('aria-pressed')).toBe('true')
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 844 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 390 })
+    fireEvent(window, new Event('resize'))
+    expect(view.getByRole('dialog', { name: 'Mobile' })).toBe(dialog)
+    fireEvent.mouseDown(dialog.parentElement!)
+    await waitFor(() => expect(view.queryByRole('dialog', { name: 'Mobile' })).toBeNull())
+
+    fireEvent.click(inlineImage)
+    expect(view.getByRole('dialog', { name: 'Mobile' })).toBeTruthy()
+    view.rerender(<MarkdownEditor documentKey="mobile-b" notePath="Other.md" markdown="Other note" readOnly onChange={onChange} />)
+    await waitFor(() => expect(view.queryByRole('dialog', { name: 'Mobile' })).toBeNull())
+    await waitFor(() => expect(view.container.textContent).toContain('Other note'))
+    expect(onChange).not.toHaveBeenCalled()
   })
 
   it('does not expose table mutation controls in read-only mode', async () => {

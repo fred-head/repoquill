@@ -1,98 +1,155 @@
-# RepoQuill 0.1.0-alpha.1.security.1
+# RepoQuill Alpha 2 release preparation
 
-## Release scope
+This document is the operator and maintainer checklist for the upcoming Alpha 2
+release. The final immutable version is selected during Milestone 24; until then
+this file deliberately does not claim a placeholder Alpha 2 version.
 
-This is an Alpha 1 security refresh, not the product's planned Alpha 2 release.
-It replaces vulnerable Alpine OpenSSL packages in the published container,
-adds continuous security surveillance and supply-chain controls, hardens path
-and request-log input handling, and includes the accumulated Alpha 1 fixes on
-`main`. Milestone 19 authentication remains intentionally deferred.
+Alpha 2 keeps canonical notes as ordinary Markdown and assets in ordinary Git
+repositories while adding single-owner authentication, optional TOTP MFA,
+guided Git conflict resolution, safer notebook onboarding, recoverable Trash,
+note history, portable internal links, image inspection and presentation sizes,
+and clearer synchronization details.
 
-RepoQuill Alpha releases provide portable Markdown editing, folders and file
-operations, note-owned images, explicit unused-asset cleanup, Git
-synchronization, multiple notebooks, search, responsive PWA behavior, and
-editor productivity controls.
+## Security and deployment model
 
-The canonical data remains ordinary Git working trees. Until Milestone 19 is
-complete, RepoQuill has no built-in authentication and must be deployed behind
-a trusted HTTPS authentication layer.
+`REPOQUILL_AUTH_MODE=local` is the fail-closed default. It provides one owner
+password, persistent server-side sessions, CSRF/origin protection, progressive
+credential throttling, session revocation, operator password recovery, and
+optional TOTP MFA with recovery codes. It is access control, not note
+encryption. OIDC and multi-user accounts are not implemented.
 
-## Release preflight
+`REPOQUILL_AUTH_MODE=disabled` is an explicit operator decision. Use it only on
+a constrained LAN/VPN or behind deliberately managed external protection. Mode
+changes invalidate local authentication artifacts and require setup again when
+returning to `local`.
 
-Before creating an immutable release tag:
+Neither mode terminates TLS. Internet-facing deployments must use an HTTPS
+reverse proxy, keep the backend unreachable from untrusted networks, retain
+secure cookies, and configure only the proxy's exact address or smallest
+dedicated CIDR in `REPOQUILL_TRUSTED_PROXIES`.
 
-1. Confirm the intended version appears consistently in the changelog, source
-   metadata, examples, and release tag.
-2. Require every protected source, CodeQL, secret, container, architecture,
-   runtime, and vulnerability gate to pass without an expired exception.
-3. Exercise the candidate once with empty persistent storage and once with a
-   representative, sanitized copy of an existing `/data` volume.
-4. For persistence or security changes, verify notebook metadata, Git
-   credentials, PWA updates, schema migration, sessions, password/MFA behavior,
-   expiry, recovery, and rollback as applicable. Authentication checks become
-   mandatory when Milestone 19 lands.
-5. Back up the representative `/data`, record the previous immutable image and
-   its digest, and prove that rollback restores an operable installation.
-6. Create a new `v<version>-alpha.<number>` tag. Never reuse or move a release
-   tag or immutable container version.
+## Fresh installation
 
-The release workflow publishes the immutable version and source-SHA aliases,
-verifies both architectures, creates an SBOM and signed provenance attestation,
-and only then moves the Alpha convenience tag. It also creates a GitHub
-prerelease containing the resulting digest and recovery guidance.
+1. Select the immutable image tag or digest from the GitHub prerelease. Do not
+   use `latest`, which RepoQuill does not publish during alpha.
+2. Mount a persistent named volume or host directory at `/data` and start the
+   container with the hardened Compose settings from `README.md`.
+3. In another trusted terminal create the 15-minute, single-use setup token:
 
-## Automated release checks
+   ```sh
+   docker compose exec repoquill repoquill auth bootstrap-token
+   ```
 
-- Go unit and integration tests, including traversal, symlink, asset lifecycle, Git failure, credential, host-trust, CSRF, request parsing, and API-header coverage
-- `go vet`
-- Frontend lint, 42 component/integration tests, TypeScript compilation, and production PWA build
-- npm production and complete dependency audits
-- Complete-history Gitleaks secret scan
-- Docker Compose validation and clean production image build
-- Trivy image vulnerability and secret scan
-- Hardened non-root/read-only container health and replacement-persistence test
-- Separate `linux/amd64` and `linux/arm64` validation before publishing
-- Multi-architecture GHCR manifest with SBOM and signed provenance attestation
+4. Open RepoQuill through HTTPS, enter the token, and choose an owner password
+   of at least 15 characters.
+5. Create or use an existing private Git repository. In GitHub copy **Code →
+   SSH**, let RepoQuill generate a dedicated key, add only its public key under
+   **Settings → Deploy keys**, enable **Allow write access**, review the host
+   fingerprint, test the connection, and connect the notebook.
+6. Open and edit a note, wait for **Saved on this server**, synchronize, and
+   verify the resulting commit at the Git provider.
 
-## Candidate and operator smoke test
+The managed private key remains below `/data/keys`. GitHub is not required;
+compatible GitLab, Forgejo, Gitea, and other SSH remotes use the same underlying
+provider-independent flow.
 
-Before upgrading a real installation:
+## Upgrade procedure
 
-1. Back up `/data` and verify that the backup contains `app`, `keys`, `notebooks`, and any directly configured `repos` tree.
-2. Start the alpha behind the intended authenticated HTTPS proxy.
-3. Open an existing note, edit it, wait for `Saved`, run `Sync`, and verify the commit at the remote.
-4. Paste and select an image, then verify the Markdown and `.assets` file in an independent clone.
-5. Stop and replace the container without deleting its volume. Confirm that notebooks, notes, managed keys, and trusted-host entries remain.
-6. Clone a notebook independently and open its Markdown and images without RepoQuill.
-7. Test the mobile drawer, toolbar, image picker, install flow, and explicit offline warning.
-8. Simulate a failed remote or rejected push and confirm that the locally saved Markdown remains present.
-9. Restart with a fresh empty volume and complete notebook onboarding.
-10. Restore the representative pre-upgrade volume, deploy the candidate, and
-    verify notebook registration, trusted hosts, managed keys, tree loading,
-    edits, assets, search, and synchronization.
+1. Stop editing and let any intended synchronization finish.
+2. Record the currently running immutable image tag and digest.
+3. Stop RepoQuill and create a restorable backup of the complete `/data` volume.
+   Confirm it contains `app`, `keys`, `notebooks`, and any legacy `repos` tree.
+4. Pull the new immutable image and replace only the container. Do not delete or
+   replace its `/data` mount.
+5. Start RepoQuill and verify authentication metadata migration completed. A
+   failed, corrupt, or unsupported migration must stop startup rather than
+   silently disabling authentication.
+6. Sign in again if the upgrade invalidated a session. Verify configured session
+   lifetimes, MFA, notebook registrations, managed keys, trusted hosts, working
+   trees, Trash, note history, and image presentation metadata as applicable.
+7. Open an existing note, save a harmless change, synchronize it, and confirm
+   the remote commit. Also verify the installed PWA receives the new application
+   shell and returns to RepoQuill login if its session has expired.
 
-After a release succeeds, update the repository variable
-`REPOQUILL_LATEST_ALPHA_VERSION` to the new immutable version (without a leading
-`v`). Scheduled security surveillance uses it to rescan that immutable image in
-addition to the moving Alpha channel.
+Authentication reset or migration never rewrites Markdown or assets. The auth
+database and MFA encryption key are application metadata, not canonical notes.
 
-For production-like Alpha deployments, pin
-`ghcr.io/fred-head/repoquill:<immutable-version>` or its digest. Automatically
-following the moving Alpha channel delegates upgrade timing to an image updater
-and can introduce untested migrations; that is an explicit operator choice.
+## Candidate preflight
 
-## Recovery
+Before creating an immutable tag, maintainers must:
 
-If an upgrade fails, stop RepoQuill and preserve the failed-state volume for
-diagnosis. Restore the pre-upgrade `/data` backup if application metadata is not
-backward-compatible, then deploy the previously recorded immutable image tag or
-digest. Do not point an older application at metadata that it cannot understand.
+1. Make the chosen version identical in the frontend package and lockfile,
+   Docker build defaults and OCI label, changelog release section, this heading,
+   Git tag, GitHub release title, and image tags.
+2. Require protected CI, CodeQL, Dependabot, secret scanning, `govulncheck`,
+   `npm audit`, Trivy, container hardening, architecture, runtime, and
+   persistence gates to pass for the exact candidate without an expired
+   exception.
+3. Exercise a fresh `/data` volume and a sanitized representative Alpha 1 data
+   copy, including bootstrap, login, session expiry/renewal, password recovery,
+   TOTP/recovery codes, notebook onboarding, Git synchronization, conflict
+   review, and PWA reauthentication.
+4. Confirm Markdown serialization, image upload/paste, original-image lightbox,
+   presentation sizes, internal links, version history, Trash, search, tabs,
+   mobile layout, and all destructive confirmations.
+5. Prove container replacement preserves data and that rollback with the
+   matching backup restores an operable installation.
+6. Create a new `vMAJOR.MINOR.PATCH-alpha.NUMBER` tag. Never reuse or move an
+   immutable Git or image tag.
 
-If RepoQuill cannot start, mount or copy the persistent `/data` volume and use
-the repositories directly. Registered cloned notebooks are stored below
-`/data/notebooks/<id>`; a directly configured notebook normally lives below
-`/data/repos`. Each directory is an ordinary Git working tree.
+The tag-gated workflow validates both `linux/amd64` and `linux/arm64`, scans the
+actual built images, creates an SBOM and signed provenance attestation, publishes
+the immutable version and source-SHA aliases, and only then moves the
+`0.1.0-alpha` convenience tag. After success, update the repository variable
+`REPOQUILL_LATEST_ALPHA_VERSION` to the new immutable version without `v`.
 
-For a Git conflict, stop automatic synchronization, inspect `git status` inside the affected working tree, resolve the files with a normal Git client, complete or abort the rebase deliberately, and restart synchronization only after the repository is clean. Never delete `/data` merely to clear an application error.
+## Synchronization and conflict recovery
 
-If notebook metadata is lost, note contents remain in their working trees. Re-register or clone the repositories after first preserving those directories. Loss of `/data/keys` does not destroy notes, but managed deploy keys must be replaced at the Git provider before synchronization can resume.
+**Saved on this server** means the Markdown file reached RepoQuill's persistent
+storage. **Synchronized** means the resulting Git changes were committed and
+successfully transferred to the configured remote. One does not imply the
+other.
+
+Automatic triggers can run on schedule, after editing inactivity, at startup or
+focus, during note/notebook navigation, and best-effort at browser close. A
+browser may terminate before the close request completes, so this is not a
+backup guarantee.
+
+When external and RepoQuill edits overlap, synchronization pauses without
+force-pushing. The normal workflow is **Synchronization → Review affected
+items**. RepoQuill preserves **Your version** and **Other version**, supports
+guided Markdown, delete/modify, rename/move, image, and binary decisions, and
+creates a recovery point before applying a complete review. Postponing is safe.
+
+Use `git status` and a normal Git client only as an administrator fallback for a
+repository state the guided flow cannot represent or if the working tree was
+manually altered outside RepoQuill. Preserve `/data` before emergency repair and
+never delete it merely to clear an error.
+
+## Rollback and independent recovery
+
+If an upgrade fails, stop the new container and preserve its state for diagnosis.
+Restore the pre-upgrade `/data` backup when application metadata is not backward
+compatible, then run the previously recorded immutable image tag or digest. Do
+not point an older binary at newer metadata it cannot understand.
+
+If RepoQuill itself cannot start, mount or copy `/data` and access notebook
+working trees below `/data/notebooks/<id>` directly. They remain normal Git
+repositories with Markdown and assets. Lost notebook registration can be rebuilt
+after first preserving those directories. Lost managed SSH keys require new
+deploy keys at the Git provider but do not destroy notes.
+
+Password recovery:
+
+```sh
+docker compose exec -it repoquill repoquill auth reset-password
+```
+
+MFA recovery when both authenticator and recovery codes are unavailable:
+
+```sh
+docker compose exec repoquill repoquill auth reset-mfa
+```
+
+Both operations revoke sessions and change authentication metadata only. They
+never modify notebook repositories.

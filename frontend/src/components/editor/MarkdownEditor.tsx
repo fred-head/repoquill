@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { imageInlineComponent, inlineImageConfig } from '@milkdown/kit/component/image-inline'
 import { commandsCtx, defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, rootCtx, schemaCtx } from '@milkdown/kit/core'
 import { history, redoCommand, undoCommand } from '@milkdown/kit/plugin/history'
@@ -36,7 +36,11 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
 }
 
 type UploadState = 'idle' | 'uploading' | 'error'
-type SelectedImage = { position: number; alt: string }
+type SelectedImage = { position: number; alt: string; src: string }
+type ViewedImage = { src: string; alt: string }
+type ActiveImageView = ViewedImage & { contextKey: string }
+type ImagePresentationSize = 'small' | 'medium' | 'large' | 'full'
+type ImagePresentationState = { contextKey: string; values: Record<string, ImagePresentationSize> }
 type ToolbarState = { block: string; strong: boolean; emphasis: boolean; strike: boolean; code: boolean; link: boolean; bullet: boolean; ordered: boolean; task: boolean; quote: boolean; table: boolean }
 type TableSize = { rows: number; columns: number }
 type SlashState = { from: number; to: number; query: string; left: number; top: number }
@@ -46,6 +50,8 @@ type SlashCommand = { id: SlashCommandID; label: string; description: string; ke
 type LinkDraft = { from: number; to: number; selectedText: string; existingHref?: string }
 type SelectedLink = { href: string; targetPath?: string; exists: boolean }
 const emptyToolbarState: ToolbarState = { block: 'paragraph', strong: false, emphasis: false, strike: false, code: false, link: false, bullet: false, ordered: false, task: false, quote: false, table: false }
+const imagePresentationSizes: ImagePresentationSize[] = ['small', 'medium', 'large', 'full']
+const emptyImagePresentations: Record<string, ImagePresentationSize> = {}
 
 const slashCommands: SlashCommand[] = [
   { id: 'paragraph', label: 'Paragraph', description: 'Normal text block', keywords: 'text paragraph absatz' },
@@ -76,6 +82,18 @@ function filteredSlashCommands(query: string): SlashCommand[] {
 function filteredNotePaths(query:string, notePaths:string[], currentPath:string):string[] {
   const normalized = query.trim().toLowerCase()
   return notePaths.filter((path) => path !== currentPath && (!normalized || path.toLowerCase().includes(normalized))).slice(0,100)
+}
+
+function imageAssetPath(source: string, notePath: string): string | undefined {
+  if (!source) return undefined
+  if (!/^(?:https?:|data:|blob:|\/)/i.test(source)) return source
+  try {
+    const parsed = new URL(source, globalThis.location?.origin ?? 'http://localhost')
+    if (parsed.pathname !== '/api/repository/asset' || parsed.searchParams.get('note') !== notePath) return undefined
+    return parsed.searchParams.get('path') ?? undefined
+  } catch {
+    return undefined
+  }
 }
 
 function toolbarStateFromEditor(state: EditorState): ToolbarState {
@@ -133,9 +151,14 @@ function portableRelativeNoteHref(notePath: string, targetPath: string): string 
 function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, notePaths = [], onOpenNoteLink }: MarkdownEditorProps) {
   const input = useRef<HTMLInputElement>(null)
   const replacementInput = useRef<HTMLInputElement>(null)
+  const editorContainer = useRef<HTMLDivElement>(null)
+  const viewerReturnFocus = useRef<HTMLElement | null>(null)
   const [uploadState, setUploadState] = useState<UploadState>('idle')
   const [uploadError, setUploadError] = useState<string>()
   const [selectedImage, setSelectedImage] = useState<SelectedImage>()
+  const [viewedImage, setViewedImage] = useState<ActiveImageView>()
+  const [imagePresentations, setImagePresentations] = useState<ImagePresentationState>()
+  const [presentationError, setPresentationError] = useState<{ contextKey: string; message: string }>()
   const [editingAlt, setEditingAlt] = useState<string>()
   const [toolbarState, setToolbarState] = useState<ToolbarState>(emptyToolbarState)
   const [tablePickerOpen, setTablePickerOpen] = useState(false)
@@ -153,8 +176,60 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const openNoteLinkRef = useRef(onOpenNoteLink)
   const noteLinkTriggerRef = useRef<NoteLinkTriggerState | undefined>(undefined)
   const noteLinkTriggerIndexRef = useRef(0)
+  const presentationRequestRef = useRef('')
   notePathsRef.current = notePaths
   openNoteLinkRef.current = onOpenNoteLink
+  const imageContextKey = `${documentKey}\u0000${notePath}`
+  const activeViewedImage = viewedImage?.contextKey === imageContextKey ? viewedImage : undefined
+  const activeImagePresentations = imagePresentations?.contextKey === imageContextKey ? imagePresentations.values : emptyImagePresentations
+
+  const loadImagePresentations = useCallback(async () => {
+    if (presentationRequestRef.current === imageContextKey) return
+    const requestContext = imageContextKey
+    presentationRequestRef.current = requestContext
+    try {
+      const response = await apiFetch(`/api/repository/image-presentations?note=${encodeURIComponent(notePath)}`)
+      const result = await response.json() as { presentations?: Record<string, ImagePresentationSize>; error?: string }
+      if (!response.ok) throw new Error(result.error ?? `Image presentation settings failed (${response.status})`)
+      if (presentationRequestRef.current === requestContext) {
+        setImagePresentations({ contextKey: requestContext, values: result.presentations ?? {} })
+        setPresentationError(undefined)
+      }
+    } catch (error) {
+      if (presentationRequestRef.current === requestContext) {
+        setPresentationError({ contextKey: requestContext, message: error instanceof Error ? error.message : 'Image presentation settings are unavailable' })
+      }
+    }
+  }, [imageContextKey, notePath])
+
+  useEffect(() => {
+    const container = editorContainer.current
+    if (!container) return
+    const decorateImages = () => {
+      const images = container.querySelectorAll<HTMLImageElement>('.repoquill-editor .milkdown-image-inline img')
+      if (images.length) void loadImagePresentations()
+      for (const image of images) {
+        const wrapper = image.closest<HTMLElement>('.milkdown-image-inline')
+        const assetPath = imageAssetPath(image.src, notePath)
+        if (wrapper) wrapper.dataset.presentationSize = assetPath ? activeImagePresentations[assetPath] ?? 'full' : 'full'
+        if (readOnly) {
+          image.tabIndex = 0
+          image.setAttribute('role', 'button')
+          image.setAttribute('aria-label', image.alt ? `View image: ${image.alt}` : 'View note image')
+          image.dataset.repoquillViewerTrigger = 'true'
+        } else if (image.dataset.repoquillViewerTrigger) {
+          image.removeAttribute('tabindex')
+          image.removeAttribute('role')
+          image.removeAttribute('aria-label')
+          delete image.dataset.repoquillViewerTrigger
+        }
+      }
+    }
+    decorateImages()
+    const observer = new MutationObserver(decorateImages)
+    observer.observe(container, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  }, [documentKey, readOnly, activeImagePresentations, loadImagePresentations, notePath])
 
 
   async function uploadImage(file: File): Promise<string> {
@@ -186,6 +261,56 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   function displayURL(source: string): string {
     if (/^(?:https?:|data:|blob:|\/)/i.test(source)) return source
     return `/api/repository/asset?note=${encodeURIComponent(notePath)}&path=${encodeURIComponent(source)}`
+  }
+
+  async function saveImagePresentation(image: string, size: ImagePresentationSize, previousImage = '') {
+    const previousValues = activeImagePresentations
+    setImagePresentations({ contextKey: imageContextKey, values: { ...previousValues, [image]: size } })
+    setPresentationError(undefined)
+    try {
+      const response = await apiFetch('/api/repository/image-presentation', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: notePath, image, size, previousImage }) })
+      const result = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(result.error ?? `Image presentation setting failed (${response.status})`)
+      if (previousImage && previousImage !== image) {
+        setImagePresentations((current) => {
+          const values = { ...(current?.contextKey === imageContextKey ? current.values : previousValues) }
+          delete values[previousImage]
+          values[image] = size
+          return { contextKey: imageContextKey, values }
+        })
+      }
+    } catch (error) {
+      setImagePresentations({ contextKey: imageContextKey, values: previousValues })
+      setPresentationError({ contextKey: imageContextKey, message: error instanceof Error ? error.message : 'Image presentation setting could not be saved' })
+    }
+  }
+
+  async function removeImagePresentation(image: string) {
+    const previousValues = activeImagePresentations
+    const values = { ...previousValues }
+    delete values[image]
+    setImagePresentations({ contextKey: imageContextKey, values })
+    try {
+      const response = await apiFetch(`/api/repository/image-presentation?note=${encodeURIComponent(notePath)}&image=${encodeURIComponent(image)}`, { method: 'DELETE' })
+      if (!response.ok) {
+        const result = await response.json() as { error?: string }
+        throw new Error(result.error ?? `Image presentation setting cleanup failed (${response.status})`)
+      }
+    } catch (error) {
+      setPresentationError({ contextKey: imageContextKey, message: error instanceof Error ? error.message : 'Image presentation setting could not be removed' })
+    }
+  }
+
+  function openImageViewer(image: ViewedImage, trigger?: HTMLElement | null) {
+    viewerReturnFocus.current = trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null)
+    setViewedImage({ ...image, contextKey: imageContextKey })
+  }
+
+  function closeImageViewer() {
+    setViewedImage(undefined)
+    const returnTarget = viewerReturnFocus.current
+    viewerReturnFocus.current = null
+    globalThis.setTimeout(() => returnTarget?.isConnected && returnTarget.focus(), 0)
   }
 
   function updateSelectedLink(state: EditorState) {
@@ -314,7 +439,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
               updateNoteLinkTrigger(view)
             }
             if (selection instanceof NodeSelection && selection.node.type.name === 'image') {
-              setSelectedImage({ position: selection.from, alt: selection.node.attrs.alt ?? '' })
+              setSelectedImage({ position: selection.from, alt: selection.node.attrs.alt ?? '', src: selection.node.attrs.src ?? '' })
             } else {
               setSelectedImage(undefined)
             }
@@ -521,6 +646,14 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     return true
   }
 
+  function openReadOnlyImage(target: HTMLElement) {
+    if (!readOnly) return false
+    const image = target.closest<HTMLImageElement>('.repoquill-editor .milkdown-image-inline img')
+    if (!image) return false
+    openImageViewer({ src: image.currentSrc || image.src, alt: image.alt }, image)
+    return true
+  }
+
   function setBlock(block: string) {
     if (block === 'paragraph') callCommand(turnIntoTextCommand)
     else if (block === 'code-block') callCommand(createCodeBlockCommand)
@@ -628,6 +761,8 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     const file = Array.from(files ?? []).find((candidate) => candidate.type.startsWith('image/'))
     if (!file || readOnly || !selectedImage) return
     const selectedPosition = selectedImage.position
+    const previousImage = selectedImage.src
+    const presentationSize = activeImagePresentations[previousImage] ?? 'full'
     try {
       const path = await uploadImage(file)
       get()?.action((ctx) => {
@@ -638,8 +773,9 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
           return
         }
         view.dispatch(view.state.tr.setNodeMarkup(selectedPosition, undefined, { ...node.attrs, src: path }).scrollIntoView())
-        setSelectedImage({ position: selectedPosition, alt: node.attrs.alt ?? '' })
+        setSelectedImage({ position: selectedPosition, alt: node.attrs.alt ?? '', src: path })
       })
+      void saveImagePresentation(path, presentationSize, previousImage)
     } catch {
       // uploadImage already exposes the actionable error in the editor UI.
     } finally {
@@ -649,6 +785,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
 
   function removeSelectedImage() {
     if (readOnly || !selectedImage) return
+    const removedImage = selectedImage.src
     get()?.action((ctx) => {
       const view = ctx.get(editorViewCtx)
       const node = view.state.doc.nodeAt(selectedImage.position)
@@ -656,6 +793,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       view.dispatch(view.state.tr.delete(selectedImage.position, selectedImage.position + node.nodeSize))
       setSelectedImage(undefined)
     })
+    void removeImagePresentation(removedImage)
   }
 
   function saveImageMetadata() {
@@ -665,7 +803,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       const node = view.state.doc.nodeAt(selectedImage.position)
       if (!node || node.type.name !== 'image') return
       view.dispatch(view.state.tr.setNodeAttribute(selectedImage.position, 'alt', editingAlt).scrollIntoView())
-      setSelectedImage({ position: selectedImage.position, alt: editingAlt })
+      setSelectedImage({ position: selectedImage.position, alt: editingAlt, src: selectedImage.src })
       setEditingAlt(undefined)
     })
   }
@@ -732,6 +870,10 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         <div role="toolbar" aria-label="Image editing" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
           <span className="shrink-0 px-1 text-xs font-medium text-zinc-400">Image</span>
           <ToolbarDivider />
+          <span className="shrink-0 px-1 text-xs text-zinc-500">Image size</span>
+          <div role="group" aria-label="Image presentation size" className="flex shrink-0 gap-1">{imagePresentationSizes.map((size) => <button key={size} type="button" aria-label={`${size[0].toUpperCase()+size.slice(1)} image size`} aria-pressed={(activeImagePresentations[selectedImage.src] ?? 'full') === size} onClick={() => void saveImagePresentation(selectedImage.src, size)} className={`min-h-10 rounded px-2 text-xs font-medium ${(activeImagePresentations[selectedImage.src] ?? 'full') === size ? 'border border-amber-500 bg-amber-400/15 text-amber-100' : 'border border-zinc-700 text-zinc-300 hover:bg-zinc-800'}`}>{size[0].toUpperCase()+size.slice(1)}</button>)}</div>
+          <ToolbarDivider />
+          <button type="button" title="View image" aria-label="View image" onClick={(event) => openImageViewer({ src: displayURL(selectedImage.src), alt: selectedImage.alt }, event.currentTarget)} className="h-8 shrink-0 rounded border border-transparent px-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white">View image</button>
           <ToolbarButton label="Alt text" disabled={false} onClick={() => setEditingAlt(selectedImage.alt)}>Alt text</ToolbarButton>
           <ToolbarButton label="Replace image" disabled={uploadState === 'uploading'} onClick={() => replacementInput.current?.click()}>{uploadState === 'uploading' ? 'Replacing…' : 'Replace image'}</ToolbarButton>
           <ToolbarButton label="Remove image" disabled={false} onClick={removeSelectedImage}>Remove image</ToolbarButton>
@@ -742,13 +884,22 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
 
       {readOnly && <p className="mb-3 text-xs text-zinc-500">Read only: select and copy without changing the note.</p>}
       {uploadError && <p className="mb-4 rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{uploadError}</p>}
+      {presentationError?.contextKey === imageContextKey && <p role="alert" className="mb-4 rounded-lg border border-amber-900/70 bg-amber-950/30 p-3 text-sm text-amber-100">Image layout settings are unavailable. The note and image are unchanged. {presentationError.message}</p>}
       {linkError && <p role="alert" className="mb-4 rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{linkError}</p>}
       <div
+        ref={editorContainer}
         onPointerDownCapture={(event) => {
           const target = event.target as HTMLElement
           if (selectImageFromPointer(target)) return
           if (target.closest('table')) {
             setToolbarState((previous) => ({ ...previous, table: true }))
+          }
+        }}
+        onClickCapture={(event) => { openReadOnlyImage(event.target as HTMLElement) }}
+        onKeyDownCapture={(event) => {
+          if (readOnly && (event.key === 'Enter' || event.key === ' ') && (event.target as HTMLElement).closest('.repoquill-editor .milkdown-image-inline img')) {
+            event.preventDefault()
+            openReadOnlyImage(event.target as HTMLElement)
           }
         }}
         onPointerUp={syncToolbarAfterPointer}
@@ -762,6 +913,58 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       {tablePickerOpen && !readOnly && <TablePicker size={tableSize} onPreview={setTableSize} onSelect={insertTable} onClose={() => setTablePickerOpen(false)} />}
       {linkPicker && !readOnly && <LinkPicker notePath={notePath} notePaths={notePaths} draft={linkPicker} onApply={applyLink} onClose={() => setLinkPicker(undefined)} />}
       {editingAlt !== undefined && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingAlt(undefined) }}><form onSubmit={(event) => { event.preventDefault(); saveImageMetadata() }} role="dialog" aria-modal="true" aria-labelledby="image-metadata-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="image-metadata-title" className="text-lg font-semibold text-zinc-100">Edit image</h2><label className="mt-4 block text-sm text-zinc-300">Alt text<input autoFocus value={editingAlt} onChange={(event) => setEditingAlt(event.target.value)} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-amber-500" placeholder="Leave empty for a decorative image" /></label><p className="mt-2 text-xs text-zinc-500">Describe meaningful content briefly, or leave this empty for a decorative image.</p><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setEditingAlt(undefined)} className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="submit" className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">Save</button></div></form></div>}
+      {activeViewedImage && <ImageViewer image={activeViewedImage} onClose={closeImageViewer} />}
+    </div>
+  )
+}
+
+function ImageViewer({ image, onClose }: { image: ViewedImage; onClose: () => void }) {
+  const dialog = useRef<HTMLDivElement>(null)
+  const closeButton = useRef<HTMLButtonElement>(null)
+  const [sizeMode, setSizeMode] = useState<'fit' | 'actual'>('fit')
+  const [loadFailed, setLoadFailed] = useState(false)
+  const accessibleDescription = image.alt.trim() || 'Note image'
+
+  useEffect(() => {
+    closeButton.current?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+        return
+      }
+      if (event.key !== 'Tab' || !dialog.current) return
+      const focusable = Array.from(dialog.current.querySelectorAll<HTMLElement>('button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'))
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-[70] flex min-h-0 flex-col bg-black/90 p-2 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="image-viewer-title" aria-describedby="image-viewer-status" className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 shadow-2xl">
+        <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-800 px-3 py-2 sm:px-4">
+          <div className="min-w-0"><h2 id="image-viewer-title" className="truncate text-sm font-semibold text-zinc-100">{image.alt.trim() || 'Note image'}</h2><p id="image-viewer-status" className="text-xs text-zinc-500">{loadFailed ? 'Image could not be loaded' : sizeMode === 'fit' ? 'Fit to screen' : 'Actual size (100%)'}</p></div>
+          <div role="toolbar" aria-label="Image viewing controls" className="flex flex-wrap items-center justify-end gap-1">
+            <button type="button" aria-pressed={sizeMode === 'fit'} onClick={() => setSizeMode('fit')} className={`min-h-11 rounded-md px-3 text-xs font-medium ${sizeMode === 'fit' ? 'border border-amber-500 bg-amber-400/15 text-amber-100' : 'border border-zinc-700 text-zinc-300 hover:bg-zinc-800'}`}>Fit to screen</button>
+            <button type="button" aria-pressed={sizeMode === 'actual'} onClick={() => setSizeMode('actual')} className={`min-h-11 rounded-md px-3 text-xs font-medium ${sizeMode === 'actual' ? 'border border-amber-500 bg-amber-400/15 text-amber-100' : 'border border-zinc-700 text-zinc-300 hover:bg-zinc-800'}`}>Actual size</button>
+            <button ref={closeButton} type="button" aria-label="Close image viewer" onClick={onClose} className="min-h-11 min-w-11 rounded-md border border-zinc-700 px-3 text-xl leading-none text-zinc-300 hover:bg-zinc-800">×</button>
+          </div>
+        </header>
+        <div data-size-mode={sizeMode} className={`min-h-0 flex-1 overflow-auto p-3 sm:p-6 ${sizeMode === 'fit' ? 'flex items-center justify-center' : 'block'}`}>
+          {loadFailed ? <div role="alert" className="m-auto max-w-md rounded-lg border border-red-900/70 bg-red-950/30 p-4 text-center text-sm text-red-100"><p className="font-medium">This image could not be loaded.</p><p className="mt-2 text-xs leading-5 text-red-200/80">The asset may have been moved or removed outside RepoQuill. Your note and its Markdown were not changed.</p></div> : <img src={image.src} alt={accessibleDescription} draggable={false} onError={() => setLoadFailed(true)} className={sizeMode === 'fit' ? 'h-auto max-h-full w-auto max-w-full rounded-md object-contain' : 'h-auto max-h-none w-auto max-w-none rounded-md'} />}
+        </div>
+      </div>
     </div>
   )
 }

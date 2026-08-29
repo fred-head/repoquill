@@ -1,8 +1,8 @@
 # Known Alpha Limitations
 
-RepoQuill `0.1.0-alpha.1.security.1` is an evaluation release. The following
-limitations are deliberate or currently accepted and should be understood
-before using it with important notebooks.
+RepoQuill Alpha 2 remains evaluation software. The following limitations are
+deliberate or currently accepted and should be understood before using it with
+important notebooks.
 
 ## Deployment and access
 
@@ -11,6 +11,8 @@ before using it with important notebooks.
   operator's responsibility for Internet-facing deployments.
 - Explicit `disabled` mode has no built-in authentication and is suitable only
   behind a deliberately managed LAN, VPN, or external access boundary.
+- OIDC is deferred. RepoQuill has no multi-user accounts, roles, registration,
+  email recovery, or phishing-resistant authentication factor.
 - A stolen authenticated session retains owner authority until it expires or is
   revoked. TOTP does not protect an already stolen session, and TOTP itself is
   not phishing-resistant.
@@ -34,10 +36,17 @@ before using it with important notebooks.
   automatic synchronization and open RepoQuill's guided conflict review. The
   original versions and a Git recovery point are preserved while the owner
   chooses the resulting note or asset.
+- RepoQuill does not provide collaborative editing, CRDT merging, or multiple
+  backend writers. External tools can still create overlapping versions that
+  require the guided conflict review.
 - Git synchronization groups pending working-tree changes into ordinary
   commits. RepoQuill does not expose staging or per-file commit composition.
 - Removing an image reference does not automatically delete its stored asset.
   Unreferenced asset cleanup is a separate, explicit maintenance operation.
+- Image presentation sizes are optional RepoQuill metadata and therefore do not
+  appear in other Markdown applications. Repeated references to the same asset
+  in one note share a size. Trashing and later restoring a note preserves its
+  Markdown and assets but resets those image sizes to the default presentation.
 
 ## Portability and compatibility
 
@@ -48,6 +57,9 @@ before using it with important notebooks.
 - Symbolic links are intentionally rejected or ignored rather than followed.
 - Provider-specific repository creation is not included; notebook onboarding
   requires an existing compatible SSH Git repository.
+- GitHub Apps, OAuth, HTTPS/PAT Git credentials, and automatic remote creation
+  are not implemented. GitHub's guided setup is an SSH deploy-key workflow;
+  other compatible Git services remain supported through SSH.
 
 ## Release expectations
 

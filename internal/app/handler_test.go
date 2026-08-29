@@ -1283,6 +1283,76 @@ func TestFrontendFallback(t *testing.T) {
 	}
 }
 
+func TestImagePresentationAPIValidatesAndPersistsOutsideTheRepository(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Note.md"), []byte("![](Note.assets/image.png)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "Note.assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Note.assets", "image.png"), []byte("\x89PNG\r\n\x1a\nimage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	metadataDirectory := t.TempDir()
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", filepath.Join(metadataDirectory, "notebooks.json"))
+	metadataPath := filepath.Join(metadataDirectory, "image-presentations.json")
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(method, target, body string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		httpRequest := httptest.NewRequest(method, target, strings.NewReader(body))
+		httpRequest.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(response, httpRequest)
+		return response
+	}
+
+	saved := request(http.MethodPut, "/api/repository/image-presentation", `{"note":"Note.md","image":"Note.assets/image.png","size":"medium"}`)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("save presentation = %d %s", saved.Code, saved.Body.String())
+	}
+	if info, err := os.Stat(metadataPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("presentation metadata file = %#v, %v", info, err)
+	}
+	loaded := request(http.MethodGet, "/api/repository/image-presentations?note=Note.md", "")
+	if loaded.Code != http.StatusOK || !strings.Contains(loaded.Body.String(), `"Note.assets/image.png":"medium"`) {
+		t.Fatalf("load presentation = %d %s", loaded.Code, loaded.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "image-presentations.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("presentation metadata leaked into Git working tree: %v", err)
+	}
+	invalid := request(http.MethodPut, "/api/repository/image-presentation", `{"note":"Note.md","image":"Note.assets/image.png","size":"400px"}`)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid size = %d %s", invalid.Code, invalid.Body.String())
+	}
+	escape := request(http.MethodPut, "/api/repository/image-presentation", `{"note":"Note.md","image":"../outside.png","size":"small"}`)
+	if escape.Code != http.StatusBadRequest {
+		t.Fatalf("asset escape = %d %s", escape.Code, escape.Body.String())
+	}
+	missing := request(http.MethodGet, "/api/repository/image-presentations?note=Missing.md", "")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing note = %d %s", missing.Code, missing.Body.String())
+	}
+	moved := request(http.MethodPost, "/api/repository/move", `{"source":"Note.md","target":"Renamed.md"}`)
+	if moved.Code != http.StatusOK {
+		t.Fatalf("move note = %d %s", moved.Code, moved.Body.String())
+	}
+	movedPresentation := request(http.MethodGet, "/api/repository/image-presentations?note=Renamed.md", "")
+	if movedPresentation.Code != http.StatusOK || !strings.Contains(movedPresentation.Body.String(), `"Renamed.assets/image.png":"medium"`) {
+		t.Fatalf("moved presentation = %d %s", movedPresentation.Code, movedPresentation.Body.String())
+	}
+	deleted := request(http.MethodDelete, "/api/repository/image-presentation?note=Renamed.md&image=Renamed.assets%2Fimage.png", "")
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete presentation = %d %s", deleted.Code, deleted.Body.String())
+	}
+	withoutPresentation := request(http.MethodGet, "/api/repository/image-presentations?note=Renamed.md", "")
+	if withoutPresentation.Code != http.StatusOK || !strings.Contains(withoutPresentation.Body.String(), `"presentations":{}`) {
+		t.Fatalf("presentation after deletion = %d %s", withoutPresentation.Code, withoutPresentation.Body.String())
+	}
+}
+
 func TestEveryApplicationAPIRouteDeniesUnauthenticatedAccess(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service, err := auth.Open(t.Context(), auth.Config{Mode: auth.ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, logger)
@@ -1343,6 +1413,9 @@ func TestEveryApplicationAPIRouteDeniesUnauthenticatedAccess(t *testing.T) {
 		{http.MethodDelete, "/api/repository/trash/example"},
 		{http.MethodPost, "/api/repository/assets"},
 		{http.MethodGet, "/api/repository/asset"},
+		{http.MethodGet, "/api/repository/image-presentations?note=Secret.md"},
+		{http.MethodPut, "/api/repository/image-presentation"},
+		{http.MethodDelete, "/api/repository/image-presentation?note=Secret.md&image=Secret.assets%2Fimage.png"},
 		{http.MethodGet, "/api/repository/assets/unreferenced"},
 		{http.MethodPost, "/api/repository/assets/cleanup"},
 		{http.MethodGet, "/api/repository/git/status"},

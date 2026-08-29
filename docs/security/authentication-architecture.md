@@ -16,14 +16,14 @@ email addresses, invitations, organizations, or email recovery.
 Supported modes are:
 
 - `local`: recommended and fail-closed default. A new or migrated database has
-  `setup_completed = false` until the operator-authorized setup in M19P2.
+  `setup_completed = false` until operator-authorized bootstrap setup.
 - `disabled`: accepted only when the operator explicitly sets
-  `REPOQUILL_AUTH_MODE=disabled`. Later phases show a persistent warning and
-  invalidate local authentication artifacts when modes change.
+  `REPOQUILL_AUTH_MODE=disabled`. The application shows a persistent warning
+  and invalidates local authentication artifacts when modes change.
 
-An absent or empty mode never means public access. It resolves to `local` so an
-existing Alpha 1 installation enters the restricted setup migration path once
-the API boundary is enabled. A missing database is recreated only in this
+An absent or empty mode never means public access. It resolves to `local`, so an
+installation upgraded from unauthenticated Alpha 1 enters the restricted setup
+migration path. A missing database is recreated only in this
 setup-required state. An unreadable, corrupt, unsupported, or newer database
 stops startup instead of falling back to unauthenticated operation.
 
@@ -64,7 +64,7 @@ Public minimum:
 
 - `GET /api/health`, containing liveness and application version only,
 - static application-shell files required to render setup/login,
-- narrowly scoped future setup-status, bootstrap setup, login, and auth-status
+- narrowly scoped setup, login, MFA challenge, and auth-status
   routes; these must expose no notebook, Git, SSH, filesystem, or host metadata.
 
 Protected:
@@ -104,10 +104,10 @@ and prevents startup. A database created by a newer RepoQuill version is never
 downgraded implicitly.
 
 Changing `local`/`disabled` invalidates sessions, one-time artifacts, and
-throttling state atomically and resets setup completion. Later phases add an
-operator-only recovery command requiring filesystem/container administration.
-Recovery changes authentication metadata only; it never moves, encrypts,
-deletes, or rewrites notebook repositories.
+throttling state atomically and resets setup completion. Operator-only password
+and MFA recovery commands require filesystem/container administration. Recovery
+changes authentication metadata only; it never moves, encrypts, deletes, or
+rewrites notebook repositories.
 
 M19P1 initializes and validates this metadata service. M19P2 adds the
 operator-controlled one-time bootstrap, versioned Argon2id credential, and a
