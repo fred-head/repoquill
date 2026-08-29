@@ -65,7 +65,7 @@ func (s *Service) PreserveFileVersion(ctx context.Context, relative string) (str
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Lstat(target)
+	info, err := os.Stat(target)
 	if err != nil || !info.Mode().IsRegular() {
 		return "", ErrInvalidDecision
 	}
@@ -415,25 +415,35 @@ func (s *Service) confinedConflictPath(relative string) (string, error) {
 		return "", ErrInvalidDecision
 	}
 	clean := filepath.Clean(filepath.FromSlash(relative))
-	target := filepath.Join(s.root, clean)
-	rel, err := filepath.Rel(s.root, target)
+	candidate := filepath.Join(s.root, clean)
+	rel, err := filepath.Rel(s.root, candidate)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", ErrInvalidDecision
 	}
-	resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(target))
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err == nil {
+		if resolved != filepath.Clean(candidate) || !isConfinedGitPath(s.root, resolved) {
+			return "", ErrInvalidDecision
+		}
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", ErrInvalidDecision
+	}
+	parent := filepath.Dir(candidate)
+	resolvedParent, err := filepath.EvalSymlinks(parent)
 	if err != nil {
 		return "", ErrInvalidDecision
 	}
-	parentRelative, err := filepath.Rel(s.root, resolvedParent)
-	if err != nil || parentRelative == ".." || strings.HasPrefix(parentRelative, ".."+string(filepath.Separator)) {
+	if resolvedParent != filepath.Clean(parent) || !isConfinedGitPath(s.root, resolvedParent) {
 		return "", ErrInvalidDecision
 	}
-	if info, statErr := os.Lstat(target); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", ErrInvalidDecision
-	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return "", ErrInvalidDecision
-	}
-	return target, nil
+	return filepath.Join(resolvedParent, filepath.Base(candidate)), nil
+}
+
+func isConfinedGitPath(root, candidate string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func (s *Service) writeConflictPath(relative string, content []byte) error {

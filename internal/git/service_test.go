@@ -281,6 +281,19 @@ func TestSaveConflictSafetyPointPreservesExactServerVersion(t *testing.T) {
 	}
 }
 
+func TestSaveConflictSafetyPointRejectsSymlinkEscape(t *testing.T) {
+	root, _ := testRepository(t)
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	writeFile(t, outside, "secret")
+	if err := os.Symlink(outside, filepath.Join(root, "escape.md")); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := service.PreserveFileVersion(context.Background(), "escape.md"); !errors.Is(err, ErrInvalidDecision) {
+		t.Fatalf("symlink escape was accepted: %v", err)
+	}
+}
+
 func TestGuidedRenameConflictRetainsBothNamedNotes(t *testing.T) {
 	root, remote := testRepository(t)
 	other := filepath.Join(t.TempDir(), "other")
