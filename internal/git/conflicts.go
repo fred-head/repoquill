@@ -61,13 +61,8 @@ type ConflictResult struct {
 func (s *Service) PreserveFileVersion(ctx context.Context, relative string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	target, err := s.confinedConflictPath(relative)
-	if err != nil {
+	if _, err := s.confinedConflictPath(relative); err != nil {
 		return "", err
-	}
-	info, err := os.Stat(target)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", ErrInvalidDecision
 	}
 	output, err := s.run(ctx, "preserve overlapping file version", "hash-object", "-w", "--", relative)
 	blob := strings.TrimSpace(output)
