@@ -22,6 +22,11 @@ type MenuState = { entry: TreeNode; x: number; y: number }
 type CleanupAsset = { path: string; size: number }
 type CleanupFailure = { path: string; error: string }
 type TrashItem = { id:string; originalPath:string; type:'file'|'directory'; deletedAt:string; size:number }
+type LinkRewrite = { notePath:string; nextNotePath:string; line:number; before:string; after:string }
+type MoveLinkPreview = { source:string; target:string; token:string; rewrites:LinkRewrite[] }
+type ConflictItem = { path:string; kind:'markdown'|'image'|'binary'|'modify_delete'; yourExists:boolean; otherExists:boolean; yourContent?:string; otherContent?:string }
+type ConflictOverview = { token:string; items:ConflictItem[] }
+type ConflictDecision = { path:string; action:string; content?:string }
 type GitAuthType = 'managed-ssh' | 'existing-server-ssh'
 type ConnectionResult = { state: string; message: string }
 type HostKeyInfo = { keyType: string; fingerprint: string }
@@ -79,6 +84,15 @@ function findTreeNode(entries: TreeNode[], path: string): TreeNode | undefined {
   }
 }
 
+function markdownPaths(entries: TreeNode[]): string[] {
+  const result:string[] = []
+  for (const entry of entries) {
+    if (entry.type === 'file') result.push(entry.path)
+    else if (entry.children) result.push(...markdownPaths(entry.children))
+  }
+  return result
+}
+
 class APIError extends Error {
   constructor(message: string, readonly status: number) {
     super(message)
@@ -126,6 +140,10 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   const [gitStatus, setGitStatus] = useState<GitStatus>({ state: 'invalid', message: 'Checking Git status…' })
   const [gitSyncing, setGitSyncing] = useState(false)
 	const [syncDetailsOpen, setSyncDetailsOpen] = useState(false)
+	const [conflictOverview, setConflictOverview] = useState<ConflictOverview>()
+	const [saveConflict, setSaveConflict] = useState<{ overview:ConflictOverview; server:FileResponse }>()
+	const [conflictLoading, setConflictLoading] = useState(false)
+	const [conflictError, setConflictError] = useState<string>()
 	const [lastSuccessfulSyncAt, setLastSuccessfulSyncAt] = useState<string>()
 	const [lastSyncAttemptAt, setLastSyncAttemptAt] = useState<string>()
 	const [lastSyncError, setLastSyncError] = useState<string>()
@@ -143,6 +161,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   const [renameValue, setRenameValue] = useState('')
   const [moveEntry, setMoveEntry] = useState<TreeNode>()
   const [moveDestination, setMoveDestination] = useState('')
+  const [moveLinkPreview, setMoveLinkPreview] = useState<{ entry:TreeNode; preview:MoveLinkPreview }>()
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(loadExpandedFolders)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
@@ -416,8 +435,17 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
 		if (recoveryDraft?.path === snapshot.path) { sessionStorage.removeItem(recoveryDraftStorageKey); setRecoveryDraft(undefined) }
       }
     } catch (error) {
-      setSaveStatus(error instanceof APIError && error.status === 409 ? 'conflict' : 'error')
+		const isConflict = error instanceof APIError && error.status === 409
+		setSaveStatus(isConflict ? 'conflict' : 'error')
       setSaveError(messageFrom(error))
+		if (isConflict) {
+			const recovery = { notebookId:activeNotebookIDRef.current,path:snapshot.path,content:snapshot.content,version:snapshot.version,savedContent:draft.savedContent,capturedAt:new Date().toISOString() }
+			try { sessionStorage.setItem(recoveryDraftStorageKey,JSON.stringify(recovery)); setRecoveryDraft(recovery) } catch { /* the in-memory editor still preserves this version */ }
+			try {
+				const server = await responseJSON<FileResponse>(await apiFetch(`/api/repository/file?path=${encodeURIComponent(snapshot.path)}`))
+				setSaveConflict({ server,overview:{ token:`save:${server.version}`,items:[{ path:snapshot.path,kind:'markdown',yourExists:true,otherExists:true,yourContent:snapshot.content,otherContent:server.content }] } })
+			} catch { /* retry remains available without discarding the draft */ }
+		}
       return false
     } finally {
       savePromise.current = undefined
@@ -488,6 +516,40 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     }
   }
 
+	async function openConflictAssistant() {
+		setConflictLoading(true)
+		setConflictError(undefined)
+		try {
+			const response = await apiFetch('/api/repository/git/conflicts')
+			setConflictOverview(await responseJSON<ConflictOverview>(response))
+			setSyncDetailsOpen(false)
+		} catch (error) {
+			setConflictError(messageFrom(error))
+		} finally {
+			setConflictLoading(false)
+		}
+	}
+
+  async function applyConflictResolution(token:string, decisions:ConflictDecision[]) {
+		setConflictLoading(true)
+		setConflictError(undefined)
+		try {
+			const response = await apiFetch('/api/repository/git/conflicts/resolve', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ token,decisions }) })
+			const result = await responseJSON<{ state:GitState; message:string; safetyPoint?:string }>(response)
+			localStorage.removeItem(`repoquill:conflict-decisions:${token}`)
+			setConflictOverview(undefined)
+			await loadTree()
+			await refreshGitStatus()
+			if (result.state === 'conflict') await openConflictAssistant()
+			else setOperationError(result.safetyPoint ? `Changes synchronized. Recovery point: ${result.safetyPoint}` : undefined)
+		} catch (error) {
+			setConflictError(messageFrom(error))
+			try { const current = await responseJSON<ConflictOverview>(await apiFetch('/api/repository/git/conflicts')); setConflictOverview(current) } catch { /* source versions remain in Git */ }
+		} finally {
+			setConflictLoading(false)
+		}
+	}
+
   function requestNoteSwitchSync() {
     const status = gitStatusRef.current.state
     const recentlySynced = Date.now() - lastSuccessfulSync.current < noteSwitchSyncFreshnessMs
@@ -496,6 +558,42 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     if (recentlySynced && clean && noNewLocalChanges) return
     void syncRepository()
   }
+
+	async function applySaveConflict(decisions:ConflictDecision[]) {
+		const pending = saveConflict
+		const decision = decisions[0]
+		if (!pending || !decision) return
+		setConflictLoading(true)
+		setConflictError(undefined)
+		try {
+			let resolved = pending.server
+			if (decision.action !== 'use_other') {
+				const content = decision.action === 'edit_combined' ? decision.content ?? '' : pending.overview.items[0].yourContent ?? ''
+				const response = await apiFetch('/api/repository/file/resolve-conflict',{ method:'POST',headers:{ 'Content-Type':'application/json' },body:JSON.stringify({ path:pending.server.path,expectedVersion:pending.server.version,content }) })
+				resolved = (await responseJSON<{ file:FileResponse }>(response)).file
+			}
+			activeDraft.current = { ...resolved,savedContent:resolved.content }
+			setNote(resolved)
+			setSelectedPath(resolved.path)
+			setSelectedItem(findTreeNode(entries,resolved.path) ?? { name:baseName(resolved.path),path:resolved.path,type:'file' })
+			setTabs((current)=>current.some((tab)=>tab.path===resolved.path)?current:[...current,{ path:resolved.path,readOnly:false }])
+			setReadOnly(false)
+			setSaveConflict(undefined)
+			localStorage.removeItem(`repoquill:conflict-decisions:${pending.overview.token}`)
+			setSaveStatus('saved')
+			setSaveError(undefined)
+			sessionStorage.removeItem(recoveryDraftStorageKey)
+			setRecoveryDraft(undefined)
+			localChangeGeneration.current += decision.action === 'use_other' ? 0 : 1
+			void refreshGitStatus()
+		} catch (error) {
+			setConflictError(messageFrom(error))
+			try {
+				const server = await responseJSON<FileResponse>(await apiFetch(`/api/repository/file?path=${encodeURIComponent(pending.server.path)}`))
+				setSaveConflict({ server,overview:{ token:`save:${server.version}`,items:[{ ...pending.overview.items[0],otherContent:server.content }] } })
+			} catch { /* both in-memory versions remain available */ }
+		} finally { setConflictLoading(false) }
+	}
 
   useEffect(() => {
     syncRepositoryRef.current = syncRepository
@@ -623,7 +721,8 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       const response = await apiFetch(`/api/repository/file?path=${encodeURIComponent(recoveryDraft.path)}`)
       const current = await responseJSON<FileResponse>(response)
       if (current.version !== recoveryDraft.version) {
-        setOperationError('The server copy changed while you were signed out. The recovery draft was kept; resolve it through the conflict workflow instead of overwriting the note.')
+		setSaveConflict({ server:current,overview:{ token:`save:${current.version}`,items:[{ path:current.path,kind:'markdown',yourExists:true,otherExists:true,yourContent:recoveryDraft.content,otherContent:current.content }] } })
+		setOperationError(undefined)
         return
       }
       activeDraft.current = { ...current, content: recoveryDraft.content, savedContent: current.content }
@@ -711,13 +810,21 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     }
   }
 
-  async function performMove(entry: TreeNode, target: string) {
+  async function performMove(entry: TreeNode, target: string, rewriteToken?:string) {
     if (target === entry.path) return
     if (!(await saveDraft())) return
     setOperationBusy(true)
     setOperationError(undefined)
     try {
-      const response = await apiFetch('/api/repository/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: entry.path, target }) })
+      if (!rewriteToken) {
+        const previewResponse = await apiFetch('/api/repository/move/preview', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ source:entry.path, target }) })
+        const preview = await responseJSON<MoveLinkPreview>(previewResponse)
+        if (preview.rewrites.length > 0) {
+          setMoveLinkPreview({ entry, preview })
+          return
+        }
+      }
+      const response = await apiFetch('/api/repository/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: entry.path, target, ...(rewriteToken ? { rewriteToken } : {}) }) })
       await responseJSON<{ path: string }>(response)
       const affectedPath = selectedPath === entry.path || selectedPath?.startsWith(`${entry.path}/`)
         ? target + selectedPath.slice(entry.path.length)
@@ -752,6 +859,13 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     } finally {
       setOperationBusy(false)
     }
+  }
+
+  async function confirmMoveLinkRewrites() {
+    const pending = moveLinkPreview
+    if (!pending) return
+    setMoveLinkPreview(undefined)
+    await performMove(pending.entry, pending.preview.target, pending.preview.token)
   }
 
   function beginRename(entry: TreeNode) {
@@ -862,6 +976,23 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       return next
     })
     setSearchQuery('')
+  }
+
+  function openInternalNoteLink(path:string, disposition:'current'|'new') {
+    const entry = findTreeNode(entries, path)
+    if (!entry || entry.type !== 'file') {
+      setOperationError(`Linked note not found: ${path}`)
+      return
+    }
+    setOperationError(undefined)
+    setSelectedItem(entry)
+    setExpandedFolders((current) => {
+      const next = new Set(current)
+      let folder = parentPath(path)
+      while (folder) { next.add(folder); folder = parentPath(folder) }
+      return next
+    })
+    void openNote(path, disposition)
   }
 
   function showContextMenu(entry: TreeNode, event: MouseEvent) {
@@ -1032,16 +1163,19 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
           {noteLoading && <p className="text-sm text-zinc-400">Loading note…</p>}
           {noteError && <ErrorMessage>{noteError}</ErrorMessage>}
 		  {saveError && <ErrorMessage>{saveStatus === 'conflict' ? 'This note changed elsewhere. Your version is still preserved in this editor and has not overwritten the other version. Review both versions before choosing the result.' : `This note could not be saved on the RepoQuill server. Your current editor content is still visible. Try saving again before leaving the note. Details: ${saveError}`}</ErrorMessage>}
-          {!noteLoading && note && <Suspense fallback={<p className="text-sm text-zinc-400">Loading editor…</p>}><MarkdownEditor key={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} documentKey={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} notePath={note.path} markdown={note.content} readOnly={readOnly} onChange={updateDraft} /></Suspense>}
+          {!noteLoading && note && <Suspense fallback={<p className="text-sm text-zinc-400">Loading editor…</p>}><MarkdownEditor key={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} documentKey={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} notePath={note.path} markdown={note.content} readOnly={readOnly} onChange={updateDraft} notePaths={markdownPaths(entries)} onOpenNoteLink={openInternalNoteLink} /></Suspense>}
         </article>
 		{selectedPath && note && <DocumentStatusBar status={saveStatus} gitStatus={gitStatus} gitSyncing={gitSyncing} markdown={note.content} onOpenSyncDetails={() => setSyncDetailsOpen(true)} />}
       </main>
       {contextMenu && <div className="fixed inset-0 z-40" onClick={() => setContextMenu(undefined)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined) }}><div className="fixed" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><ActionMenu entry={contextMenu.entry} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={(entry) => { setContextMenu(undefined); void deleteEntry(entry) }} /></div></div>}
       {moveEntry && <FolderPicker entries={entries} notebookName={notebookName} moving={moveEntry} destination={moveDestination} onDestination={setMoveDestination} onCancel={() => setMoveEntry(undefined)} onConfirm={() => void confirmMove()} />}
+      {moveLinkPreview && <MoveLinkPreviewDialog preview={moveLinkPreview.preview} onCancel={() => setMoveLinkPreview(undefined)} onConfirm={() => void confirmMoveLinkRewrites()} />}
       {settingsOpen && <SettingsDialog mode="settings" authMode={authMode} runningVersion={runningVersion} onLoggedOut={onLoggedOut} autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} syncPreferences={syncPreferences} onSyncPreferences={setSyncPreferences} onClose={() => setSettingsOpen(false)} />}
       {addNotebookOpen && <SettingsDialog mode="onboarding" autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} onNotebookAdded={async () => { await activateClonedNotebook(); setAddNotebookOpen(false) }} onClose={() => setAddNotebookOpen(false)} />}
       {manageNotebooksOpen && <ManageNotebooksDialog notebooks={notebooks} activeNotebookID={activeNotebookID} onRemoved={loadNotebooks} onClose={() => setManageNotebooksOpen(false)} />}
-	  {syncDetailsOpen && <SynchronizationDetailsPanel saveStatus={saveStatus} gitStatus={gitStatus} syncing={gitSyncing} browserOnline={browserOnline && health !== 'offline'} lastSuccessfulSyncAt={lastSuccessfulSyncAt} lastSyncAttemptAt={lastSyncAttemptAt} lastSyncError={lastSyncError} nextScheduledSyncAt={nextScheduledSyncAt} receivedChanges={receivedChanges} onSync={() => void syncRepository()} onOpenNote={(path) => void openNote(path, 'new')} onOpenSettings={() => { setSyncDetailsOpen(false); setSettingsOpen(true) }} onCheckConnection={() => { setSyncDetailsOpen(false); setManageNotebooksOpen(true) }} onClose={() => setSyncDetailsOpen(false)} />}
+	  {syncDetailsOpen && <SynchronizationDetailsPanel saveStatus={saveStatus} gitStatus={gitStatus} syncing={gitSyncing} browserOnline={browserOnline && health !== 'offline'} lastSuccessfulSyncAt={lastSuccessfulSyncAt} lastSyncAttemptAt={lastSyncAttemptAt} lastSyncError={lastSyncError} nextScheduledSyncAt={nextScheduledSyncAt} receivedChanges={receivedChanges} onSync={() => void syncRepository()} onReviewConflicts={() => void openConflictAssistant()} conflictLoading={conflictLoading} conflictError={conflictError} onOpenNote={(path) => void openNote(path, 'new')} onOpenSettings={() => { setSyncDetailsOpen(false); setSettingsOpen(true) }} onCheckConnection={() => { setSyncDetailsOpen(false); setManageNotebooksOpen(true) }} onClose={() => setSyncDetailsOpen(false)} />}
+	  {conflictOverview && <ConflictResolutionDialog overview={conflictOverview} busy={conflictLoading} error={conflictError} notePaths={markdownPaths(entries)} onPostpone={() => setConflictOverview(undefined)} onApply={(decisions) => void applyConflictResolution(conflictOverview.token,decisions)} />}
+	  {saveConflict && <ConflictResolutionDialog overview={saveConflict.overview} busy={conflictLoading} error={conflictError} notePaths={markdownPaths(entries)} onPostpone={() => setSaveConflict(undefined)} onApply={(decisions) => void applySaveConflict(decisions)} />}
       {historyPath && note?.path === historyPath && <NoteHistoryDialog notePath={historyPath} currentContent={note.content} onRestore={restoreNoteVersion} onClose={() => setHistoryPath(undefined)} />}
       {trashOpen && <TrashDialog onChanged={loadTree} onClose={() => setTrashOpen(false)} />}
     </div>
@@ -1462,6 +1596,12 @@ function MenuButton({ children, danger, onClick }: { children: ReactNode; danger
   return <button type="button" role="menuitem" onClick={onClick} className={`block w-full rounded px-3 py-2 text-left text-sm ${danger ? 'text-red-300 hover:bg-red-950' : 'text-zinc-200 hover:bg-zinc-800'}`}>{children}</button>
 }
 
+function MoveLinkPreviewDialog({ preview, onCancel, onConfirm }: { preview:MoveLinkPreview; onCancel:()=>void; onConfirm:()=>void }) {
+  const grouped = new Map<string,LinkRewrite[]>()
+  for (const rewrite of preview.rewrites) grouped.set(rewrite.notePath, [...(grouped.get(rewrite.notePath) ?? []), rewrite])
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}><section role="dialog" aria-modal="true" aria-labelledby="move-links-title" className="flex max-h-[92vh] w-full max-w-3xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="border-b border-zinc-800 px-4 py-3 sm:px-5"><h2 id="move-links-title" className="text-lg font-semibold">Update note links?</h2><p className="mt-1 text-sm text-zinc-400">Moving <span className="text-zinc-200">{preview.source}</span> to <span className="text-zinc-200">{preview.target}</span> requires {preview.rewrites.length} portable Markdown link {preview.rewrites.length === 1 ? 'update' : 'updates'}.</p></header><div className="min-h-0 overflow-y-auto p-4 sm:p-5"><p className="mb-4 text-sm leading-6 text-zinc-400">Review the exact changes below. RepoQuill will stop if any note changed after this preview, and will never guess about unsupported or ambiguous Markdown.</p><div className="space-y-3">{[...grouped.entries()].map(([notePath,rewrites]) => <section key={notePath} className="rounded-lg border border-zinc-800 bg-zinc-950 p-3"><h3 className="text-sm font-medium text-zinc-200">{notePath}{rewrites[0].nextNotePath !== notePath && <span className="text-zinc-500"> → {rewrites[0].nextNotePath}</span>}</h3><ul className="mt-2 space-y-2">{rewrites.map((rewrite,index) => <li key={`${rewrite.line}:${index}`} className="text-xs"><span className="text-zinc-500">Line {rewrite.line}</span><div className="mt-1 break-all font-mono text-red-300">− {rewrite.before}</div><div className="break-all font-mono text-emerald-300">+ {rewrite.after}</div></li>)}</ul></section>)}</div></div><footer className="flex flex-wrap justify-end gap-2 border-t border-zinc-800 p-4"><button type="button" onClick={onCancel} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Cancel move</button><button type="button" onClick={onConfirm} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400">Move and update links</button></footer></section></div>
+}
+
 function FolderPicker({ entries, notebookName, moving, destination, onDestination, onCancel, onConfirm }: { entries: TreeNode[]; notebookName: string; moving: TreeNode; destination: string; onDestination: (path: string) => void; onCancel: () => void; onConfirm: () => void }) {
   const folders = flattenFolders(entries).filter(({ node }) => moving.type !== 'directory' || (node.path !== moving.path && !node.path.startsWith(`${moving.path}/`)))
   const unchanged = parentPath(moving.path) === destination
@@ -1660,11 +1800,40 @@ function ReceivedChangesNotice({ changes, onOpen, onDismiss }: { changes:Receive
 	return <section role="status" aria-label="New notebook changes received" className="border-b border-sky-900/60 bg-sky-950/20 px-4 py-2 text-xs text-zinc-200 sm:px-8"><div className="flex items-center justify-between gap-3"><span><strong>New changes were received.</strong> {summary}.</span><button type="button" onClick={onDismiss} aria-label="Dismiss received changes" className="min-h-9 min-w-9 rounded text-zinc-500 hover:bg-zinc-800">×</button></div><ul className="mt-1 flex flex-wrap gap-1.5">{changes.slice(0, 6).map((change) => <li key={`${change.kind}:${change.fromPath ?? ''}:${change.path}`}>{change.kind !== 'deleted' && change.path.toLowerCase().endsWith('.md') ? <button type="button" onClick={() => onOpen(change.path)} title="Open in a note tab" className="min-h-8 rounded border border-zinc-700 px-2 text-zinc-300 hover:bg-zinc-800">{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</button> : <span className="inline-flex min-h-8 items-center rounded border border-zinc-800 px-2 text-zinc-500">{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</span>}</li>)}</ul></section>
 }
 
-function SynchronizationDetailsPanel({ saveStatus, gitStatus, syncing, browserOnline, lastSuccessfulSyncAt, lastSyncAttemptAt, lastSyncError, nextScheduledSyncAt, receivedChanges, onSync, onOpenNote, onOpenSettings, onCheckConnection, onClose }: { saveStatus:SaveStatus; gitStatus:GitStatus; syncing:boolean; browserOnline:boolean; lastSuccessfulSyncAt?:string; lastSyncAttemptAt?:string; lastSyncError?:string; nextScheduledSyncAt?:string; receivedChanges:ReceivedChange[]; onSync:()=>void; onOpenNote:(path:string)=>void; onOpenSettings:()=>void; onCheckConnection:()=>void; onClose:()=>void }) {
+function SynchronizationDetailsPanel({ saveStatus, gitStatus, syncing, browserOnline, lastSuccessfulSyncAt, lastSyncAttemptAt, lastSyncError, nextScheduledSyncAt, receivedChanges, onSync, onReviewConflicts, conflictLoading, conflictError, onOpenNote, onOpenSettings, onCheckConnection, onClose }: { saveStatus:SaveStatus; gitStatus:GitStatus; syncing:boolean; browserOnline:boolean; lastSuccessfulSyncAt?:string; lastSyncAttemptAt?:string; lastSyncError?:string; nextScheduledSyncAt?:string; receivedChanges:ReceivedChange[]; onSync:()=>void; onReviewConflicts:()=>void; conflictLoading:boolean; conflictError?:string; onOpenNote:(path:string)=>void; onOpenSettings:()=>void; onCheckConnection:()=>void; onClose:()=>void }) {
 	const presentation = synchronizationPresentation(gitStatus, syncing)
 	const locallySafe = saveStatus === 'saved'
-	return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="sync-details-title" className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between border-b border-zinc-800 px-5 py-4"><div><h2 id="sync-details-title" className="text-lg font-semibold">Synchronization</h2><p className="mt-1 text-xs text-zinc-500">Notebook save and connection details</p></div><button type="button" onClick={onClose} aria-label="Close synchronization details" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header><div className="overflow-y-auto p-5"><div role="status" className={`rounded-lg border p-4 ${presentation.attention ? 'border-amber-800/70 bg-amber-950/20' : 'border-zinc-800 bg-zinc-950/30'}`}><p className="font-medium text-zinc-100">{presentation.label}</p><p className="mt-2 text-sm leading-6 text-zinc-300">{presentation.happened}</p><p className="mt-2 text-sm leading-6 text-zinc-400"><strong className="text-zinc-300">Your notes:</strong> {presentation.safety}</p><p className="mt-2 text-sm leading-6 text-zinc-400"><strong className="text-zinc-300">Next:</strong> {presentation.next}</p></div><dl className="mt-4 grid gap-2 text-sm sm:grid-cols-2"><StatusDetail label="Saved on this server" value={locallySafe ? 'Yes' : saveStatus === 'saving' ? 'Saving…' : saveStatus === 'unsaved' ? 'Not yet' : 'Needs attention'} /><StatusDetail label="RepoQuill server" value={browserOnline ? 'Reachable' : 'Offline or unavailable'} /><StatusDetail label="Connected service" value={gitStatus.state === 'sync_failed' || gitStatus.state === 'invalid' ? 'Connection needs attention' : 'Available'} /><StatusDetail label="Synchronization" value={presentation.label} /><StatusDetail label="Last successful synchronization" value={formatStatusTime(lastSuccessfulSyncAt)} /><StatusDetail label="Next scheduled attempt" value={formatStatusTime(nextScheduledSyncAt, 'Not scheduled')} /></dl>{receivedChanges.length > 0 && <section className="mt-5"><h3 className="text-sm font-medium text-zinc-200">Recently received changes</h3><ul className="mt-2 space-y-1">{receivedChanges.map((change) => <li key={`${change.kind}:${change.fromPath ?? ''}:${change.path}`} className="flex min-h-10 items-center justify-between gap-2 rounded border border-zinc-800 px-3 text-xs"><span className="min-w-0 truncate text-zinc-400"><span className="mr-2 capitalize text-zinc-300">{change.kind}</span>{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</span>{change.kind !== 'deleted' && change.path.toLowerCase().endsWith('.md') && <button type="button" onClick={() => onOpenNote(change.path)} className="shrink-0 rounded px-2 py-1.5 text-amber-300 hover:bg-zinc-800">Open in tab</button>}</li>)}</ul></section>}{(gitStatus.state === 'conflict' || gitStatus.state === 'diverged') && <section className="mt-5 rounded border border-amber-800/60 p-3"><h3 className="text-sm font-medium text-amber-200">Changes need your review</h3><p className="mt-1 text-xs leading-5 text-zinc-400">Automatic synchronization stays paused. RepoQuill has not silently selected either version.</p>{gitStatus.conflictFiles?.length ? <ul className="mt-2 space-y-1 text-xs text-zinc-300">{gitStatus.conflictFiles.map((path) => <li key={path} className="flex items-center justify-between gap-2 rounded border border-zinc-800 px-3 py-2"><span className="min-w-0 truncate">{path}</span>{path.toLowerCase().endsWith('.md') && <button type="button" onClick={() => onOpenNote(path)} className="shrink-0 rounded px-2 py-1.5 text-amber-300 hover:bg-zinc-800">Review changes</button>}</li>)}</ul> : null}</section>}<div className="mt-5 flex flex-wrap gap-2"><button type="button" disabled={syncing || !browserOnline || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict' || gitStatus.state === 'conflict' || gitStatus.state === 'diverged'} onClick={onSync} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 disabled:opacity-40">{syncing ? 'Synchronizing…' : gitStatus.state === 'sync_failed' ? 'Retry synchronization' : 'Sync now'}</button>{(gitStatus.state === 'sync_failed' || gitStatus.state === 'invalid') && <button type="button" onClick={onCheckConnection} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Check connection</button>}<button type="button" onClick={onOpenSettings} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Open notebook settings</button></div><details className="mt-5 rounded border border-zinc-800 p-3 text-xs text-zinc-500"><summary className="cursor-pointer text-zinc-400">Technical details</summary><dl className="mt-3 grid gap-2"><StatusDetail label="Branch" value={gitStatus.branch || 'Unavailable'} /><StatusDetail label="Local commits ahead" value={String(gitStatus.ahead ?? 0)} /><StatusDetail label="Remote commits behind" value={String(gitStatus.behind ?? 0)} /><StatusDetail label="Last attempt" value={formatStatusTime(lastSyncAttemptAt)} />{(lastSyncError || gitStatus.message) && <StatusDetail label="Sanitized diagnostic" value={lastSyncError || gitStatus.message || ''} />}</dl></details></div></section></div>
+	return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="sync-details-title" className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between border-b border-zinc-800 px-5 py-4"><div><h2 id="sync-details-title" className="text-lg font-semibold">Synchronization</h2><p className="mt-1 text-xs text-zinc-500">Notebook save and connection details</p></div><button type="button" onClick={onClose} aria-label="Close synchronization details" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header><div className="overflow-y-auto p-5"><div role="status" className={`rounded-lg border p-4 ${presentation.attention ? 'border-amber-800/70 bg-amber-950/20' : 'border-zinc-800 bg-zinc-950/30'}`}><p className="font-medium text-zinc-100">{presentation.label}</p><p className="mt-2 text-sm leading-6 text-zinc-300">{presentation.happened}</p><p className="mt-2 text-sm leading-6 text-zinc-400"><strong className="text-zinc-300">Your notes:</strong> {presentation.safety}</p><p className="mt-2 text-sm leading-6 text-zinc-400"><strong className="text-zinc-300">Next:</strong> {presentation.next}</p></div><dl className="mt-4 grid gap-2 text-sm sm:grid-cols-2"><StatusDetail label="Saved on this server" value={locallySafe ? 'Yes' : saveStatus === 'saving' ? 'Saving…' : saveStatus === 'unsaved' ? 'Not yet' : 'Needs attention'} /><StatusDetail label="RepoQuill server" value={browserOnline ? 'Reachable' : 'Offline or unavailable'} /><StatusDetail label="Connected service" value={gitStatus.state === 'sync_failed' || gitStatus.state === 'invalid' ? 'Connection needs attention' : 'Available'} /><StatusDetail label="Synchronization" value={presentation.label} /><StatusDetail label="Last successful synchronization" value={formatStatusTime(lastSuccessfulSyncAt)} /><StatusDetail label="Next scheduled attempt" value={formatStatusTime(nextScheduledSyncAt, 'Not scheduled')} /></dl>{receivedChanges.length > 0 && <section className="mt-5"><h3 className="text-sm font-medium text-zinc-200">Recently received changes</h3><ul className="mt-2 space-y-1">{receivedChanges.map((change) => <li key={`${change.kind}:${change.fromPath ?? ''}:${change.path}`} className="flex min-h-10 items-center justify-between gap-2 rounded border border-zinc-800 px-3 text-xs"><span className="min-w-0 truncate text-zinc-400"><span className="mr-2 capitalize text-zinc-300">{change.kind}</span>{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</span>{change.kind !== 'deleted' && change.path.toLowerCase().endsWith('.md') && <button type="button" onClick={() => onOpenNote(change.path)} className="shrink-0 rounded px-2 py-1.5 text-amber-300 hover:bg-zinc-800">Open in tab</button>}</li>)}</ul></section>}{(gitStatus.state === 'conflict' || gitStatus.state === 'diverged') && <section className="mt-5 rounded border border-amber-800/60 p-3"><h3 className="text-sm font-medium text-amber-200">Changes need your review</h3><p className="mt-1 text-xs leading-5 text-zinc-400">Automatic synchronization stays paused. RepoQuill has not silently selected either version.</p>{gitStatus.conflictFiles?.length ? <ul className="mt-2 space-y-1 text-xs text-zinc-300">{gitStatus.conflictFiles.map((path) => <li key={path} className="rounded border border-zinc-800 px-3 py-2"><span className="min-w-0 truncate">{path}</span></li>)}</ul> : null}<button type="button" disabled={conflictLoading} onClick={onReviewConflicts} className="mt-3 min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 disabled:opacity-40">{conflictLoading ? 'Loading preserved versions…' : 'Review affected items'}</button>{conflictError && <p role="alert" className="mt-2 text-xs text-red-300">{conflictError}</p>}</section>}<div className="mt-5 flex flex-wrap gap-2"><button type="button" disabled={syncing || !browserOnline || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict' || gitStatus.state === 'conflict' || gitStatus.state === 'diverged'} onClick={onSync} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 disabled:opacity-40">{syncing ? 'Synchronizing…' : gitStatus.state === 'sync_failed' ? 'Retry synchronization' : 'Sync now'}</button>{(gitStatus.state === 'sync_failed' || gitStatus.state === 'invalid') && <button type="button" onClick={onCheckConnection} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Check connection</button>}<button type="button" onClick={onOpenSettings} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Open notebook settings</button></div><details className="mt-5 rounded border border-zinc-800 p-3 text-xs text-zinc-500"><summary className="cursor-pointer text-zinc-400">Technical details</summary><dl className="mt-3 grid gap-2"><StatusDetail label="Branch" value={gitStatus.branch || 'Unavailable'} /><StatusDetail label="Local commits ahead" value={String(gitStatus.ahead ?? 0)} /><StatusDetail label="Remote commits behind" value={String(gitStatus.behind ?? 0)} /><StatusDetail label="Last attempt" value={formatStatusTime(lastSyncAttemptAt)} />{(lastSyncError || gitStatus.message) && <StatusDetail label="Sanitized diagnostic" value={lastSyncError || gitStatus.message || ''} />}</dl></details></div></section></div>
 }
+
+function ConflictResolutionDialog({ overview, busy, error, notePaths, onPostpone, onApply }: { overview:ConflictOverview; busy:boolean; error?:string; notePaths:string[]; onPostpone:()=>void; onApply:(decisions:ConflictDecision[])=>void }) {
+	const storageKey = `repoquill:conflict-decisions:${overview.token}`
+	const [activePath,setActivePath] = useState(overview.items[0]?.path ?? '')
+	const [decisions,setDecisions] = useState<Record<string,ConflictDecision>>(() => {
+		try {
+			const saved = JSON.parse(localStorage.getItem(storageKey) ?? '{}') as Record<string,ConflictDecision>
+			if (saved && typeof saved === 'object') return saved
+		} catch { /* begin with conservative defaults */ }
+		const defaults:Record<string,ConflictDecision> = {}
+		for (const item of overview.items) {
+			if (item.kind === 'modify_delete') defaults[item.path] = { path:item.path,action:item.yourExists ? 'keep_note' : item.otherExists ? 'use_other' : 'confirm_deletion' }
+		}
+		return defaults
+	})
+	useEffect(() => { localStorage.setItem(storageKey,JSON.stringify(decisions)) },[decisions,storageKey])
+	const item = overview.items.find((candidate) => candidate.path === activePath) ?? overview.items[0]
+	const decision = item ? decisions[item.path] : undefined
+	const complete = overview.items.length > 0 && overview.items.every((candidate) => Boolean(decisions[candidate.path]))
+	function choose(action:string, content?:string) {
+		if (!item) return
+		setDecisions((current) => ({ ...current,[item.path]:{ path:item.path,action,...(content !== undefined ? { content } : {}) } }))
+	}
+	return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-2 sm:p-4"><section role="dialog" aria-modal="true" aria-labelledby="conflict-title" className="flex h-[95vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="border-b border-zinc-800 px-4 py-3 sm:px-5"><h2 id="conflict-title" className="text-lg font-semibold text-zinc-100">Choose the resulting content</h2><p className="mt-1 text-sm text-zinc-400">Two versions overlap. RepoQuill preserved both and paused synchronization. Review every affected item before anything is changed.</p></header><div className="grid min-h-0 flex-1 md:grid-cols-[16rem_1fr]"><nav aria-label="Affected notebook items" className="max-h-48 overflow-y-auto border-b border-zinc-800 p-2 md:max-h-none md:border-b-0 md:border-r"><p className="px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-500">Affected items ({overview.items.length})</p>{overview.items.map((candidate) => <button key={candidate.path} type="button" onClick={()=>setActivePath(candidate.path)} className={`mt-1 flex min-h-11 w-full items-center justify-between gap-2 rounded px-2 text-left text-sm ${candidate.path===item?.path?'bg-amber-400/15 text-amber-100':'text-zinc-300 hover:bg-zinc-800'}`}><span className="min-w-0 truncate">{candidate.path}</span><span aria-label={decisions[candidate.path]?'Decision selected':'Decision required'}>{decisions[candidate.path]?'✓':'!'}</span></button>)}</nav>{item && <main className="min-h-0 overflow-y-auto p-3 sm:p-5"><h3 className="break-all font-medium text-zinc-100">{item.path}</h3>{item.kind === 'markdown' && <><div className="mt-4 grid gap-3 lg:grid-cols-2"><VersionCard title="Your version" exists={item.yourExists} content={item.yourContent} /><VersionCard title="Other version" exists={item.otherExists} content={item.otherContent} /></div><details className="mt-3 rounded border border-zinc-800 p-3"><summary className="cursor-pointer text-sm text-zinc-300">Readable text comparison</summary><div className="mt-3 max-h-72 overflow-auto rounded bg-zinc-950 p-3 font-mono text-xs">{readableNoteDiff(item.otherContent ?? '',item.yourContent ?? '').map((line,index)=><div key={index} className={line.kind==='added'?'bg-emerald-950/40 text-emerald-200':line.kind==='removed'?'bg-red-950/40 text-red-200':'text-zinc-500'}><span aria-hidden="true" className="mr-2">{line.kind==='added'?'+':line.kind==='removed'?'−':' '}</span>{line.text || ' '}</div>)}</div></details><div className="mt-4 flex flex-wrap gap-2">{item.yourExists && <DecisionButton selected={decision?.action==='use_yours'} onClick={()=>choose('use_yours')}>Use your version</DecisionButton>}{item.otherExists && <DecisionButton selected={decision?.action==='use_other'} onClick={()=>choose('use_other')}>Use other version</DecisionButton>}{item.yourExists && item.otherExists && <DecisionButton selected={decision?.action==='edit_combined'} onClick={()=>choose('edit_combined',decision?.content ?? item.yourContent ?? '')}>Edit combined version</DecisionButton>}</div>{decision?.action==='edit_combined' && <div className="mt-4 rounded-lg border border-amber-800/50 p-3"><p className="mb-3 text-sm text-zinc-300">Combined result — this is the content that will be saved.</p><Suspense fallback={<p className="text-sm text-zinc-500">Loading editor…</p>}><MarkdownEditor documentKey={`conflict:${overview.token}:${item.path}`} notePath={item.path} markdown={decision.content ?? ''} readOnly={false} notePaths={notePaths} onChange={(content)=>choose('edit_combined',content)} /></Suspense></div>}</>}{item.kind === 'modify_delete' && <><p className="mt-4 rounded border border-amber-900/60 bg-amber-950/20 p-3 text-sm leading-6 text-zinc-300">{item.yourExists||item.otherExists?'One side kept this item while the other removed it. Keeping the available note or file is the safe default.':'This is an earlier path from an overlapping rename. The renamed copies remain listed separately; removing this obsolete path does not delete either renamed copy.'}</p><div className="mt-4 flex flex-wrap gap-2">{(item.yourExists||item.otherExists)&&<DecisionButton selected={decision?.action==='keep_note'||decision?.action==='use_other'} onClick={()=>choose(item.yourExists?'keep_note':'use_other')}>Keep {item.path.toLowerCase().endsWith('.md')?'note':'file'}</DecisionButton>}<DecisionButton danger selected={decision?.action==='confirm_deletion'} onClick={()=>choose('confirm_deletion')}>Confirm deletion</DecisionButton></div></>}{item.kind === 'image' && <><div className="mt-4 grid gap-3 sm:grid-cols-2"><ImageVersion title="Your image" path={item.path} side="yours" /><ImageVersion title="Other image" path={item.path} side="other" /></div><div className="mt-4 flex flex-wrap gap-2"><DecisionButton selected={decision?.action==='use_yours'} onClick={()=>choose('use_yours')}>Use your image</DecisionButton><DecisionButton selected={decision?.action==='use_other'} onClick={()=>choose('use_other')}>Use other image</DecisionButton><DecisionButton selected={decision?.action==='keep_both'} onClick={()=>choose('keep_both')}>Keep both</DecisionButton></div></>}{item.kind === 'binary' && <><p className="mt-4 text-sm text-zinc-400">This file cannot be compared as text. Choose which complete file should remain.</p><div className="mt-4 flex gap-2"><DecisionButton selected={decision?.action==='use_yours'} onClick={()=>choose('use_yours')}>Use your file</DecisionButton><DecisionButton selected={decision?.action==='use_other'} onClick={()=>choose('use_other')}>Use other file</DecisionButton></div></>}</main>}</div><footer className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800 p-3 sm:px-5"><div>{error && <p role="alert" className="text-sm text-red-300">{error}</p>}<p className="text-xs text-zinc-500">You can postpone safely; Git keeps both source versions.</p></div><div className="flex gap-2"><button type="button" disabled={busy} onClick={onPostpone} className="min-h-10 rounded border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Postpone</button><button type="button" disabled={busy||!complete} onClick={()=>onApply(overview.items.map((candidate)=>decisions[candidate.path]))} className="min-h-10 rounded bg-amber-500 px-4 text-sm font-medium text-zinc-950 disabled:opacity-40">{busy?'Revalidating and applying…':'Review complete — apply'}</button></div></footer></section></div>
+}
+
+function VersionCard({ title,exists,content }: { title:string; exists:boolean; content?:string }) { return <section className="rounded border border-zinc-800 bg-zinc-950/50 p-3"><h4 className="text-sm font-medium text-zinc-200">{title}</h4>{exists?<pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-zinc-400">{content}</pre>:<p className="mt-2 text-xs text-zinc-500">This version removed the note.</p>}</section> }
+function ImageVersion({ title,path,side }: { title:string; path:string; side:'yours'|'other' }) { return <section className="rounded border border-zinc-800 bg-zinc-950/50 p-3"><h4 className="text-sm font-medium text-zinc-200">{title}</h4><img src={`/api/repository/git/conflict-version?path=${encodeURIComponent(path)}&side=${side}`} alt={`${title} for ${path}`} className="mt-3 max-h-80 w-full object-contain" /></section> }
+function DecisionButton({ children,selected,danger=false,onClick }: { children:ReactNode; selected:boolean; danger?:boolean; onClick:()=>void }) { return <button type="button" aria-pressed={selected} onClick={onClick} className={`min-h-11 rounded border px-4 text-sm ${selected?'border-amber-500 bg-amber-400/15 text-amber-100':danger?'border-red-900 text-red-300 hover:bg-red-950/40':'border-zinc-700 text-zinc-300 hover:bg-zinc-800'}`}>{children}</button> }
 
 function StatusDetail({ label, value }: { label:string; value:string }) { return <div className="rounded border border-zinc-800 p-3"><dt className="text-[11px] uppercase tracking-wide text-zinc-600">{label}</dt><dd className="mt-1 break-words text-xs text-zinc-300">{value}</dd></div> }
 function formatStatusTime(value?:string, fallback='Not yet'):string { if (!value) return fallback; const date=new Date(value); return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString() }

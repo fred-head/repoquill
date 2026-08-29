@@ -54,6 +54,8 @@ type resolvedTrashItem struct {
 func (r *Repository) MoveToTrash(relative string) (TrashItem, error) {
 	r.trashMu.Lock()
 	defer r.trashMu.Unlock()
+	r.contentMu.Lock()
+	defer r.contentMu.Unlock()
 
 	source, info, err := r.resolveEntry(relative)
 	if err != nil {
@@ -183,6 +185,8 @@ func (r *Repository) TrashItems() ([]TrashItem, error) {
 func (r *Repository) RestoreTrashItem(id string) (TrashItem, error) {
 	r.trashMu.Lock()
 	defer r.trashMu.Unlock()
+	r.contentMu.Lock()
+	defer r.contentMu.Unlock()
 
 	item, err := r.loadTrashItem(id)
 	if err != nil {
