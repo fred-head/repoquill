@@ -36,6 +36,7 @@ describe('Settings asset cleanup', () => {
     fireEvent.click(view.getByRole('button', { name: 'Test connection' }))
     await waitFor(() => expect(view.getByText('Connection successful')).toBeTruthy())
     fireEvent.click(view.getByRole('button', { name: 'Continue' }))
+    expect(view.getByText('example.test')).toBeTruthy()
     fireEvent.click(view.getByRole('button', { name: 'Connect notebook' }))
     await waitFor(() => expect(onNotebookAdded).toHaveBeenCalledTimes(1))
     expect(onClose).toHaveBeenCalledTimes(1)
