@@ -722,6 +722,14 @@ func TestInactiveLegacyNotebookCanBeUnregisteredWithoutDeletingFiles(t *testing.
 		t.Fatalf("active notebook removal was not blocked: %d %s", activeRemoval.Code, activeRemoval.Body.String())
 	}
 
+	rename := httptest.NewRecorder()
+	renameRequest := httptest.NewRequest(http.MethodPatch, "/api/notebooks/local", strings.NewReader(`{"name":"Archive"}`))
+	renameRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rename, renameRequest)
+	if rename.Code != http.StatusOK || !strings.Contains(rename.Body.String(), `"name":"Archive"`) {
+		t.Fatalf("inactive notebook rename failed: %d %s", rename.Code, rename.Body.String())
+	}
+
 	removal := httptest.NewRecorder()
 	handler.ServeHTTP(removal, httptest.NewRequest(http.MethodDelete, "/api/notebooks/local", nil))
 	if removal.Code != http.StatusNoContent {
@@ -736,6 +744,51 @@ func TestInactiveLegacyNotebookCanBeUnregisteredWithoutDeletingFiles(t *testing.
 	}
 	if len(registry.Entries) != 1 || registry.Entries[0].ID != "active" {
 		t.Fatalf("unexpected registry after removal: %#v", registry)
+	}
+}
+
+func TestInactiveNotebookLocalDeletionRequiresExactNameAndConfinedWorkingTree(t *testing.T) {
+	dataRoot := t.TempDir()
+	notebookBase := filepath.Join(dataRoot, "notebooks")
+	workingTree := filepath.Join(notebookBase, "archive")
+	activeRoot := filepath.Join(notebookBase, "active")
+	if err := os.MkdirAll(workingTree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(dataRoot, "app", "notebooks.json")
+	if err := writeNotebookRegistry(metadataPath, notebookRegistry{ActiveID: "active", Entries: []notebookRecord{{ID: "archive", Name: "Archive", LocalPath: workingTree}, {ID: "active", Name: "Active", LocalPath: activeRoot}}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadataPath)
+	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", notebookBase)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	denied := httptest.NewRecorder()
+	deniedRequest := httptest.NewRequest(http.MethodDelete, "/api/notebooks/archive?deleteLocal=true", strings.NewReader(`{"confirmation":"wrong"}`))
+	deniedRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(denied, deniedRequest)
+	if denied.Code != http.StatusBadRequest {
+		t.Fatalf("weak confirmation accepted: %d %s", denied.Code, denied.Body.String())
+	}
+	if _, err := os.Stat(workingTree); err != nil {
+		t.Fatalf("working tree changed after rejected confirmation: %v", err)
+	}
+
+	deleted := httptest.NewRecorder()
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/notebooks/archive?deleteLocal=true", strings.NewReader(`{"confirmation":"Archive"}`))
+	deleteRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(deleted, deleteRequest)
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("confirmed local deletion failed: %d %s", deleted.Code, deleted.Body.String())
+	}
+	if _, err := os.Stat(workingTree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("working tree still exists: %v", err)
 	}
 }
 
@@ -1249,6 +1302,8 @@ func TestEveryApplicationAPIRouteDeniesUnauthenticatedAccess(t *testing.T) {
 		{http.MethodGet, "/api/notebook"},
 		{http.MethodGet, "/api/notebooks"},
 		{http.MethodPost, "/api/notebooks/example/activate"},
+		{http.MethodPatch, "/api/notebooks/example"},
+		{http.MethodGet, "/api/notebooks/example/health"},
 		{http.MethodDelete, "/api/notebooks/example"},
 		{http.MethodGet, "/api/repository/tree"},
 		{http.MethodGet, "/api/repository/search?q=secret"},
