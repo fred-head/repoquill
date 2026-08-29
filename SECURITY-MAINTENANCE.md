@@ -51,8 +51,7 @@ For every dependency pull request:
    CodeQL, container build, Trivy, and runtime/persistence smoke tests.
 6. For changes affecting authentication, session handling, MFA, cryptography,
    persistence, Git credentials, or PWA sessions, also run the dedicated
-   Milestone 19 unit, integration, adversarial, expiry, recovery, and PWA tests
-   once those controls exist.
+   Milestone 19 unit, integration, adversarial, expiry, recovery, and PWA tests.
 7. Perform focused manual behavior testing when an update can change editor
    serialization, PWA caching, Git operations, persistence, authentication, or
    browser compatibility.

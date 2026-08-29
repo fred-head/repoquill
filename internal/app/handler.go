@@ -133,6 +133,15 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		defer activeMu.RUnlock()
 		return activeNotebookName
 	}
+	currentNotebookID := func() string {
+		activeMu.RLock()
+		defer activeMu.RUnlock()
+		if activeRecord.ID != "" {
+			return activeRecord.ID
+		}
+		return "local"
+	}
+	presentationStore := newImagePresentationStore(metadataPath)
 
 	mux := http.NewServeMux()
 	beginCredentialAttempt := func(w http.ResponseWriter, r *http.Request, operation string) (netip.Addr, func(), bool) {
@@ -923,6 +932,9 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeRepositoryError(w, err)
 				return
 			}
+			if err := presentationStore.move(currentNotebookID(), input.Source, input.Target); err != nil {
+				logger.Warn("move image presentation metadata failed", "error", err)
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"path": input.Target, "rewrites": []files.LinkRewrite{}})
 			return
 		}
@@ -930,6 +942,9 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		if err != nil {
 			writeRepositoryError(w, err)
 			return
+		}
+		if err := presentationStore.move(currentNotebookID(), input.Source, input.Target); err != nil {
+			logger.Warn("move image presentation metadata failed", "error", err)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"path": input.Target, "rewrites": preview.Rewrites})
 	})
@@ -961,6 +976,9 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		if err != nil {
 			writeRepositoryError(w, err)
 			return
+		}
+		if err := presentationStore.deletePath(currentNotebookID(), item.OriginalPath); err != nil {
+			logger.Warn("delete image presentation metadata failed", "error", err)
 		}
 		writeJSON(w, http.StatusOK, item)
 	})
@@ -1021,6 +1039,64 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(asset.Content)
+	})
+	mux.HandleFunc("GET /api/repository/image-presentations", func(w http.ResponseWriter, r *http.Request) {
+		note := r.URL.Query().Get("note")
+		if _, err := currentRepository().ReadMarkdown(note); err != nil {
+			writeRepositoryError(w, err)
+			return
+		}
+		presentations, err := presentationStore.list(currentNotebookID(), note)
+		if err != nil {
+			logger.Warn("read image presentation metadata failed", "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "image presentation settings are unavailable"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"presentations": presentations})
+	})
+	mux.HandleFunc("PUT /api/repository/image-presentation", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Note          string                `json:"note"`
+			Image         string                `json:"image"`
+			Size          imagePresentationSize `json:"size"`
+			PreviousImage string                `json:"previousImage"`
+		}
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		if !input.Size.valid() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "image size must be small, medium, large, or full"})
+			return
+		}
+		if _, err := currentRepository().ReadAsset(input.Note, input.Image); err != nil {
+			writeRepositoryError(w, err)
+			return
+		}
+		if input.PreviousImage != "" {
+			if _, err := currentRepository().ReadAsset(input.Note, input.PreviousImage); err != nil {
+				writeRepositoryError(w, err)
+				return
+			}
+		}
+		if err := presentationStore.set(currentNotebookID(), input.Note, input.Image, input.Size, input.PreviousImage); err != nil {
+			logger.Warn("write image presentation metadata failed", "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "image presentation setting could not be saved"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"image": input.Image, "size": string(input.Size)})
+	})
+	mux.HandleFunc("DELETE /api/repository/image-presentation", func(w http.ResponseWriter, r *http.Request) {
+		note, image := r.URL.Query().Get("note"), r.URL.Query().Get("image")
+		if _, err := currentRepository().ReadAsset(note, image); err != nil {
+			writeRepositoryError(w, err)
+			return
+		}
+		if err := presentationStore.deleteImage(currentNotebookID(), note, image); err != nil {
+			logger.Warn("delete image presentation metadata failed", "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "image presentation setting could not be removed"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /api/repository/assets/unreferenced", func(w http.ResponseWriter, _ *http.Request) {
 		assets, err := currentRepository().UnreferencedAssets()

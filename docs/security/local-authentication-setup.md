@@ -118,10 +118,10 @@ that began it, and can be cancelled explicitly from Settings.
 
 ## Explicit disabled mode and upgrades
 
-Omitting `REPOQUILL_AUTH_MODE` always selects fail-closed `local` mode. This is
-the safe Alpha 1 upgrade path: the existing notebooks remain untouched while
-the application enters setup-required state until the operator creates a
-bootstrap token and owner password.
+Omitting `REPOQUILL_AUTH_MODE` always selects fail-closed `local` mode. During
+an upgrade from an unauthenticated Alpha 1 installation, existing notebooks
+remain untouched while the application enters setup-required state until the
+operator creates a bootstrap token and owner password.
 
 `REPOQUILL_AUTH_MODE=disabled` must be written explicitly. Use it only for
 localhost, a private LAN, VPN/Tailscale, or a deliberately secured external

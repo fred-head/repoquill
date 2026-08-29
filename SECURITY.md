@@ -8,15 +8,15 @@ upgraded rather than exposed for continued use.
 
 ## Alpha security model
 
-The published Alpha 1 line has no built-in authentication. Anyone who can reach
-an Alpha 1 HTTP interface can read, change, delete, and synchronize every
-configured notebook and administer RepoQuill-managed SSH credentials.
+Alpha 2 provides fail-closed single-owner local authentication with optional
+TOTP MFA. It has no registration, usernames, roles, email recovery, multi-user
+authorization, or note encryption. `REPOQUILL_AUTH_MODE=disabled` deliberately
+removes this boundary and is safe only when the operator constrains access by a
+private network, VPN, or external protection.
 
-Alpha 2 development adds fail-closed single-owner local authentication. Until
-the complete Milestone 19 browser, recovery, MFA, and adversarial release gates
-are finished, development builds must not be treated as a production security
-release. HTTPS termination and restricted backend reachability remain required
-even with built-in authentication.
+Authentication does not replace transport security. HTTPS termination and
+restricted backend reachability remain required for Internet-facing instances.
+OIDC is deferred and is not an implemented Alpha 2 authentication mode.
 
 The supplied Compose configuration publishes port 8080 on `127.0.0.1` by default. Set `REPOQUILL_PUBLISH_ADDR` only when deliberate network exposure is protected separately.
 
@@ -34,6 +34,8 @@ The supplied Compose configuration publishes port 8080 on `127.0.0.1` by default
 - Git failures do not roll back successfully saved Markdown files. RepoQuill
   never force-pushes or silently chooses a conflict winner; its guided review
   preserves both versions and requires an explicit owner decision.
+- Local password and MFA recovery revoke sessions and change only authentication
+  metadata. They never rewrite, encrypt, or delete notebook content.
 - The PWA is online-first. Its service worker caches the application shell, never API responses or note contents.
 
 `REPOQUILL_ALLOW_LOCAL_REMOTES=true` exists only for isolated automated tests. Do not enable it in a deployed instance.
@@ -70,7 +72,7 @@ and coordinated-disclosure process is documented in
 - Protect and back up the complete `/data` volume. It contains working trees, notebook registration, trusted SSH hosts, and managed private keys.
 - Terminate TLS at the reverse proxy, keep the backend unreachable from
   untrusted networks, and configure only the actual proxy addresses as trusted.
-- Keep the container image, reverse proxy, host OS, Git provider, and authentication layer patched.
+- Keep the container image, reverse proxy, host OS, and Git provider patched.
 - Verify SSH fingerprints through an independent trusted source before approval.
 - Use dedicated deploy keys with access limited to the intended repository.
 - Resolve reported overlaps through RepoQuill's guided conflict review, inspect

@@ -1815,6 +1815,25 @@ Milestone 11 is complete when:
 - the Alpha 1 release notes clearly state that the release has no built-in
   authentication and must be deployed behind an appropriate HTTPS
   authentication layer.
+- a first-time GitHub user can create or identify a private repository, obtain
+  the correct SSH address, add RepoQuill's dedicated public key with write
+  access, verify the Git host, and finish connection by following RepoQuill's
+  own guidance,
+- inserted images can be inspected in a full-size/lightbox view without adding
+  non-standard sizing metadata, modifying the original asset, or mutating
+  Markdown,
+- release-facing documentation accurately reflects the shipped Alpha 2
+  authentication, guided conflict handling, onboarding, image behavior,
+  recovery, storage, and synchronization model,
+- the final dependency and toolchain baseline has been deliberately reviewed,
+  updated where justified, and documented where a maintained older release line
+  is retained,
+- all thirteen Alpha 2 milestones work on desktop and mobile/PWA layouts where
+  a user interface is applicable,
+- Milestones 19, 20, and 24's dedicated security verification and release gates
+  pass,
+- no Alpha 2 milestone introduces opaque canonical content, a mandatory cloud
+  dependency, or weakens Git/provider independence.
 
 ---
 
@@ -1825,12 +1844,17 @@ expanding RepoQuill into a general-purpose productivity platform. These
 milestones must continue to treat ordinary Markdown files, folders, assets, and
 Git history as the canonical data model.
 
-Milestones 16, 17, 19, 20, and 21 are the highest-priority Alpha 2 milestones.
-Conflict handling, understandable synchronization, the authentication boundary,
-continuous vulnerability management, and the final dependency baseline are
-trust and data-safety features, not optional polish, and should be implemented
-before lower-risk convenience work where practical. Milestones 19, 20, and 21
-are Alpha 2 release blockers and must receive dedicated security review.
+Milestones 16, 17, 19, 20, 21, 23, and 24 are the highest-priority Alpha 2
+milestones. Conflict handling, understandable synchronization, the
+authentication boundary, continuous vulnerability management, beginner-friendly
+GitHub notebook onboarding, release-documentation accuracy, and the final
+dependency baseline are release-quality concerns rather than optional polish.
+
+Milestones 19, 20, and 24 are security/release-gate blockers.
+Milestones 21 and 23 are usability/documentation release blockers.
+Milestone 22 is intentionally limited to a low-risk portable image-viewing
+improvement and must not expand into persisted image sizing or an image-editing
+subsystem.
 
 ## Milestone 12 - Recoverable Deletion and Trash
 
@@ -2624,11 +2648,1697 @@ merge security-sensitive changes or deploy an unreviewed image.
   rollback procedures are documented and exercised,
 - Milestones 19 and 20 pass their complete gates before Alpha 2 publication.
 
-## Milestone 21 - Final Alpha 2 Dependency and Toolchain Review
+## Milestone 21 - Beginner-Friendly GitHub Notebook Onboarding
+
+Implementation status: completed on the Alpha 2 development branch. The
+existing provider-independent five-step wizard now adds a guided GitHub path
+for repository creation, SSH-address discovery, managed deploy-key setup,
+explicit write access, secure host trust, actionable connection repair, and a
+beginner-readable final review. GitLab, Forgejo/Gitea, generic SSH Git servers,
+and the advanced existing-server SSH option continue to use the same ordinary
+Git-over-SSH backend without GitHub APIs, tokens, OAuth, or provider-specific
+canonical metadata.
+
+Refine the existing provider-independent notebook onboarding so that a user who
+knows what GitHub is, but has little or no practical Git or SSH experience, can
+connect a private GitHub repository without having to understand clone URLs,
+deploy keys, branches, SSH host verification, or Git terminology in advance.
+
+This milestone extends Milestone 18. It does NOT introduce GitHub OAuth,
+GitHub Apps, provider API authentication, automatic repository creation,
+provider tokens, or any mandatory cloud dependency.
+
+The underlying connection must remain ordinary provider-independent Git over
+SSH.
+
+### Goal
+
+The GitHub onboarding path should feel like a guided self-hosting workflow, not
+like configuring a Git client.
+
+A first-time user should be able to understand:
+
+1. that RepoQuill needs an existing GitHub repository,
+2. how to create one if necessary,
+3. where to find the correct repository address,
+4. why RepoQuill creates an SSH key,
+5. where that public key must be added in GitHub,
+6. why write access is required,
+7. why the GitHub host fingerprint must be trusted,
+8. how to test the connection,
+9. what to fix when a connection step fails.
+
+The user should not need to leave RepoQuill and independently research these
+concepts before completing setup.
+
+### Phase 1 - Clarify the GitHub repository requirement
+
+When GitHub is selected as the provider:
+
+- explain in plain language that RepoQuill connects to an existing GitHub
+  repository,
+- explain that a private repository is recommended for personal notes,
+- explicitly state that RepoQuill does not create repositories through the
+  GitHub API in Alpha 2,
+- provide a clearly labeled action such as `Create a repository on GitHub` or
+  `Open GitHub repository creation`,
+- open external GitHub pages in a way that does not discard the current
+  onboarding state,
+- do not make GitHub availability a runtime dependency for RepoQuill itself.
+
+Suggested copy:
+
+```text
+RepoQuill stores this notebook in a normal Git repository.
+
+If you do not already have a repository for these notes, create a new private
+repository on GitHub first.
+
+RepoQuill will connect to it without changing the repository format.
+```
+
+The wizard should not require the user to understand what a Git repository is
+before this explanation is shown.
+
+### Phase 2 - Guide repository-address discovery
+
+For GitHub, replace unexplained primary labels such as:
+
+```text
+Repository SSH address
+```
+
+with provider-aware wording such as:
+
+```text
+GitHub repository address
+```
+
+Technical SSH terminology may remain in supporting text.
+
+Show the exact GitHub workflow for obtaining the address:
+
+```text
+Open the repository on GitHub
+→ Code
+→ SSH
+→ Copy
+```
+
+Show a realistic example:
+
+```text
+git@github.com:username/private-notes.git
+```
+
+Explain that the browser address is NOT the required value.
+
+Examples that should be detected and explained include:
+
+```text
+https://github.com/user/repository
+https://github.com/user/repository/tree/main
+https://github.com/user/repository/blob/main/README.md
+```
+
+If an HTTPS clone URL is pasted, explain that Alpha 2 uses SSH for private
+repository access and tell the user exactly where to obtain the SSH form.
+
+Continue rejecting:
+
+- local filesystem paths,
+- malformed SSH URLs,
+- embedded credentials,
+- option-like values,
+- Markdown links,
+- escaped addresses,
+- unsafe Git protocols,
+- branch or file browser URLs.
+
+Error messages should explain the correction rather than merely reporting an
+invalid value.
+
+Example:
+
+```text
+This looks like the GitHub website address.
+
+In GitHub, open Code → SSH and copy the address that starts with
+git@github.com:
+```
+
+### Phase 3 - Explain the managed SSH key in normal language
+
+The recommended beginner path remains:
+
+```text
+RepoQuill-managed SSH key
+```
+
+Do not require the user to understand asymmetric cryptography.
+
+Explain:
+
+- RepoQuill creates a dedicated key for this notebook,
+- the private key stays on the RepoQuill server,
+- only the public key is shown in the browser,
+- the public key is safe to copy into GitHub,
+- the key gives this RepoQuill notebook access only where the user explicitly
+  adds it,
+- the user's personal SSH private key is never requested or uploaded.
+
+Suggested copy:
+
+```text
+RepoQuill uses a dedicated key to access this repository.
+
+The private part stays on your RepoQuill server.
+You only need to copy the public key below into GitHub.
+```
+
+Do not expose filesystem paths or internal key IDs as part of the normal
+beginner explanation unless the user opens technical details.
+
+### Phase 4 - Embed GitHub deploy-key instructions directly
+
+For GitHub, RepoQuill itself must show the minimum provider-side steps needed to
+complete setup.
+
+The user should see instructions equivalent to:
+
+```text
+In GitHub:
+
+1. Open your repository.
+2. Open Settings.
+3. Open Deploy keys.
+4. Choose Add deploy key.
+5. Paste the public key shown below.
+6. Enable "Allow write access".
+7. Save the key.
+```
+
+`Allow write access` must be visually emphasized.
+
+Explain why it matters:
+
+```text
+Write access is required so RepoQuill can synchronize changes back to GitHub.
+```
+
+Do not assume the user knows that a read-only deploy key may allow part of the
+connection process to succeed while preventing normal synchronization.
+
+The existing `Open setup instructions` action should remain available for
+deeper provider documentation, but external documentation must not be the only
+place where the required steps are explained.
+
+### Phase 5 - Separate repository access from SSH host trust
+
+The user must not confuse:
+
+```text
+GitHub gave RepoQuill permission to this repository
+```
+
+with:
+
+```text
+RepoQuill trusts that this server is really github.com
+```
+
+Keep explicit SSH host fingerprint verification.
+
+Explain the host-trust step in plain language before showing fingerprints.
+
+Suggested copy:
+
+```text
+RepoQuill has not connected to this Git server before.
+
+Before continuing, verify that the server identity below belongs to GitHub.
+This prevents RepoQuill from silently trusting an unexpected server.
+```
+
+The UI may still show:
+
+- hostname,
+- port,
+- key type,
+- SHA256 fingerprint,
+- previously trusted fingerprints where applicable.
+
+Keep the current security behavior:
+
+- unknown hosts require explicit approval,
+- changed host keys remain blocked,
+- changed keys must not be silently replaced,
+- `StrictHostKeyChecking=no` or equivalent bypasses remain forbidden.
+
+### Phase 6 - Make connection testing the obvious next step
+
+After the user adds the deploy key in GitHub:
+
+- make `Test connection` the clear next action,
+- show progress while testing,
+- retain completed onboarding state after failure,
+- never force the user to generate another key merely because the test failed.
+
+Connection failures should be translated into concrete repair instructions.
+
+Authentication failure example:
+
+```text
+GitHub did not accept this key.
+
+Check that the public key was added under:
+Repository Settings → Deploy keys
+
+Also confirm that "Allow write access" is enabled.
+```
+
+Repository-not-found example:
+
+```text
+RepoQuill reached GitHub, but this repository could not be opened.
+
+Check that:
+- the repository exists,
+- the repository address is correct,
+- the deploy key was added to this repository.
+```
+
+Branch-not-found example:
+
+```text
+The selected branch does not exist.
+
+Leave the branch empty to use the repository's default branch, or enter an
+existing branch name.
+```
+
+For network failures, explain that RepoQuill could not reach the Git server
+from the RepoQuill host and suggest checking:
+
+- DNS,
+- outbound firewall rules,
+- proxy or network configuration,
+- Internet connectivity from the RepoQuill server.
+
+Do not expose raw Git stderr as the primary explanation.
+
+Technical details may remain available behind an optional diagnostic view.
+
+### Phase 7 - Preserve wizard progress
+
+Opening GitHub or external setup documentation must not discard:
+
+- notebook name,
+- selected provider,
+- repository address,
+- optional branch,
+- selected authentication method,
+- generated managed key,
+- connection-test result where still valid,
+- onboarding step.
+
+Do not persist private keys or secret credentials in browser storage.
+
+The managed private key remains server-side.
+
+If onboarding is intentionally closed, retain generated unassigned keys through
+the existing key-management behavior so the user can safely reuse or remove them
+later.
+
+### Phase 8 - Final review
+
+The final review should show beginner-readable information first:
+
+```text
+Notebook
+Git service
+Git server
+Repository
+Branch
+Access method
+Connection status
+```
+
+Avoid showing internal key IDs, filesystem paths, raw Git arguments, or other
+implementation details unless explicitly requested.
+
+Explain what happens after confirmation:
+
+```text
+RepoQuill will copy the repository to this server and open it as a notebook.
+
+Your notes remain normal Markdown files inside the Git repository.
+```
+
+Keep the distinction between:
+
+```text
+Saved on this RepoQuill server
+```
+
+and:
+
+```text
+Synchronized with GitHub
+```
+
+visible in the explanation where appropriate.
+
+### Phase 9 - Preserve provider independence
+
+GitHub-specific onboarding guidance must remain presentation-only.
+
+Do not couple the notebook model, Git service, credential model, or backend Git
+operations to GitHub.
+
+GitLab, Forgejo/Gitea, and generic SSH Git servers must continue to use the
+existing provider-independent Git-over-SSH implementation.
+
+Provider-specific guidance may explain where users find repository addresses,
+deploy keys, or equivalent settings, but the underlying RepoQuill behavior must
+remain ordinary Git and SSH.
+
+Keep `Existing server SSH configuration` available as an advanced connection
+option.
+
+Do not introduce GitHub API calls, GitHub-specific canonical metadata, OAuth,
+GitHub Apps, or provider tokens as part of this milestone.
+
+### Testing
+
+Add focused frontend tests covering:
+
+- GitHub provider selection,
+- repository-creation guidance,
+- repository-address instructions,
+- GitHub browser URL rejection,
+- HTTPS clone URL guidance,
+- valid SSH URL progression,
+- managed-key generation,
+- public-key copy action,
+- explicit `Allow write access` guidance,
+- external setup-instructions link,
+- preserved wizard state,
+- connection-test retry,
+- authentication failure messaging,
+- repository-not-found messaging,
+- branch failure messaging,
+- network failure messaging,
+- unknown-host approval,
+- changed-host blocking,
+- final review,
+- keyboard operation,
+- narrow mobile/PWA layout.
+
+Backend security behavior must remain unchanged unless a concrete bug is found.
+
+### Completion criteria
+
+- a first-time GitHub user can create or identify a private repository, obtain
+  the correct repository address, add RepoQuill's public key with write access,
+  verify the Git host, and connect the notebook using RepoQuill's own guidance,
+- the normal flow does not require the user to independently understand Git
+  cloning, deploy keys, SSH authentication, branches, or host-key verification,
+- no GitHub API token, OAuth flow, GitHub App, mandatory SaaS dependency, or
+  provider-specific canonical state is introduced,
+- the underlying Git/SSH implementation remains provider-independent,
+- existing security guarantees for managed keys and SSH host verification are
+  preserved.
+
+---
+
+## Milestone 22 - Portable Image Lightbox and Full-Size Viewing
+
+Implementation status: completed on the Alpha 2 development branch. Images can
+now be opened from the contextual Edit-mode toolbar or directly by pointer and
+keyboard in Read only mode. The responsive in-app viewer provides fit-to-screen
+and actual-size inspection, scrolling, accessible focus handling and closing,
+alt-text fallback, and non-mutating load errors while continuing to use the
+existing confined asset URL. It adds no image dependency, stored rendition,
+custom Markdown, asset mutation, save, or synchronization behavior.
+
+Add a simple, responsive image viewer so users can inspect screenshots, diagrams,
+photos, and other note images at a larger size without changing Markdown
+serialization or introducing a custom image format.
+
+This milestone is intentionally limited to viewing.
+
+It must NOT introduce:
+
+- persisted image width or height attributes,
+- custom Markdown image-size syntax,
+- RepoQuill-specific Markdown extensions,
+- HTML replacement syntax for ordinary inserted images,
+- image cropping,
+- image annotation,
+- image editing,
+- image compression as part of viewing,
+- asset duplication solely for viewing.
+
+The stored Markdown remains ordinary portable Markdown such as:
+
+```markdown
+![](BGP.assets/01ABCDEF.png)
+```
+
+or:
+
+```markdown
+![Topology](BGP.assets/01ABCDEF.png)
+```
+
+### Goal
+
+Users should be able to inspect an inserted image at a useful size, especially
+screenshots and diagrams that are scaled down inside the editor.
+
+The viewer must remain purely presentational.
+
+Opening or interacting with it must not modify:
+
+- the Markdown document,
+- the image asset,
+- the note's save state,
+- the note's Git state,
+- image alt text,
+- note tabs,
+- Read only/Edit mode.
+
+### Phase 1 - Opening behavior
+
+In Edit mode:
+
+- preserve the existing image-selection behavior,
+- provide an explicit contextual action such as `Open full size` or
+  `View image`,
+- do not make normal editor image selection unreliable merely to support the
+  lightbox,
+- do not require double-click or another undiscoverable interaction as the only
+  way to open the viewer.
+
+In Read only mode:
+
+- clicking or tapping an image may open the viewer directly where this is
+  intuitive,
+- opening the viewer must not accidentally switch the note into Edit mode.
+
+Keyboard users must have an accessible way to open the image viewer.
+
+Do not make hover the only discovery mechanism.
+
+### Phase 2 - Viewer presentation
+
+Open images in an in-app modal/lightbox.
+
+Initial behavior should:
+
+- center the image in the available viewport,
+- fit oversized images within the viewport,
+- preserve aspect ratio,
+- avoid unnecessarily upscaling small images,
+- visually separate the image from the note behind it,
+- keep controls usable on desktop and narrow mobile screens.
+
+The viewer must display the existing original asset through RepoQuill's
+confined image-serving path.
+
+Do not create thumbnails or alternate stored copies solely for the lightbox
+unless a later performance requirement explicitly justifies them.
+
+### Phase 3 - Zoom and original-size inspection
+
+Provide a deliberately small inspection model.
+
+At minimum support:
+
+```text
+Fit to screen
+```
+
+and, where practical:
+
+```text
+Actual size / 100%
+```
+
+Simple controls may additionally include:
+
+```text
+Zoom in
+Zoom out
+Reset
+```
+
+Do not build a full image editor or infinite-canvas system.
+
+If the image is displayed above viewport size:
+
+- allow the user to inspect the remaining area through sensible panning or
+  scrolling,
+- do not distort the image,
+- do not resize or rewrite the source asset.
+
+If pointer-wheel or pinch zoom is implemented:
+
+- keep it optional and intuitive,
+- do not interfere with normal application behavior outside the lightbox,
+- provide visible controls as an accessible alternative,
+- avoid introducing a large gesture library solely for this feature unless
+  clearly justified.
+
+### Phase 4 - Closing behavior
+
+Support:
+
+- an explicit visible close button,
+- Escape-key close on desktop,
+- backdrop click where appropriate and accessible,
+- a touch-friendly mobile close action.
+
+Focus should move into the modal when opened and return to an appropriate
+control or image after closing.
+
+Do not trap the user inside the viewer if the image fails to load.
+
+### Phase 5 - Accessibility
+
+Use existing Markdown alt text as the image's accessible description where
+available.
+
+If alt text is empty:
+
+- provide an appropriate generic label such as `Note image`,
+- do not invent descriptive content.
+
+Controls must have accessible names.
+
+Viewer state must not rely on color alone.
+
+Keyboard navigation must remain possible.
+
+Focus trapping, closing, and restoration should follow normal accessible dialog
+behavior.
+
+### Phase 6 - Mobile and PWA behavior
+
+The viewer must work in:
+
+- narrow mobile browsers,
+- installed PWA mode,
+- portrait orientation,
+- landscape orientation.
+
+Respect viewport and safe-area constraints where appropriate.
+
+Controls must remain reachable without hover.
+
+The viewer must tolerate device rotation and viewport resizing.
+
+Do not make the lightbox dependent on browser-native image-opening behavior that
+unexpectedly leaves the installed PWA.
+
+### Phase 7 - Error handling
+
+If the asset cannot be loaded:
+
+- show a clear viewer error,
+- keep the modal closable,
+- do not modify the Markdown,
+- do not remove the image node,
+- do not mark the note unsaved merely because viewing failed,
+- do not trigger asset cleanup or replacement.
+
+If the asset disappears externally while the note remains open, treat this as a
+viewing failure rather than an editor mutation.
+
+### Phase 8 - Editor and application state safety
+
+Opening, zooming, panning, and closing the viewer must not:
+
+- call the note save endpoint,
+- change `SaveStatus`,
+- create Git-visible filesystem changes,
+- reset or recreate the editor unnecessarily,
+- alter Read only/Edit state,
+- change the selected note tab,
+- trigger image replacement,
+- trigger asset cleanup,
+- trigger synchronization merely because the viewer was used.
+
+Preserve the existing editor selection where practical.
+
+If the active note or notebook changes while the viewer is open, close the
+viewer safely rather than continuing to show an asset belonging to the previous
+context.
+
+### Testing
+
+Add focused frontend tests covering:
+
+- opening from contextual image controls in Edit mode,
+- opening from Read only mode,
+- explicit close button,
+- Escape close,
+- backdrop behavior where implemented,
+- focus handling and focus return,
+- empty-alt fallback,
+- failed image loading,
+- fit-to-screen behavior,
+- actual-size or zoom behavior where implemented,
+- narrow mobile layout,
+- orientation or viewport resizing where practical,
+- viewer closure when note context changes,
+- proof that viewer interactions do not mutate Markdown,
+- proof that viewer interactions do not trigger note saves,
+- proof that viewer interactions do not alter Read only/Edit state.
+
+No backend changes should be required unless the current confined image-serving
+endpoint cannot safely support displaying the original asset in the viewer.
+
+### Completion criteria
+
+- inserted screenshots and diagrams can be inspected substantially larger than
+  their inline editor rendering,
+- the user can return to the note without losing editor state,
+- the original image asset remains unchanged,
+- opening and using the viewer produces no Markdown change,
+- standard Markdown image syntax remains the canonical representation,
+- no RepoQuill-specific image-size syntax is introduced,
+- no image-editing subsystem or unnecessary image dependency is introduced,
+- desktop, mobile/PWA, Edit, and Read only workflows remain usable.
+
+---
+
+## Milestone 22.1 - Portable Image Presentation Sizes
+
+Extend Milestone 22 with a deliberately small RepoQuill presentation layer for
+inline note images.
+
+Implementation status: completed on the Alpha 2 development branch. RepoQuill
+stores exactly the four semantic presets in a confined, non-canonical metadata
+file beside the notebook registry. Markdown and original assets remain
+unchanged; missing or damaged presentation metadata falls back to Full. The
+simpler Alpha 2 identity is per asset reference within a note, so repeated uses
+of the same asset share one size. Presentation metadata follows supported note
+renames and moves. Deliberately trashing a note removes its presentation
+metadata; a later Trash restore safely recovers the note and assets but uses the
+default presentation size.
+
+Users should be able to choose a consistent visual size for an inserted image
+without changing the canonical Markdown image syntax, modifying the original
+asset, or introducing RepoQuill-specific Markdown extensions.
+
+Supported presentation sizes are:
+
+```text
+Small
+Medium
+Large
+Full
+```
+
+This milestone is about predictable note layout.
+
+It is NOT an image editor and must remain substantially smaller in scope than a
+general-purpose image-layout system.
+
+### Core principle
+
+The canonical note must remain ordinary Markdown.
+
+For example:
+
+```markdown
+![Topology](BGP.assets/01ABCDEF.png)
+```
+
+must remain exactly ordinary Markdown regardless of the selected RepoQuill
+presentation size.
+
+Do NOT serialize presentation information as:
+
+```markdown
+![](image.png){width=400}
+```
+
+or:
+
+```html
+<img src="image.png" width="400">
+```
+
+or any other custom Markdown/HTML representation.
+
+The original asset must also remain unchanged.
+
+Presentation metadata may improve how RepoQuill displays a note, but it must
+never be required to:
+
+- read the note,
+- locate the image,
+- recover the note,
+- render the image in another Markdown application,
+- understand the note outside RepoQuill.
+
+If all RepoQuill presentation metadata disappears, the note and image must
+remain fully usable.
+
+### Goal
+
+A user inserting several screenshots or diagrams into one note should be able
+to create a visually consistent document such as:
+
+```text
+Paragraph
+    ↓
+Medium screenshot
+    ↓
+Paragraph
+    ↓
+Medium screenshot
+    ↓
+Paragraph
+    ↓
+Large topology diagram
+```
+
+without resizing or duplicating the underlying image files.
+
+The feature should complement the Milestone 22 lightbox:
+
+```text
+Inline presentation size
+        ↓
+Small / Medium / Large / Full
+        ↓
+click "View image"
+        ↓
+original asset in lightbox
+```
+
+The lightbox always operates on the original asset, not on an inline-sized
+derivative.
+
+### Phase 1 - Presentation-size model
+
+Support exactly four user-facing presets:
+
+```text
+Small
+Medium
+Large
+Full
+```
+
+Do not expose arbitrary pixel widths in Alpha 2.
+
+Do not add drag handles for free resizing.
+
+Do not store raw CSS values supplied by the user.
+
+Treat the presets as semantic presentation choices rather than fixed physical
+dimensions.
+
+A reasonable responsive implementation may map them approximately to:
+
+```text
+Small   → about one third of the available editor width
+Medium  → about one half of the available editor width
+Large   → about three quarters of the available editor width
+Full    → available editor width
+```
+
+Exact CSS values may be adjusted to fit the existing editor layout.
+
+All presets must:
+
+- preserve image aspect ratio,
+- remain responsive,
+- never overflow the editor viewport,
+- work on narrow mobile screens,
+- remain usable when the browser or PWA viewport changes.
+
+Avoid destructive image scaling.
+
+Where practical, do not upscale a source image beyond its useful natural
+resolution merely to satisfy a preset.
+
+### Phase 2 - Presentation metadata
+
+Presentation size must NOT be serialized into Markdown.
+
+Store it as optional RepoQuill presentation metadata.
+
+Prefer the existing internal metadata/configuration model rather than modifying
+the note file.
+
+The metadata is non-canonical.
+
+Conceptually it may contain information equivalent to:
+
+```json
+{
+  "note": "Network/BGP.md",
+  "image": "BGP.assets/01ABCDEF.png",
+  "size": "medium"
+}
+```
+
+The exact internal persistence schema may differ.
+
+Only store the minimum required presentation information.
+
+For Alpha 2, store:
+
+```text
+image presentation size
+```
+
+Do NOT expand the schema into a generic arbitrary style system.
+
+Do NOT store:
+
+- CSS,
+- arbitrary width,
+- arbitrary height,
+- crop coordinates,
+- filters,
+- image transformations,
+- positioning offsets,
+- editor DOM identifiers.
+
+The metadata database must remain non-canonical.
+
+Deleting or losing it must never damage note content or assets.
+
+### Phase 3 - Stable image identification
+
+Presentation metadata must be associated with the actual Markdown image in a
+predictable way.
+
+Use validated note and relative asset paths or another existing stable asset
+identity.
+
+Do not rely on transient ProseMirror node positions as persistent identifiers.
+
+Do not rely on generated browser DOM IDs.
+
+If the same asset is intentionally referenced more than once in the same note,
+consider whether presentation is:
+
+```text
+per asset
+```
+
+or:
+
+```text
+per image occurrence
+```
+
+For Alpha 2, prefer the simpler and safer model unless the existing editor
+structure makes per-occurrence identity straightforward.
+
+If presentation is stored per asset reference, document that multiple uses of
+the same asset in one note share the same presentation size.
+
+Do not invent hidden identifiers inside Markdown merely to distinguish image
+occurrences.
+
+### Phase 4 - Default behavior
+
+Existing notes must continue to render correctly with no migration requirement.
+
+An image with no presentation metadata uses the existing RepoQuill image
+rendering behavior.
+
+Do not rewrite existing Markdown merely to establish a default size.
+
+A newly inserted image may initially use:
+
+```text
+Full
+```
+
+or the existing natural/default rendering behavior, whichever best matches the
+current editor and avoids a surprising visual regression.
+
+The default should be consistent across:
+
+- clipboard paste,
+- image picker,
+- mobile gallery/camera upload,
+- existing Markdown images.
+
+Do not require presentation metadata for ordinary images.
+
+### Phase 5 - Image contextual controls
+
+Extend the existing selected-image contextual UI.
+
+When an image is selected in Edit mode, provide controls equivalent to:
+
+```text
+Image size
+[ Small ] [ Medium ] [ Large ] [ Full ]
+
+Alt text
+Replace image
+View image
+Remove image
+```
+
+The exact visual arrangement may adapt to available space.
+
+The currently selected size must be visible.
+
+Changing the presentation size should update the editor immediately.
+
+The size controls must:
+
+- be keyboard accessible,
+- have accessible names,
+- have touch-friendly targets,
+- work without hover,
+- fit narrow mobile layouts.
+
+Do not overload the main formatting toolbar with four permanent image-size
+buttons.
+
+Keep these controls contextual to the selected image.
+
+### Phase 6 - Read only rendering
+
+Presentation metadata applies in both:
+
+```text
+Edit
+```
+
+and:
+
+```text
+Read only
+```
+
+views.
+
+The same note should have approximately the same visual image layout in both
+modes.
+
+Read only mode must not expose controls that modify presentation metadata.
+
+Opening the Milestone 22 lightbox from Read only remains supported.
+
+### Phase 7 - Lightbox integration
+
+Presentation size affects inline note layout only.
+
+The Milestone 22 lightbox must always load and inspect the original asset.
+
+For example:
+
+```text
+Medium inline image
+        ↓
+View image
+        ↓
+original image
+        ↓
+Fit / Actual size / zoom
+```
+
+Changing lightbox zoom must not change the inline presentation size.
+
+Changing inline presentation size must not modify lightbox zoom state.
+
+Do not generate resized derivative assets solely for presentation.
+
+### Phase 8 - Note rename and move behavior
+
+Presentation metadata must follow supported RepoQuill note operations.
+
+When a note is renamed:
+
+- preserve presentation metadata for its images,
+- update the internal note identity/path safely.
+
+When a note is moved:
+
+- preserve presentation metadata,
+- account for the corresponding existing asset-directory move behavior.
+
+When an image is replaced:
+
+- preserve the selected presentation size where sensible,
+- do not copy unrelated metadata from another asset.
+
+When an image is removed from the Markdown document:
+
+- stale presentation metadata may be cleaned conservatively,
+- stale metadata must never cause asset deletion,
+- metadata cleanup must never be considered canonical content cleanup.
+
+When a note is deleted:
+
+- its presentation metadata may be removed with the note's internal metadata,
+- Trash/restore behavior should restore presentation metadata where practical
+  if the current architecture supports doing so safely.
+
+If restoring presentation metadata would substantially complicate Alpha 2
+Trash semantics, losing presentation size after a Trash restore is preferable
+to risking note or asset recovery.
+
+Document any accepted limitation.
+
+### Phase 9 - External edits and missing metadata
+
+RepoQuill must tolerate Markdown being edited outside RepoQuill.
+
+Examples include:
+
+- GitHub,
+- VS Code,
+- Obsidian,
+- another Git client.
+
+If an image reference is added externally:
+
+- render it normally,
+- use the default presentation behavior,
+- do not require presentation metadata.
+
+If an image reference is removed externally:
+
+- ignore or conservatively clean stale presentation metadata,
+- do not recreate the Markdown image.
+
+If a note or asset path changes externally and the old presentation metadata can
+no longer be matched safely:
+
+- fall back to default rendering,
+- do not guess,
+- do not modify the Markdown to repair presentation metadata.
+
+Presentation metadata must never turn an ordinary Git conflict into a content
+conflict.
+
+Canonical Git synchronization remains about the Markdown and assets.
+
+### Phase 10 - Failure behavior
+
+Failure to read or write presentation metadata must not block note editing.
+
+If the user changes an image size and presentation persistence fails:
+
+- keep the Markdown unchanged,
+- keep the asset unchanged,
+- show a small actionable presentation-setting error,
+- do not report the note itself as unsaved if its Markdown is already saved,
+- do not report a Git conflict,
+- do not create or modify Git content merely to recover the presentation
+  preference.
+
+Presentation metadata failure must never become a note-data-loss scenario.
+
+### Phase 11 - Save and synchronization semantics
+
+Changing only:
+
+```text
+Small → Medium
+```
+
+must NOT cause the Markdown note to become dirty.
+
+It must not trigger the normal Markdown autosave endpoint.
+
+It must not create a Git commit containing a fake Markdown change.
+
+It must not modify the image asset.
+
+If presentation metadata is stored only in RepoQuill's internal metadata
+storage, presentation-only changes are application metadata changes rather than
+Git synchronization changes.
+
+The UI must not misleadingly report:
+
+```text
+Unsaved note
+```
+
+or:
+
+```text
+Unsynchronized note
+```
+
+solely because an image presentation preset changed.
+
+This distinction is important:
+
+```text
+note content
+≠
+RepoQuill presentation preference
+```
+
+### Phase 12 - Portability behavior
+
+Verify the resulting repository after presentation sizes have been used.
+
+The Markdown must still contain ordinary image references such as:
+
+```markdown
+![Topology](BGP.assets/01ABCDEF.png)
+```
+
+The asset remains the original ordinary file:
+
+```text
+Network/BGP.assets/01ABCDEF.png
+```
+
+Opening the repository without RepoQuill must still provide:
+
+- readable Markdown,
+- working relative image references,
+- original images,
+- no dependency on a RepoQuill renderer.
+
+Presentation sizing disappearing outside RepoQuill is an accepted and deliberate
+degradation.
+
+Content disappearing outside RepoQuill is not acceptable.
+
+### Phase 13 - Scope guardrails
+
+Milestone 22.1 must NOT grow into:
+
+- freeform image resizing,
+- pixel-width input,
+- drag-to-resize,
+- image alignment controls,
+- text wrapping around images,
+- side-by-side image grids,
+- galleries,
+- image captions beyond existing Markdown alt behavior,
+- image cropping,
+- image rotation,
+- image filters,
+- image compression,
+- image optimization pipelines,
+- generated thumbnails,
+- derivative image management,
+- arbitrary presentation CSS,
+- a generic note-layout engine.
+
+Those may be evaluated separately after real-world use.
+
+For Alpha 2, the feature is complete when these four presets make ordinary note
+layout substantially more consistent.
+
+### Testing
+
+Add focused frontend tests covering:
+
+- existing image with no presentation metadata,
+- newly inserted image default behavior,
+- Small selection,
+- Medium selection,
+- Large selection,
+- Full selection,
+- active-preset state,
+- immediate editor rendering,
+- Edit mode behavior,
+- Read only rendering,
+- keyboard operation,
+- narrow mobile layout,
+- lightbox opening from every presentation size,
+- original asset remaining the lightbox source,
+- note switch and return,
+- browser/PWA reload with persisted presentation metadata,
+- note rename,
+- note move,
+- image replacement,
+- image removal,
+- missing presentation metadata,
+- stale presentation metadata,
+- external Markdown image insertion,
+- presentation persistence failure.
+
+Add explicit regression tests proving that changing image presentation size:
+
+- does not change serialized Markdown,
+- does not call Markdown `onChange`,
+- does not trigger note autosave,
+- does not modify the image asset,
+- does not create a Git-visible content change,
+- does not change Read only/Edit mode,
+- does not alter the active note or tab.
+
+Backend tests must cover any new presentation-metadata API or persistence logic,
+including:
+
+- notebook confinement,
+- note-path validation,
+- asset-path validation,
+- invalid size rejection,
+- missing-note handling,
+- rename/move preservation,
+- safe deletion/cleanup,
+- authentication and CSRF protection through the existing application boundary.
+
+### Documentation
+
+Update the Alpha 2 documentation in Milestone 23 to explain:
+
+- RepoQuill supports Small / Medium / Large / Full inline image presentation,
+- presentation size is a RepoQuill display preference,
+- Markdown remains standard Markdown,
+- the original asset is never resized,
+- other Markdown applications still see the ordinary image,
+- RepoQuill-specific sizing may not appear outside RepoQuill,
+- the lightbox always exposes the original image.
+
+Update `CHANGELOG.md` factually after implementation.
+
+### Completion criteria
+
+- users can select Small, Medium, Large, or Full for an inline note image,
+- size presets produce visually consistent responsive note layouts,
+- the selected presentation persists across reloads,
+- presentation works in Edit and Read only modes,
+- the Milestone 22 lightbox continues to inspect the original asset,
+- changing presentation size never modifies serialized Markdown,
+- changing presentation size never modifies or duplicates the original asset,
+- ordinary Markdown image syntax remains canonical,
+- notes and assets remain fully readable without RepoQuill,
+- missing or corrupt presentation metadata degrades only visual layout,
+- external Git/Markdown edits remain safe,
+- presentation metadata does not create content conflicts,
+- the feature remains limited to four semantic size presets and does not expand
+  into a general image-layout or image-editing subsystem.
+
+---
+
+## Milestone 23 - Alpha 2 Documentation and Release Alignment
+
+Perform a deliberate documentation and release-material sweep after the Alpha 2
+functionality is complete.
+
+Implementation status: completed on the Alpha 2 development branch. Public
+documentation now describes the implemented local/disabled authentication
+model, guided conflict resolution, synchronization semantics, GitHub-oriented
+SSH onboarding, portable image lightbox/presentation behavior, current
+limitations, and `/data` backup, upgrade, rollback, and independent-recovery
+flows. The final immutable Alpha 2 version remains intentionally unset until the
+Milestone 24 dependency and exact release-candidate gate.
+
+This milestone should be performed after the user-facing Alpha 2 functionality,
+including Milestones 21 and 22, has stabilized and before the final dependency
+and release gate in Milestone 24.
+
+The goal is to ensure that all public documentation describes the application
+that will actually ship in Alpha 2 rather than retaining assumptions,
+limitations, instructions, or wording from Alpha 1.
+
+This milestone is not a general documentation rewrite. Focus on correctness,
+clarity, consistency, beginner usability, and release readiness.
+
+### Phase 1 - Documentation inventory
+
+At minimum review:
+
+- `README.md`,
+- `ALPHA-RELEASE.md`,
+- `KNOWN-LIMITATIONS.md`,
+- `SECURITY.md`,
+- `SECURITY-MAINTENANCE.md`,
+- `CHANGELOG.md`,
+- Docker Compose examples,
+- environment-variable documentation,
+- user-facing version strings,
+- release workflow/version checks,
+- setup and recovery instructions,
+- documentation linked directly from the application.
+
+Search the repository for Alpha 1-specific statements, old milestone numbers,
+obsolete feature descriptions, stale screenshots or examples, and technical
+wording that no longer matches the current UI.
+
+### Phase 2 - Authentication documentation
+
+Remove or update stale statements that imply Alpha 2:
+
+- has no built-in authentication,
+- always requires an external interactive authentication proxy,
+- cannot detect its own session expiry,
+- requires manual browser refresh after authentication expiry.
+
+Document the actual Alpha 2 model:
+
+```text
+local
+→ built-in single-owner password
+→ optional TOTP MFA
+
+disabled
+→ explicit operator decision
+→ LAN/VPN/external protection responsibility
+
+OIDC
+→ future feature
+```
+
+Document where applicable:
+
+- first-run/bootstrap-token setup,
+- password requirements,
+- session behavior,
+- Remember this device behavior,
+- session revocation,
+- password change/reset,
+- MFA enrollment,
+- MFA recovery codes,
+- operator recovery,
+- PWA/session reauthentication,
+- HTTPS requirement,
+- trusted reverse-proxy configuration.
+
+Do not imply that local authentication removes the need for TLS on
+Internet-facing installations.
+
+Do not describe authentication access control as note encryption or confuse it
+with any future Secure Notes/Secure Folders feature.
+
+### Phase 3 - Conflict-resolution documentation
+
+Remove stale instructions that say normal supported conflicts must be resolved
+through:
+
+```text
+git status
+git rebase
+manual Git client
+```
+
+Document the current guided conflict model instead.
+
+Explain in user-facing terms:
+
+- RepoQuill pauses synchronization when overlapping changes require a decision,
+- both versions are preserved,
+- the user reviews `Your version` and `Other version`,
+- Markdown conflicts can be resolved through the guided review,
+- supported delete/modify, rename/move, and image conflicts have explicit UI
+  flows,
+- RepoQuill creates a recovery point before applying a completed Git conflict
+  decision,
+- RepoQuill does not silently choose a winner,
+- RepoQuill does not force-push through a conflict.
+
+Technical Git-client recovery may remain documented as an emergency or
+administrator fallback where appropriate, but it must no longer be presented as
+the normal workflow for conflicts that RepoQuill supports directly.
+
+### Phase 4 - Synchronization documentation
+
+Use consistent terminology across all public documents.
+
+```text
+Saved on this server
+```
+
+means the Markdown file is safely persisted in RepoQuill's persistent storage.
+
+```text
+Synchronized
+```
+
+means RepoQuill successfully committed and transferred the change to the
+configured Git remote.
+
+Do not imply that saving automatically guarantees remote backup.
+
+Document:
+
+- manual synchronization,
+- configured automatic synchronization triggers,
+- inactivity synchronization,
+- startup/focus synchronization where implemented,
+- note/notebook navigation synchronization behavior,
+- best-effort browser-close synchronization,
+- remote-change reception,
+- conflict pause behavior,
+- locally safe state after a failed push where applicable.
+
+Explain external edits clearly:
+
+- GitHub,
+- VS Code,
+- another Git client,
+- another compatible editor
+
+may modify the same files outside RepoQuill.
+
+If those changes overlap with RepoQuill changes, synchronization may pause for
+guided conflict resolution.
+
+Do not imply that RepoQuill can prevent conflicts caused by arbitrary external
+writers.
+
+### Phase 5 - Notebook onboarding documentation
+
+Update public onboarding instructions to match Milestone 21.
+
+For GitHub, explain the beginner flow:
+
+```text
+Create or use a private repository
+→ copy Code → SSH address
+→ RepoQuill creates a dedicated key
+→ add public key under GitHub Deploy keys
+→ enable Allow write access
+→ verify the Git host
+→ test connection
+→ connect notebook
+```
+
+Explain that the RepoQuill-managed private key remains on the RepoQuill server
+and that only its public key is copied to GitHub.
+
+Avoid requiring README readers to understand:
+
+- Git staging,
+- rebasing,
+- personal SSH keys,
+- shell-based key installation,
+- Git internals.
+
+Document that GitHub is not the only supported Git service.
+
+The core mechanism remains provider-independent Git over SSH.
+
+Do not document GitHub Apps, OAuth, HTTPS/PAT authentication, automatic remote
+creation, or other deferred ideas as implemented functionality.
+
+### Phase 6 - Image documentation
+
+After Milestone 22 is implemented:
+
+- document the image lightbox/full-size viewing behavior where useful,
+- explain that viewing or zooming an image does not modify the underlying asset,
+- do not imply that RepoQuill stores custom image-size metadata,
+- retain the existing portable per-note `.assets` explanation,
+- ensure image examples still use ordinary relative Markdown image syntax.
+
+If persistent image resizing remains unsupported, document that limitation
+accurately rather than implying the lightbox changes stored image dimensions.
+
+### Phase 7 - Public feature list
+
+Ensure public feature lists accurately reflect the Alpha 2 application,
+including where implemented:
+
+- WYSIWYG Markdown editing,
+- multiple note tabs,
+- search,
+- screenshots and image upload,
+- per-note portable assets,
+- image lightbox/full-size viewing,
+- recoverable Trash,
+- note version history and restore,
+- portable internal links,
+- safe rename/move link updates,
+- guided conflict resolution,
+- human-readable synchronization details,
+- multiple notebooks,
+- managed SSH keys,
+- explicit SSH host verification,
+- beginner-friendly GitHub notebook onboarding,
+- single-owner local authentication,
+- optional TOTP MFA,
+- asset cleanup,
+- responsive online-first PWA behavior.
+
+Do not list planned features as though they are implemented.
+
+Keep the README approachable. Deep implementation detail belongs in more
+appropriate documentation rather than overwhelming the initial product
+description.
+
+### Phase 8 - Known limitations
+
+Keep limitations explicit and current.
+
+Review at least:
+
+- online-first PWA behavior,
+- no offline editing,
+- single-owner scope,
+- one RepoQuill backend writer per notebook working tree,
+- best-effort browser-close synchronization,
+- external edits can create overlapping versions,
+- no collaboration or CRDT model,
+- no automatic GitHub repository creation,
+- no GitHub App integration,
+- OIDC deferred,
+- no persistent portable image-sizing model if that remains the case,
+- any accepted provider/onboarding limitations.
+
+Do not describe intentional architectural constraints as unresolved bugs unless
+they actually are bugs.
+
+Do not hide meaningful Alpha limitations behind marketing language.
+
+### Phase 9 - Upgrade, persistence, and recovery
+
+Verify the documented upgrade path against the exact Alpha 2 release candidate.
+
+Test and document:
+
+- backup of `/data`,
+- container replacement,
+- authentication metadata migration,
+- session behavior after upgrade,
+- managed SSH key persistence,
+- trusted-host persistence,
+- notebook registration persistence,
+- Git working-tree persistence,
+- PWA update behavior,
+- rollback to the previous immutable image,
+- independent access to notebook repositories if RepoQuill fails.
+
+Authentication reset and MFA recovery must never imply that notebook contents
+are modified.
+
+Make clear that canonical note content remains ordinary Markdown and assets in
+Git repositories independently of RepoQuill's authentication metadata.
+
+### Phase 10 - Release-version consistency
+
+Before tagging Alpha 2, verify consistency across:
+
+- application version,
+- frontend package version,
+- backend/binary version,
+- Docker/OCI metadata,
+- changelog,
+- release documentation,
+- example image tags,
+- Git tag,
+- GitHub release title,
+- moving Alpha tag.
+
+Do not publish placeholder Alpha 2 version strings before the final version is
+selected.
+
+Immutable release tags must never be reused or moved.
+
+### Phase 11 - Command and example verification
+
+Review or execute all important published examples where applicable:
+
+- Docker Compose,
+- first-run/bootstrap workflow,
+- password-recovery commands,
+- MFA-recovery commands,
+- environment variables,
+- persistent volume paths,
+- reverse-proxy configuration,
+- trusted-proxy configuration,
+- GHCR image names,
+- backup paths,
+- upgrade commands,
+- rollback commands.
+
+Remove or fix examples that no longer match the implementation.
+
+A command appearing in public documentation should not be assumed correct merely
+because it existed in Alpha 1.
+
+### Phase 12 - Changelog and release notes
+
+Keep `CHANGELOG.md` factual.
+
+Only implemented changes belong under:
+
+```text
+Unreleased
+```
+
+or a released version.
+
+Future ideas remain in issues, future-feature sections, or later milestones.
+
+Before release, organize Alpha 2 changes into understandable Keep a Changelog
+categories such as:
+
+```text
+Added
+Changed
+Fixed
+Security
+```
+
+Release notes should emphasize user-visible changes and important deployment or
+security changes rather than dumping internal implementation details.
+
+Clearly identify upgrade considerations and accepted Alpha limitations.
+
+### Completion criteria
+
+- no public document contradicts the shipped authentication behavior,
+- no public document incorrectly requires manual Git conflict resolution for
+  workflows RepoQuill now handles,
+- onboarding documentation matches the actual beginner-friendly GitHub flow,
+- image documentation matches the actual portable lightbox behavior,
+- installation and upgrade examples work against the final Alpha 2 candidate,
+- recovery instructions preserve the core plain-file safety model,
+- known limitations remain honest and current,
+- version strings and release references are internally consistent,
+- future features are not presented as shipped functionality,
+- a new self-hoster can understand installation, authentication, notebook
+  onboarding, synchronization, backup, recovery, and major limitations without
+  reading `AGENTS.md`.
+
+---
+
+## Milestone 24 - Final Alpha 2 Dependency and Toolchain Review
 
 Perform a deliberate final review of every dependency and build-tool release
-line after the Alpha 2 functionality and authentication work is complete. The
-goal is a current, maintained, reproducible, and vulnerability-free release
+line after all Alpha 2 functionality, usability, documentation, and
+authentication work is complete.
+
+This is the final Alpha 2 milestone and release baseline review.
+
+The goal is a current, maintained, reproducible, and vulnerability-free release
 baseline, not blindly selecting the numerically newest major version.
 
 ### Phase 1 - Complete inventory and currency review
@@ -2651,35 +4361,122 @@ baseline, not blindly selecting the numerically newest major version.
 - apply compatible patch and minor updates where their release notes and
   transitive changes are acceptable,
 - evaluate major upgrades such as Vite, TypeScript, ESLint, Vitest, jsdom, or
-  related plugins separately and never combine unrelated majors merely to make
-  the version inventory appear current,
+  related plugins separately,
+- never combine unrelated major upgrades merely to make the version inventory
+  appear current,
 - adopt a major upgrade only when its supported runtime requirements,
-  compatibility, migration cost, and security benefit justify it,
+  compatibility, migration cost, maintenance status, and security benefit
+  justify it,
 - document any intentionally retained older major with its reason, support
-  status, and a follow-up trigger; an older maintained release without known
-  vulnerabilities is acceptable,
-- regenerate and commit lockfiles reproducibly and ensure a clean install does
-  not create uncommitted dependency changes,
+  status, and a follow-up trigger,
+- accept a maintained older release line when it has no release-blocking known
+  vulnerabilities and upgrading would introduce disproportionate risk,
+- regenerate and commit lockfiles reproducibly,
+- ensure a clean install does not create uncommitted dependency changes,
 - do not weaken scanner policy, suppress findings, or use force/legacy peer
   resolution merely to complete an upgrade.
 
-### Phase 3 - Full regression and release gate
+### Phase 3 - Full Alpha 2 regression
 
-- run the complete Milestone 20 pull-request and release checks after the final
-  dependency set is selected,
-- exercise editor serialization, image and asset handling, PWA installation and
-  update behavior, Git synchronization and conflict recovery, and all
-  Milestone 19 authentication/session/MFA flows,
-- build, scan, and smoke-test the final production image for every supported
-  CPU architecture,
-- require zero unresolved known vulnerabilities at the release policy threshold
-  across npm, Go, container OS packages, CodeQL, Dependabot, and secret scans,
-- produce the final Alpha 2 SBOM, provenance, dependency inventory, and release
-  notes from the exact immutable release candidate,
-- publish Alpha 2 only after intentional deferrals are documented and every
-  required functional, security, image, and recovery gate passes.
+Run the complete Milestone 20 pull-request and release checks after the final
+dependency set is selected.
 
-### Milestone 21 completion criteria
+Exercise at minimum:
+
+- Markdown loading and serialization,
+- editor toolbar behavior,
+- slash commands,
+- note tabs,
+- autosave and version checking,
+- file and folder operations,
+- Trash and restore,
+- note history and restore,
+- internal links,
+- image upload and clipboard paste,
+- asset cleanup,
+- Milestone 22 image lightbox,
+- search,
+- multiple notebooks,
+- Milestone 21 GitHub onboarding,
+- SSH key handling,
+- SSH host verification,
+- Git synchronization,
+- remote-change handling,
+- guided conflict resolution,
+- authentication,
+- session expiration and renewal,
+- password changes and recovery,
+- TOTP enrollment and recovery,
+- PWA installation,
+- PWA authentication lifecycle,
+- mobile layouts,
+- persistence across container restart/replacement.
+
+Do not treat successful compilation as sufficient regression coverage.
+
+### Phase 4 - Final security and container gate
+
+- run the complete Milestone 19 authentication/security gate,
+- run the complete Milestone 20 supply-chain/security gate,
+- build the final production image from a clean checkout,
+- build every supported CPU architecture,
+- run container vulnerability scanning against the actual release image,
+- run source/dependency vulnerability checks,
+- run secret scanning,
+- run CodeQL and other required static analysis,
+- verify non-root runtime behavior,
+- verify persistent-volume behavior,
+- smoke-test the built image through the documented health and startup flow,
+- test a fresh installation,
+- test an upgrade using representative existing Alpha data,
+- test rollback where documented.
+
+Require zero unresolved known vulnerabilities at the configured release policy
+threshold across npm, Go, container OS packages, CodeQL, Dependabot, and secret
+scans.
+
+A scanner or advisory-database failure must not be interpreted as a clean scan.
+
+### Phase 5 - Exact release-candidate artifacts
+
+Generate release artifacts from the exact immutable candidate that passed the
+gate.
+
+Produce or verify:
+
+- final SBOM,
+- provenance/attestation,
+- dependency inventory,
+- container digest,
+- architecture manifest,
+- release notes,
+- changelog version,
+- documented image tags.
+
+Do not generate security or dependency documentation from a different commit
+than the artifact being released.
+
+### Phase 6 - Final documentation verification
+
+Because Milestone 23 occurs before the dependency/toolchain review, verify that
+the final dependency updates did not invalidate release documentation.
+
+Recheck:
+
+- runtime requirements,
+- Docker examples,
+- environment variables,
+- authentication behavior,
+- supported browser/runtime assumptions,
+- upgrade instructions,
+- image tags,
+- version numbers,
+- known limitations.
+
+If Milestone 24 changes user-visible or operational behavior, update the
+documentation before the release candidate is considered final.
+
+### Milestone 24 completion criteria
 
 - every direct dependency and toolchain component has been reviewed against its
   current maintained releases,
@@ -2689,8 +4486,14 @@ baseline, not blindly selecting the numerically newest major version.
   without known release-blocking vulnerabilities,
 - the final multi-architecture image and complete Alpha 2 application pass all
   Milestone 19 and 20 security and regression gates,
+- Milestone 21 beginner-friendly onboarding passes final regression,
+- Milestone 22 image-lightbox behavior passes final regression,
+- Milestone 23 documentation matches the exact final release candidate,
+- the final fresh-install, upgrade, persistence, recovery, authentication, Git,
+  and PWA smoke tests succeed,
 - the released SBOM accurately describes the dependency baseline shipped to
-  users.
+  users,
+- Alpha 2 is published only after this milestone is complete.
 
 ## Alpha 2 completion criteria
 

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SettingsDialog } from './App'
 import { setCSRFToken } from './api'
@@ -8,6 +9,7 @@ import { setCSRFToken } from './api'
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
 })
 
 function jsonResponse(body: unknown, ok = true): Response {
@@ -20,7 +22,115 @@ function beginOnboarding(view: ReturnType<typeof render>, address = 'git@example
   fireEvent.change(view.getByLabelText('Repository SSH address'), { target: { value: address } })
 }
 
+function beginGitHubOnboarding(view: ReturnType<typeof render>, address = 'git@github.com:fred-head/private-notes.git') {
+  fireEvent.click(view.getByRole('button', { name: 'GitHub' }))
+  fireEvent.change(view.getByLabelText('Notebook name'), { target: { value: 'Private notes' } })
+  fireEvent.change(view.getByLabelText('GitHub repository address'), { target: { value: address } })
+}
+
 describe('Settings asset cleanup', () => {
+  it('keeps the GitHub path keyboard-operable at a narrow PWA-sized viewport', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    const user = userEvent.setup()
+    const view = render(<SettingsDialog mode="onboarding" autoLockMinutes={0} onAutoLockMinutes={vi.fn()} onClose={vi.fn()} />)
+    const githubButton = view.getByRole('button', { name: 'GitHub' })
+
+    githubButton.focus()
+    await user.keyboard('{Enter}')
+
+    expect(view.getByLabelText('Notebook name')).toBeTruthy()
+    expect(view.getByLabelText('GitHub repository address')).toBeTruthy()
+    expect(view.getByRole('link', { name: 'Create a repository on GitHub' })).toBeTruthy()
+    expect(view.getByRole('dialog').className).toContain('w-full')
+  })
+
+  it('guides GitHub beginners to create a repository and copy its SSH address', () => {
+    const view = render(<SettingsDialog mode="onboarding" autoLockMinutes={0} onAutoLockMinutes={vi.fn()} onClose={vi.fn()} />)
+
+    fireEvent.click(view.getByRole('button', { name: 'GitHub' }))
+    expect(view.getByText('Start with a GitHub repository')).toBeTruthy()
+    const createLink = view.getByRole('link', { name: 'Create a repository on GitHub' }) as HTMLAnchorElement
+    expect(createLink.href).toBe('https://github.com/new')
+    expect(createLink.target).toBe('_blank')
+    expect(view.getByText('Find this address in GitHub')).toBeTruthy()
+    expect(view.getByText('Code')).toBeTruthy()
+    expect(view.getByText('SSH')).toBeTruthy()
+
+    fireEvent.change(view.getByLabelText('Notebook name'), { target: { value: 'Private notes' } })
+    fireEvent.change(view.getByLabelText('GitHub repository address'), { target: { value: 'https://github.com/fred-head/private-notes' } })
+    expect(view.getByRole('alert').textContent).toContain('Code → SSH')
+    expect(view.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(true)
+
+    fireEvent.change(view.getByLabelText('GitHub repository address'), { target: { value: 'git@github.com:fred-head/private-notes.git' } })
+    expect(view.queryByRole('alert')).toBeNull()
+    expect(view.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('explains managed keys, GitHub deploy-key setup, retry, and the final review', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } })
+    const publicKey = 'ssh-ed25519 AAAAGITHUB repoquill-key'
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ keyId: '0123456789abcdef0123456789abcdef', publicKey }))
+      .mockResolvedValueOnce(jsonResponse({ state: 'authentication_failed', message: 'Permission denied.' }))
+      .mockResolvedValueOnce(jsonResponse({ state: 'success', message: 'Connection successful' }))
+    const view = render(<SettingsDialog mode="onboarding" autoLockMinutes={0} onAutoLockMinutes={vi.fn()} onClose={vi.fn()} />)
+
+    beginGitHubOnboarding(view)
+    fireEvent.change(view.getByLabelText(/Branch/), { target: { value: 'main' } })
+    fireEvent.click(view.getByRole('button', { name: 'Continue' }))
+    expect(view.getByText('Give this notebook secure access')).toBeTruthy()
+    expect(view.getByText(/personal SSH private key/)).toBeTruthy()
+    fireEvent.click(view.getByRole('button', { name: 'Generate key' }))
+    await waitFor(() => expect(view.getByDisplayValue(publicKey)).toBeTruthy())
+    expect(view.getByText('Add this public key in GitHub')).toBeTruthy()
+    expect(view.getByText(/Enable “Allow write access”/)).toBeTruthy()
+    const instructions = view.getByRole('link', { name: 'Open full GitHub key instructions' }) as HTMLAnchorElement
+    expect(instructions.target).toBe('_blank')
+    fireEvent.click(view.getByRole('button', { name: 'Copy public key' }))
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(publicKey))
+
+    fireEvent.click(view.getByRole('button', { name: 'Continue' }))
+    expect(view.getByText('Check the connection')).toBeTruthy()
+    fireEvent.click(view.getByRole('button', { name: 'Test connection' }))
+    await waitFor(() => expect(view.getByText('Permission denied.')).toBeTruthy())
+    expect(view.getByText(/GitHub did not accept this key/).textContent).toContain('Allow write access')
+    expect(view.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(view.getByRole('button', { name: 'Test connection' }))
+    await waitFor(() => expect(view.getByText('Connection successful')).toBeTruthy())
+    fireEvent.click(view.getByRole('button', { name: 'Continue' }))
+    expect(view.getByText('Review notebook connection')).toBeTruthy()
+    for (const label of ['Notebook', 'Git service', 'Git server', 'Repository', 'Branch', 'Access method', 'Connection status']) {
+      expect(view.getAllByText(label).length).toBeGreaterThan(0)
+    }
+    expect(view.getByText(/normal Markdown files inside the Git repository/)).toBeTruthy()
+    expect(view.getByText(/separately sends saved changes/).textContent).toContain('receives remote changes')
+    expect(fetchMock.mock.calls).toHaveLength(3)
+  })
+
+  it.each([
+    ['authentication_failed', 'GitHub did not accept this key'],
+    ['repository_not_found', 'repository could not be opened'],
+    ['branch_not_found', 'selected branch does not exist'],
+    ['network_failed', 'could not reach the Git server'],
+  ])('shows an actionable GitHub %s connection failure without resetting the wizard', async (state, expected) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({ state, message: 'Connection test failed.' }))
+    const view = render(<SettingsDialog mode="onboarding" autoLockMinutes={0} onAutoLockMinutes={vi.fn()} onClose={vi.fn()} />)
+    beginGitHubOnboarding(view)
+    fireEvent.change(view.getByLabelText(/Branch/), { target: { value: 'main' } })
+    fireEvent.click(view.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(view.getByRole('radio', { name: /Existing server SSH configuration/ }))
+    fireEvent.click(view.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(view.getByRole('button', { name: 'Test connection' }))
+
+    await waitFor(() => expect(view.getByText(expected, { exact: false })).toBeTruthy())
+    fireEvent.click(view.getByRole('button', { name: 'Back' }))
+    fireEvent.click(view.getByRole('button', { name: 'Back' }))
+    expect((view.getByLabelText('Notebook name') as HTMLInputElement).value).toBe('Private notes')
+    expect((view.getByLabelText('GitHub repository address') as HTMLInputElement).value).toBe('git@github.com:fred-head/private-notes.git')
+    expect((view.getByLabelText(/Branch/) as HTMLInputElement).value).toBe('main')
+  })
+
   it('clones and activates an existing Git repository', async () => {
     const onNotebookAdded = vi.fn().mockResolvedValue(undefined)
     const onClose = vi.fn()
@@ -83,7 +193,7 @@ describe('Settings asset cleanup', () => {
     expect(view.getByText('git.example.test:2222')).toBeTruthy()
     expect(view.getByText('SHA256:presented')).toBeTruthy()
     expect(fetchMock.mock.calls).toHaveLength(3)
-    fireEvent.click(view.getByRole('button', { name: 'Trust host' }))
+    fireEvent.click(view.getByRole('button', { name: 'Trust this Git server' }))
     await waitFor(() => expect(view.getByText('Host trusted, but authentication failed.')).toBeTruthy())
     expect(fetchMock.mock.calls[3][0]).toBe('/api/notebooks/ssh-host/trust')
     expect(JSON.parse(String(fetchMock.mock.calls[3][1]?.body))).toEqual({ requestId: 'abcdef0123456789abcdef0123456789' })
@@ -103,7 +213,7 @@ describe('Settings asset cleanup', () => {
     await waitFor(() => expect(view.getByText('SSH host key changed')).toBeTruthy())
     expect(view.getByText('SHA256:new')).toBeTruthy()
     expect(view.getByText('SHA256:old')).toBeTruthy()
-    expect(view.queryByRole('button', { name: 'Trust host' })).toBeNull()
+    expect(view.queryByRole('button', { name: 'Trust this Git server' })).toBeNull()
     expect(fetchMock.mock.calls).toHaveLength(2)
   })
 
@@ -136,6 +246,8 @@ describe('Settings asset cleanup', () => {
     const assigned = { keyId: 'dddddddddddddddddddddddddddddddd', publicKey: 'ssh-ed25519 ASSIGNED', fingerprint: 'SHA256:assigned', createdAt: '2026-08-21T10:00:00Z', assigned: true, notebookName: 'Work' }
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({ keys: [available, assigned] }))
     const view = render(<SettingsDialog mode="onboarding" autoLockMinutes={0} onAutoLockMinutes={vi.fn()} onClose={vi.fn()} />)
+    beginOnboarding(view)
+    fireEvent.click(view.getByRole('button', { name: 'Continue' }))
     fireEvent.click(view.getByRole('radio', { name: 'Use existing key' }))
     const selector = await view.findByLabelText('Existing unassigned key')
     expect(selector.textContent).toContain('SHA256:available')

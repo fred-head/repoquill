@@ -30,6 +30,20 @@ blindly preserving values supplied by the client. RepoQuill then walks an
 rightmost address outside the configured trusted networks. A malformed chain is
 ignored completely.
 
+RepoQuill normally derives the permitted browser origin from the request that
+reaches it. If a deliberately configured proxy rewrites the public host or
+scheme so that exact-origin checks cannot match, list only the browser-visible
+HTTPS origin in `REPOQUILL_TRUSTED_ORIGINS`:
+
+```yaml
+environment:
+  REPOQUILL_TRUSTED_ORIGINS: "https://notes.example.com"
+```
+
+Multiple exact origins are comma-separated. This is not a wildcard CORS switch
+and does not authenticate a request. Do not add origins merely to bypass a
+misconfigured proxy; first preserve the original `Host` and forwarded scheme.
+
 ## Nginx example
 
 ```nginx
