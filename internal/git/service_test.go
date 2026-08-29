@@ -102,6 +102,236 @@ func TestSyncStopsOnConflictAndPreservesLocalContent(t *testing.T) {
 	}
 }
 
+func TestGuidedMarkdownConflictResolutionPreservesVersionsAndPushesDecision(t *testing.T) {
+	root, remote := testRepository(t)
+	other := filepath.Join(t.TempDir(), "other")
+	run(t, "git", "clone", remote, other)
+	configureIdentity(t, other)
+	writeFile(t, filepath.Join(other, "Note.md"), "other version\n")
+	runGit(t, other, "add", "--all")
+	runGit(t, other, "commit", "-m", "Other update")
+	runGit(t, other, "push")
+	writeFile(t, filepath.Join(root, "Note.md"), "your version\n")
+
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if status := service.Sync(context.Background()); status.State != StateConflict {
+		t.Fatalf("expected conflict, got %#v", status)
+	}
+	if status := service.Status(context.Background()); status.State != StateConflict || status.Branch != "main" {
+		t.Fatalf("persisted conflict status became unavailable: %#v", status)
+	}
+	overview, err := service.Conflicts(context.Background())
+	if err != nil || len(overview.Items) != 1 {
+		t.Fatalf("conflict overview unavailable: %#v %v", overview, err)
+	}
+	item := overview.Items[0]
+	if item.Kind != "markdown" || item.YourContent != "your version\n" || item.OtherContent != "other version\n" {
+		t.Fatalf("versions were not presented with user-facing ownership: %#v", item)
+	}
+	result, err := service.ResolveConflicts(context.Background(), ConflictResolution{Token: overview.Token, Decisions: []ConflictDecision{{Path: "Note.md", Action: "edit_combined", Content: "combined result\n"}}})
+	if err != nil || result.State != StateSynced || result.SafetyPoint == "" {
+		t.Fatalf("resolution failed: %#v %v", result, err)
+	}
+	verification := filepath.Join(t.TempDir(), "verification")
+	run(t, "git", "clone", remote, verification)
+	content, err := os.ReadFile(filepath.Join(verification, "Note.md"))
+	if err != nil || string(content) != "combined result\n" {
+		t.Fatalf("resolved content was not pushed: %q %v", content, err)
+	}
+	if strings.TrimSpace(runGit(t, root, "show-ref", "refs/repoquill/recovery/"+result.SafetyPoint)) == "" {
+		t.Fatal("durable recovery reference was not created")
+	}
+}
+
+func TestGuidedConflictResolutionRejectsStaleReview(t *testing.T) {
+	root, remote := testRepository(t)
+	other := filepath.Join(t.TempDir(), "other")
+	run(t, "git", "clone", remote, other)
+	configureIdentity(t, other)
+	writeFile(t, filepath.Join(other, "Note.md"), "other\n")
+	runGit(t, other, "add", "--all")
+	runGit(t, other, "commit", "-m", "Other update")
+	runGit(t, other, "push")
+	writeFile(t, filepath.Join(root, "Note.md"), "yours\n")
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if service.Sync(context.Background()).State != StateConflict {
+		t.Fatal("expected conflict")
+	}
+	overview, err := service.Conflicts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(other, "Later.md"), "later\n")
+	runGit(t, other, "add", "--all")
+	runGit(t, other, "commit", "-m", "Later update")
+	runGit(t, other, "push")
+	_, err = service.ResolveConflicts(context.Background(), ConflictResolution{Token: overview.Token, Decisions: []ConflictDecision{{Path: "Note.md", Action: "use_yours"}}})
+	if !errors.Is(err, ErrConflictChanged) {
+		t.Fatalf("stale resolution was accepted: %v", err)
+	}
+	if content, _ := os.ReadFile(filepath.Join(root, "Note.md")); !strings.Contains(string(content), "<<<<<<<") {
+		t.Fatalf("conflict was unexpectedly mutated: %q", content)
+	}
+}
+
+func TestGuidedConflictResolutionRejectsChangedWorkingCopy(t *testing.T) {
+	root, remote := testRepository(t)
+	other := filepath.Join(t.TempDir(), "other")
+	run(t, "git", "clone", remote, other)
+	configureIdentity(t, other)
+	writeFile(t, filepath.Join(other, "Note.md"), "other\n")
+	runGit(t, other, "add", "--all")
+	runGit(t, other, "commit", "-m", "Other")
+	runGit(t, other, "push")
+	writeFile(t, filepath.Join(root, "Note.md"), "yours\n")
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if service.Sync(context.Background()).State != StateConflict {
+		t.Fatal("expected conflict")
+	}
+	overview, err := service.Conflicts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "Note.md"), "manual working-tree edit\n")
+	_, err = service.ResolveConflicts(context.Background(), ConflictResolution{Token: overview.Token, Decisions: []ConflictDecision{{Path: "Note.md", Action: "use_yours"}}})
+	if !errors.Is(err, ErrConflictChanged) {
+		t.Fatalf("changed working copy was overwritten: %v", err)
+	}
+}
+
+func TestGuidedImageConflictCanKeepBothWithoutOverwriting(t *testing.T) {
+	root, remote := testRepository(t)
+	imagePath := filepath.Join(root, "Note.assets", "picture.png")
+	writeFile(t, imagePath, "\x00initial-image")
+	runGit(t, root, "add", "--all")
+	runGit(t, root, "commit", "-m", "Add image")
+	runGit(t, root, "push")
+	other := filepath.Join(t.TempDir(), "other")
+	run(t, "git", "clone", remote, other)
+	configureIdentity(t, other)
+	writeFile(t, filepath.Join(other, "Note.assets", "picture.png"), "\x00other-image")
+	runGit(t, other, "add", "--all")
+	runGit(t, other, "commit", "-m", "Other image")
+	runGit(t, other, "push")
+	writeFile(t, imagePath, "\x00your-image")
+
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if service.Sync(context.Background()).State != StateConflict {
+		t.Fatal("expected image conflict")
+	}
+	overview, err := service.Conflicts(context.Background())
+	if err != nil || len(overview.Items) != 1 || overview.Items[0].Kind != "image" {
+		t.Fatalf("image overview unavailable: %#v %v", overview, err)
+	}
+	result, err := service.ResolveConflicts(context.Background(), ConflictResolution{Token: overview.Token, Decisions: []ConflictDecision{{Path: "Note.assets/picture.png", Action: "keep_both"}}})
+	if err != nil || result.State != StateSynced {
+		t.Fatalf("keep both failed: %#v %v", result, err)
+	}
+	content, _ := os.ReadFile(imagePath)
+	if string(content) != "\x00your-image" {
+		t.Fatalf("your selected image was overwritten: %q", content)
+	}
+	duplicates, err := filepath.Glob(filepath.Join(root, "Note.assets", "picture.other-*.png"))
+	if err != nil || len(duplicates) != 1 {
+		t.Fatalf("collision-resistant duplicate missing: %#v %v", duplicates, err)
+	}
+	otherContent, _ := os.ReadFile(duplicates[0])
+	if string(otherContent) != "\x00other-image" {
+		t.Fatalf("other image was not retained: %q", otherContent)
+	}
+}
+
+func TestGuidedModifyDeleteDefaultsCanPreserveTheExistingNote(t *testing.T) {
+	root, remote := testRepository(t)
+	other := filepath.Join(t.TempDir(), "other")
+	run(t, "git", "clone", remote, other)
+	configureIdentity(t, other)
+	runGit(t, other, "rm", "Note.md")
+	runGit(t, other, "commit", "-m", "Remove note")
+	runGit(t, other, "push")
+	writeFile(t, filepath.Join(root, "Note.md"), "your retained note\n")
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if service.Sync(context.Background()).State != StateConflict {
+		t.Fatal("expected modify/delete conflict")
+	}
+	overview, err := service.Conflicts(context.Background())
+	if err != nil || len(overview.Items) != 1 || overview.Items[0].Kind != "modify_delete" || !overview.Items[0].YourExists || overview.Items[0].OtherExists {
+		t.Fatalf("modify/delete overview incorrect: %#v %v", overview, err)
+	}
+	result, err := service.ResolveConflicts(context.Background(), ConflictResolution{Token: overview.Token, Decisions: []ConflictDecision{{Path: "Note.md", Action: "keep_note"}}})
+	if err != nil || result.State != StateSynced {
+		t.Fatalf("keep note failed: %#v %v", result, err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "Note.md"))
+	if err != nil || string(content) != "your retained note\n" {
+		t.Fatalf("note was not preserved: %q %v", content, err)
+	}
+}
+
+func TestSaveConflictSafetyPointPreservesExactServerVersion(t *testing.T) {
+	root, _ := testRepository(t)
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	name, err := service.PreserveFileVersion(context.Background(), "Note.md")
+	if err != nil || name == "" {
+		t.Fatalf("save recovery point failed: %q %v", name, err)
+	}
+	content := runGit(t, root, "cat-file", "blob", "refs/repoquill/save-recovery/"+name)
+	if content != "initial" {
+		t.Fatalf("recovery point contains unexpected data: %q", content)
+	}
+}
+
+func TestSaveConflictSafetyPointRejectsSymlinkEscape(t *testing.T) {
+	root, _ := testRepository(t)
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	writeFile(t, outside, "secret")
+	if err := os.Symlink(outside, filepath.Join(root, "escape.md")); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := service.PreserveFileVersion(context.Background(), "escape.md"); !errors.Is(err, ErrInvalidDecision) {
+		t.Fatalf("symlink escape was accepted: %v", err)
+	}
+}
+
+func TestGuidedRenameConflictRetainsBothNamedNotes(t *testing.T) {
+	root, remote := testRepository(t)
+	other := filepath.Join(t.TempDir(), "other")
+	run(t, "git", "clone", remote, other)
+	configureIdentity(t, other)
+	runGit(t, other, "mv", "Note.md", "Other name.md")
+	runGit(t, other, "commit", "-m", "Other rename")
+	runGit(t, other, "push")
+	runGit(t, root, "mv", "Note.md", "Your name.md")
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if service.Sync(context.Background()).State != StateConflict {
+		t.Fatal("expected rename conflict")
+	}
+	overview, err := service.Conflicts(context.Background())
+	if err != nil || len(overview.Items) != 3 {
+		t.Fatalf("rename paths were not presented: %#v %v", overview, err)
+	}
+	decisions := make([]ConflictDecision, 0, 3)
+	for _, item := range overview.Items {
+		action := "confirm_deletion"
+		if item.YourExists {
+			action = "keep_note"
+		} else if item.OtherExists {
+			action = "use_other"
+		}
+		decisions = append(decisions, ConflictDecision{Path: item.Path, Action: action})
+	}
+	result, err := service.ResolveConflicts(context.Background(), ConflictResolution{Token: overview.Token, Decisions: decisions})
+	if err != nil || result.State != StateSynced {
+		t.Fatalf("rename resolution failed: %#v %v", result, err)
+	}
+	for _, name := range []string{"Your name.md", "Other name.md"} {
+		if content, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(content) != "initial" {
+			t.Fatalf("renamed note %q was not retained: %q %v", name, content, err)
+		}
+	}
+}
+
 func TestFailedRemotePreservesSavedWorkingTree(t *testing.T) {
 	root, _ := testRepository(t)
 	writeFile(t, filepath.Join(root, "Note.md"), "saved locally")

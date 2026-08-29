@@ -1908,6 +1908,14 @@ Completion criteria:
 Make links between notes convenient while retaining standard Markdown
 portability.
 
+Implementation status: completed on the Alpha 2 development branch. Internal
+links remain ordinary relative Markdown links; RepoQuill provides a searchable
+picker and editor suggestions, opens links in the current or a new note tab,
+marks missing targets, and requires an exact review token before rename/move
+rewrites are applied. Link discovery and rewriting stay notebook-confined and
+conservatively leave images, code, external URLs, anchors, and unsupported
+syntax untouched.
+
 Requirements:
 
 - provide a searchable note picker from the existing link action,
@@ -1980,6 +1988,15 @@ Provide a safe conflict-resolution workflow that is understandable without Git
 knowledge. Git remains the underlying mechanism, but the primary UI must speak
 only in terms of the user's version, the other version, combined content, and
 the resulting note.
+
+Implementation status: completed on the Alpha 2 development branch. Both
+optimistic save collisions and remote synchronization conflicts now use the
+same plain-language review model. Source versions remain in Git, reviewed
+decisions are revalidated against the remote, index, and working tree, and a
+durable recovery ref is created before accepted content is applied. Markdown,
+modify/delete, binary image, keep-both, and overlapping rename cases are handled
+without force pushes, destructive resets, or exposing conflict markers to the
+editor.
 
 This milestone covers both conflicts detected by the optimistic file-version
 check during save and conflicts produced while integrating remote Git changes.

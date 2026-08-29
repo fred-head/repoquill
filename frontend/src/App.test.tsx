@@ -20,6 +20,7 @@ beforeEach(() => {
   let notebooks = [{ id: 'local', name: 'repos' }, { id: 'personal', name: 'Personal Notes', branch: 'main' }, { id: 'work', name: 'Work', branch: 'main' }]
   let noteContent = '# Auto-lock note'
   let noteVersion = 'v1'
+  let notePath = 'Note.md'
   let noteTrashed = false
   let trashItems: Array<{id:string;originalPath:string;type:'file';deletedAt:string;size:number}> = []
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -29,7 +30,7 @@ beforeEach(() => {
     if (url === '/api/notebooks') return Response.json({ activeId: active, notebooks })
     if (url === '/api/notebooks/work/activate' && init?.method === 'POST') { active = 'work'; return Response.json({ id: 'work', name: 'Work' }) }
     if (url === '/api/notebooks/local' && init?.method === 'DELETE') { notebooks = notebooks.filter((notebook) => notebook.id !== 'local'); return new Response(null, { status: 204 }) }
-    if (url === '/api/repository/tree') return Response.json({ entries: active === 'personal' ? [...(noteTrashed ? [] : [{ name: 'Note.md', path: 'Note.md', type: 'file' }]), { name: 'Second.md', path: 'Second.md', type: 'file' }] : [{ name: 'Work.md', path: 'Work.md', type: 'file' }] })
+    if (url === '/api/repository/tree') return Response.json({ entries: active === 'personal' ? [...(noteTrashed ? [] : [{ name: notePath, path: notePath, type: 'file' }]), { name: 'Second.md', path: 'Second.md', type: 'file' }] : [{ name: 'Work.md', path: 'Work.md', type: 'file' }] })
     if (url === '/api/repository/search?q=auto-lock') return Response.json({ results: [{ path: 'Note.md', type: 'content', line: 1, excerpt: '# Auto-lock note' }] })
     if (url === '/api/repository/git/status') return Response.json({ state: 'clean', branch: 'main' })
     if (url === '/api/repository/git/sync' && init?.method === 'POST') return Response.json({ state: 'synced', branch: 'main' })
@@ -37,12 +38,14 @@ beforeEach(() => {
     if (url === '/api/repository/history?path=Note.md') return Response.json({ entries: [{ versionId: 'a'.repeat(40), timestamp: '2026-08-20T10:00:00Z', summary: 'Earlier note', path: 'Note.md' }] })
     if (url.startsWith('/api/repository/history/version?')) return Response.json({ versionId: 'a'.repeat(40), timestamp: '2026-08-20T10:00:00Z', summary: 'Earlier note', path: 'Note.md', content: '# Earlier note' })
     if (url === '/api/repository/history/restore' && init?.method === 'POST') { noteContent = '# Earlier note'; noteVersion = 'v-restored'; return Response.json({ path: 'Note.md', content: noteContent, version: noteVersion }) }
+    if (url === '/api/repository/move/preview' && init?.method === 'POST') { const body = JSON.parse(String(init.body)); return Response.json({ source:body.source,target:body.target,token:'rewrite-token',rewrites:[{notePath:'Second.md',nextNotePath:'Second.md',line:1,before:'Note.md',after:body.target}] }) }
+    if (url === '/api/repository/move' && init?.method === 'POST') { const body = JSON.parse(String(init.body)); notePath = body.target; return Response.json({ path:body.target,rewrites:[] }) }
     if (url === '/api/repository/entry?path=Note.md' && init?.method === 'DELETE') { noteTrashed = true; const item = { id: 'b'.repeat(32), originalPath: 'Note.md', type: 'file' as const, deletedAt: '2026-08-28T10:00:00Z', size: 42 }; trashItems = [item]; return Response.json(item) }
     if (url === '/api/repository/trash') return Response.json({ items: trashItems })
     if (url === `/api/repository/trash/${'b'.repeat(32)}/restore` && init?.method === 'POST') { noteTrashed = false; const item = trashItems[0]; trashItems = []; return Response.json(item) }
     if (url === `/api/repository/trash/${'b'.repeat(32)}` && init?.method === 'DELETE') { const item = trashItems[0]; trashItems = []; return Response.json(item) }
     if (url.includes('Second.md')) return Response.json({ path: 'Second.md', content: '# Second note', version: 'v2' })
-    if (url.startsWith('/api/repository/file?')) return Response.json({ path: 'Note.md', content: noteContent, version: noteVersion })
+    if (url.startsWith('/api/repository/file?')) return Response.json({ path: notePath, content: noteContent, version: noteVersion })
     return Response.json({ error: 'unexpected request' }, { status: 500 })
   }))
 })
@@ -159,6 +162,49 @@ describe('App auto-lock integration', () => {
     expect(view.container.textContent).toContain('Second note')
   })
 
+  it('previews and confirms portable link rewrites before renaming a note', async () => {
+    const view = render(<App />)
+    fireEvent.click(await view.findByRole('button', { name:'Note' }))
+    await waitFor(() => expect(view.container.textContent).toContain('Auto-lock note'))
+    fireEvent.click(view.getByRole('button', { name:'Selected item actions' }))
+    fireEvent.click(view.getByRole('menuitem', { name:'Rename' }))
+    fireEvent.change(view.getByLabelText('New name'), { target:{ value:'Renamed.md' } })
+    fireEvent.submit(view.getByLabelText('New name').closest('form')!)
+    const dialog = await view.findByRole('dialog', { name:'Update note links?' })
+    expect(dialog.textContent).toContain('Second.md')
+    expect(dialog.textContent).toContain('Note.md')
+    expect(dialog.textContent).toContain('Renamed.md')
+    fireEvent.click(view.getByRole('button', { name:'Move and update links' }))
+    await waitFor(() => expect(view.getByRole('button', { name:'Renamed' })).toBeTruthy())
+    const moveCall = vi.mocked(globalThis.fetch).mock.calls.find(([url,init]) => String(url)==='/api/repository/move' && init?.method==='POST')
+    expect(JSON.parse(String(moveCall?.[1]?.body))).toEqual({ source:'Note.md',target:'Renamed.md',rewriteToken:'rewrite-token' })
+  })
+
+	it('guides a non-technical user through an overlapping Markdown change', async () => {
+		const fallback = vi.mocked(globalThis.fetch)
+		let resolved = false
+		vi.stubGlobal('fetch',vi.fn(async (input:RequestInfo|URL,init?:RequestInit) => {
+			const url = String(input)
+			if (url === '/api/repository/git/status' && !resolved) return Response.json({ state:'conflict',branch:'main',conflictFiles:['Note.md'] })
+			if (url === '/api/repository/git/conflicts') return Response.json({ token:'conflict-token',items:[{ path:'Note.md',kind:'markdown',yourExists:true,otherExists:true,yourContent:'# Your version',otherContent:'# Other version' }] })
+			if (url === '/api/repository/git/conflicts/resolve' && init?.method === 'POST') { resolved=true; return Response.json({ state:'synced',message:'done',safetyPoint:'recovery-1' }) }
+			return fallback(input,init)
+		}))
+		const view = render(<App />)
+		fireEvent.click(await view.findByRole('button',{ name:'Note' }))
+		await waitFor(()=>expect(view.container.textContent).toContain('Auto-lock note'))
+		fireEvent.click(view.getByRole('button',{ name:/Synchronization: Your decision is required/ }))
+		fireEvent.click(await view.findByRole('button',{ name:'Review affected items' }))
+		const assistant = await view.findByRole('dialog',{ name:'Choose the resulting content' })
+		expect(assistant.textContent).toContain('Your version')
+		expect(assistant.textContent).toContain('Other version')
+		fireEvent.click(view.getByRole('button',{ name:'Use your version' }))
+		fireEvent.click(view.getByRole('button',{ name:'Review complete — apply' }))
+		await waitFor(()=>expect(view.queryByRole('dialog',{ name:'Choose the resulting content' })).toBeNull())
+		const call = vi.mocked(globalThis.fetch).mock.calls.find(([url,request])=>String(url)==='/api/repository/git/conflicts/resolve'&&request?.method==='POST')
+		expect(JSON.parse(String(call?.[1]?.body))).toEqual({ token:'conflict-token',decisions:[{ path:'Note.md',action:'use_yours' }] })
+	})
+
   it('views a readable note history diff and restores through a normal version-checked save', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const view = render(<App />)
@@ -274,15 +320,21 @@ describe('App auto-lock integration', () => {
     expect(nextView.queryByText('Install RepoQuill for a standalone app experience.')).toBeNull()
   })
 
-  it('keeps a recovery draft when the server note version changed', async () => {
+  it('opens the same guided assistant when a recovery draft overlaps a server change', async () => {
     const draft = { notebookId: 'personal', path: 'Note.md', content: '# Unsaved recovery', savedContent: '# Older copy', version: 'older-version', capturedAt: '2026-08-27T09:00:00Z' }
     sessionStorage.setItem('repoquill.recovery-draft', JSON.stringify(draft))
     const view = render(<App authMode="local" />)
 
     fireEvent.click(await view.findByRole('button', { name: 'Review draft' }))
-    expect(await view.findByText(/server copy changed while you were signed out/)).toBeTruthy()
+		const assistant = await view.findByRole('dialog',{ name:'Choose the resulting content' })
+		expect(assistant.textContent).toContain('Unsaved recovery')
+		expect(assistant.textContent).toContain('Auto-lock note')
     expect(JSON.parse(sessionStorage.getItem('repoquill.recovery-draft') ?? 'null')).toEqual(draft)
-    expect(view.container.textContent).not.toContain('Unsaved recovery')
+		fireEvent.click(view.getByRole('button',{ name:'Use other version' }))
+		fireEvent.click(view.getByRole('button',{ name:'Review complete — apply' }))
+		await waitFor(()=>expect(view.queryByRole('dialog',{ name:'Choose the resulting content' })).toBeNull())
+		expect(sessionStorage.getItem('repoquill.recovery-draft')).toBeNull()
+		expect(view.container.textContent).toContain('Auto-lock note')
   })
 })
 

@@ -683,6 +683,29 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"path": filePath, "content": markdown.Content, "version": markdown.Version})
 	})
+	mux.HandleFunc("POST /api/repository/file/resolve-conflict", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Path            string `json:"path"`
+			ExpectedVersion string `json:"expectedVersion"`
+			Content         string `json:"content"`
+		}
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		safetyPoint, err := currentGit().PreserveFileVersion(ctx, input.Path)
+		if err != nil {
+			writeGitConflictError(w, err)
+			return
+		}
+		markdown, err := currentRepository().WriteMarkdown(input.Path, input.Content, input.ExpectedVersion)
+		if err != nil {
+			writeRepositoryError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"file": map[string]string{"path": input.Path, "content": markdown.Content, "version": markdown.Version}, "safetyPoint": safetyPoint})
+	})
 	mux.HandleFunc("GET /api/repository/history", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
@@ -742,17 +765,59 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 	})
 	mux.HandleFunc("POST /api/repository/move", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
+			Source       string `json:"source"`
+			Target       string `json:"target"`
+			RewriteToken string `json:"rewriteToken"`
+		}
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		if input.RewriteToken == "" {
+			preview, err := currentRepository().PreviewMoveLinks(input.Source, input.Target)
+			if err != nil {
+				writeRepositoryError(w, err)
+				return
+			}
+			if len(preview.Rewrites) > 0 {
+				writeRepositoryError(w, files.ErrLinkPreviewRequired)
+				return
+			}
+			if err := currentRepository().Move(input.Source, input.Target); err != nil {
+				writeRepositoryError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"path": input.Target, "rewrites": []files.LinkRewrite{}})
+			return
+		}
+		preview, err := currentRepository().MoveWithLinkUpdates(input.Source, input.Target, input.RewriteToken)
+		if err != nil {
+			writeRepositoryError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"path": input.Target, "rewrites": preview.Rewrites})
+	})
+	mux.HandleFunc("POST /api/repository/move/preview", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
 			Source string `json:"source"`
 			Target string `json:"target"`
 		}
 		if !decodeJSON(w, r, &input) {
 			return
 		}
-		if err := currentRepository().Move(input.Source, input.Target); err != nil {
+		preview, err := currentRepository().PreviewMoveLinks(input.Source, input.Target)
+		if err != nil {
 			writeRepositoryError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"path": input.Target})
+		writeJSON(w, http.StatusOK, preview)
+	})
+	mux.HandleFunc("GET /api/repository/links", func(w http.ResponseWriter, r *http.Request) {
+		links, err := currentRepository().NoteLinks(r.URL.Query().Get("path"))
+		if err != nil {
+			writeRepositoryError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"links": links})
 	})
 	mux.HandleFunc("DELETE /api/repository/entry", func(w http.ResponseWriter, r *http.Request) {
 		item, err := currentRepository().MoveToTrash(r.URL.Query().Get("path"))
@@ -861,6 +926,43 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			logger.Info("background Git sync completed", "state", result.State)
 		}()
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+	})
+	mux.HandleFunc("GET /api/repository/git/conflicts", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		overview, err := currentGit().Conflicts(ctx)
+		if err != nil {
+			writeGitConflictError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, overview)
+	})
+	mux.HandleFunc("GET /api/repository/git/conflict-version", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		content, contentType, err := currentGit().ConflictBlob(ctx, r.URL.Query().Get("path"), r.URL.Query().Get("side"))
+		if err != nil {
+			writeGitConflictError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	})
+	mux.HandleFunc("POST /api/repository/git/conflicts/resolve", func(w http.ResponseWriter, r *http.Request) {
+		var input gitrepo.ConflictResolution
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		defer cancel()
+		result, err := currentGit().ResolveConflicts(ctx, input)
+		if err != nil {
+			writeGitConflictError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
 	})
 	mux.HandleFunc("POST /api/notebooks", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
@@ -1146,6 +1248,8 @@ func writeRepositoryError(w http.ResponseWriter, err error) {
 		status, message = http.StatusConflict, "The original location is already in use. Rename or move the existing item before restoring."
 	case errors.Is(err, files.ErrInvalidTrashID):
 		status, message = http.StatusBadRequest, "invalid trash item"
+	case errors.Is(err, files.ErrLinkPreviewRequired):
+		status, message = http.StatusConflict, "Review the internal note-link updates before moving this item."
 	case errors.Is(err, files.ErrFileTooLarge):
 		status, message = http.StatusRequestEntityTooLarge, err.Error()
 	case errors.Is(err, files.ErrAssetTooLarge):
@@ -1158,6 +1262,20 @@ func writeRepositoryError(w http.ResponseWriter, err error) {
 		status, message = http.StatusNotFound, "Markdown file not found"
 	case errors.Is(err, os.ErrPermission):
 		status, message = http.StatusForbidden, "repository path is not readable"
+	}
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func writeGitConflictError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	message := "The changes could not be reviewed safely. Both versions remain preserved."
+	switch {
+	case errors.Is(err, gitrepo.ErrNoConflict):
+		status, message = http.StatusNotFound, err.Error()
+	case errors.Is(err, gitrepo.ErrConflictChanged):
+		status, message = http.StatusConflict, err.Error()
+	case errors.Is(err, gitrepo.ErrInvalidDecision), errors.Is(err, os.ErrNotExist):
+		status, message = http.StatusBadRequest, err.Error()
 	}
 	writeJSON(w, status, map[string]string{"error": message})
 }

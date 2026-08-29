@@ -32,8 +32,10 @@ type Node struct {
 }
 
 type Repository struct {
-	root    string
-	trashMu sync.Mutex
+	root      string
+	trashMu   sync.Mutex
+	moveMu    sync.Mutex
+	contentMu sync.Mutex
 }
 
 type Markdown struct {
@@ -130,6 +132,12 @@ func (r *Repository) ReadMarkdown(relative string) (Markdown, error) {
 }
 
 func (r *Repository) WriteMarkdown(relative, content, expectedVersion string) (Markdown, error) {
+	r.contentMu.Lock()
+	defer r.contentMu.Unlock()
+	return r.writeMarkdown(relative, content, expectedVersion)
+}
+
+func (r *Repository) writeMarkdown(relative, content, expectedVersion string) (Markdown, error) {
 	resolved, info, err := r.resolveMarkdown(relative)
 	if err != nil {
 		return Markdown{}, err

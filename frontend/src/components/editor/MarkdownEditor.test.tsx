@@ -190,9 +190,6 @@ describe('MarkdownEditor read-only mode', () => {
 
   it('toggles blockquotes and creates a complete link at an empty cursor', async () => {
     const onChange = vi.fn()
-    const prompts = vi.spyOn(window, 'prompt')
-      .mockReturnValueOnce('RepoQuill')
-      .mockReturnValueOnce('https://example.com')
     const view = render(<MarkdownEditor documentKey="toolbar-polish" notePath="Note.md" markdown="Quoted text\n\n" readOnly={false} onChange={onChange} />)
     await waitFor(() => expect(view.container.textContent).toContain('Quoted text'))
 
@@ -205,8 +202,62 @@ describe('MarkdownEditor read-only mode', () => {
     const editor = view.container.querySelector('.ProseMirror') as HTMLElement
     editor.focus()
     fireEvent.click(view.getByRole('button', { name: 'Link' }))
+    expect(await view.findByRole('dialog', { name: 'Insert link' })).toBeTruthy()
+    fireEvent.change(view.getByLabelText('Link text'), { target: { value: 'RepoQuill' } })
+    fireEvent.change(view.getByLabelText('External URL or custom Markdown destination'), { target: { value: 'https://example.com' } })
+    fireEvent.click(view.getByRole('button', { name: 'Apply URL' }))
     await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('[RepoQuill](https://example.com)'))
-    expect(prompts).toHaveBeenCalledTimes(2)
+  })
+
+  it('inserts and opens portable relative internal note links', async () => {
+    const onChange = vi.fn()
+    const onOpenNoteLink = vi.fn()
+    const view = render(<MarkdownEditor documentKey="internal-link" notePath="Folder/Current.md" markdown="See also: " readOnly={false} onChange={onChange} notePaths={['Folder/Current.md','Other Notes/Target Note.md']} onOpenNoteLink={onOpenNoteLink} />)
+    await waitFor(() => expect(view.container.textContent).toContain('See also:'))
+    const editor = view.container.querySelector('.ProseMirror') as HTMLElement
+    editor.focus()
+    fireEvent.click(view.getByRole('button', { name: 'Link' }))
+    fireEvent.change(await view.findByLabelText('Find a note'), { target: { value: 'Target' } })
+    fireEvent.click(view.getByRole('option', { name: /Target Note/ }))
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('[Target Note](../Other%20Notes/Target%20Note.md)'))
+
+		fireEvent.click(await view.findByRole('button', { name:'Open linked note in new tab' }))
+		expect(onOpenNoteLink).toHaveBeenCalledWith('Other Notes/Target Note.md', 'new')
+		onOpenNoteLink.mockClear()
+
+    const anchor = view.container.querySelector('a') as HTMLAnchorElement
+    fireEvent.click(anchor, { ctrlKey:true })
+    expect(onOpenNoteLink).toHaveBeenCalledWith('Other Notes/Target Note.md', 'new')
+  })
+
+  it('shows a missing state for broken internal links without changing Markdown', async () => {
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="broken-link" notePath="Current.md" markdown="[Missing](Missing.md)" readOnly={false} onChange={onChange} notePaths={['Current.md']} />)
+    const anchor = await waitFor(() => {
+      const element = view.container.querySelector('a') as HTMLAnchorElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    fireEvent.click(anchor)
+    expect((await view.findByRole('alert')).textContent).toContain('Linked note not found: Missing.md')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('suggests notes for the internal-link trigger and still serializes standard Markdown', async () => {
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="link-trigger" notePath="Folder/Current.md" markdown="" readOnly={false} onChange={onChange} notePaths={['Folder/Current.md','Folder/Target.md','Elsewhere/Other.md']} />)
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    editor.focus()
+    await userEvent.type(editor, '[[tar', { skipClick:true })
+    const suggestions = await view.findByRole('listbox', { name:'Internal note suggestions' })
+    expect(suggestions.textContent).toContain('Target')
+    fireEvent.keyDown(editor, { key:'Enter' })
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('[Target](Target.md)'))
+    expect(view.queryByRole('listbox', { name:'Internal note suggestions' })).toBeNull()
   })
 
   it('uses Enter for a paragraph and Shift+Enter for a hard line break', async () => {

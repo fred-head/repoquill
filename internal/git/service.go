@@ -222,13 +222,14 @@ func (s *Service) status(ctx context.Context) (Status, error) {
 	if err := s.validateRoot(ctx); err != nil {
 		return Status{}, err
 	}
+	conflicts := s.conflictFiles(ctx)
+	if len(conflicts) > 0 || s.rebaseInProgress() {
+		branch, _ := s.conflictBranch(ctx)
+		return Status{State: StateConflict, Branch: branch, ConflictFiles: conflicts, Message: "Automatic synchronization is paused until the Git conflict is resolved."}, nil
+	}
 	branch, err := s.branch(ctx)
 	if err != nil {
 		return Status{}, err
-	}
-	conflicts := s.conflictFiles(ctx)
-	if len(conflicts) > 0 || s.rebaseInProgress() {
-		return Status{State: StateConflict, Branch: branch, ConflictFiles: conflicts, Message: "Automatic synchronization is paused until the Git conflict is resolved."}, nil
 	}
 	dirty, err := s.dirty(ctx)
 	if err != nil {
@@ -313,10 +314,36 @@ func (s *Service) rebaseInProgress() bool {
 }
 
 func (s *Service) run(ctx context.Context, operation string, arguments ...string) (string, error) {
+	output, err := s.runBytes(ctx, operation, arguments...)
+	return string(output), err
+}
+
+func (s *Service) runBytes(ctx context.Context, operation string, arguments ...string) ([]byte, error) {
 	started := time.Now()
 	commandArguments := append([]string{"-c", "core.hooksPath=/dev/null", "-C", s.root}, arguments...)
 	command := exec.CommandContext(ctx, "git", commandArguments...)
 	command.Env = gitEnvironment(s.sshCommand)
+	output, err := command.CombinedOutput()
+	exitCode := 0
+	if err != nil {
+		exitCode = -1
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			exitCode = exitError.ExitCode()
+		}
+	}
+	s.logger.Info("git operation", "notebook", filepath.Base(s.root), "operation", operation, "success", err == nil, "duration", time.Since(started).String(), "exitCode", exitCode)
+	if err != nil {
+		return nil, &commandError{operation: operation, exitCode: exitCode, output: sanitizeOutput(string(output))}
+	}
+	return output, nil
+}
+
+func (s *Service) runWithEditor(ctx context.Context, operation string, arguments ...string) (string, error) {
+	started := time.Now()
+	commandArguments := append([]string{"-c", "core.hooksPath=/dev/null", "-C", s.root}, arguments...)
+	command := exec.CommandContext(ctx, "git", commandArguments...)
+	command.Env = append(gitEnvironment(s.sshCommand), "GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true")
 	output, err := command.CombinedOutput()
 	exitCode := 0
 	if err != nil {

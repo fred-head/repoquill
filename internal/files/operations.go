@@ -16,6 +16,12 @@ var (
 )
 
 func (r *Repository) Create(relative, entryType string) error {
+	r.contentMu.Lock()
+	defer r.contentMu.Unlock()
+	return r.create(relative, entryType)
+}
+
+func (r *Repository) create(relative, entryType string) error {
 	markdown := entryType == "file"
 	if !markdown && entryType != "directory" {
 		return ErrInvalidType
@@ -61,6 +67,12 @@ func (r *Repository) Create(relative, entryType string) error {
 }
 
 func (r *Repository) Delete(relative string) error {
+	r.contentMu.Lock()
+	defer r.contentMu.Unlock()
+	return r.delete(relative)
+}
+
+func (r *Repository) delete(relative string) error {
 	resolved, info, err := r.resolveEntry(relative)
 	if err != nil {
 		return err
@@ -93,6 +105,14 @@ func (r *Repository) Delete(relative string) error {
 }
 
 func (r *Repository) Move(sourceRelative, targetRelative string) error {
+	r.moveMu.Lock()
+	defer r.moveMu.Unlock()
+	r.contentMu.Lock()
+	defer r.contentMu.Unlock()
+	return r.move(sourceRelative, targetRelative)
+}
+
+func (r *Repository) move(sourceRelative, targetRelative string) error {
 	source, info, err := r.resolveEntry(sourceRelative)
 	if err != nil {
 		return err
@@ -244,15 +264,7 @@ func rewriteAssetLinks(markdownPath, oldBase, newBase string) error {
 	if err != nil {
 		return err
 	}
-	oldEscaped := url.PathEscape(oldBase)
-	newEscaped := url.PathEscape(newBase)
-	replacer := strings.NewReplacer(
-		"(<"+oldBase+".assets/", "(<"+newBase+".assets/",
-		"("+oldBase+".assets/", "("+newBase+".assets/",
-		"(<"+oldEscaped+".assets/", "(<"+newEscaped+".assets/",
-		"("+oldEscaped+".assets/", "("+newEscaped+".assets/",
-	)
-	updated := replacer.Replace(string(content))
+	updated := rewriteAssetLinksContent(string(content), oldBase, newBase)
 	if updated == string(content) {
 		return nil
 	}
@@ -287,6 +299,17 @@ func rewriteAssetLinks(markdownPath, oldBase, newBase string) error {
 		return err
 	}
 	return nil
+}
+
+func rewriteAssetLinksContent(content, oldBase, newBase string) string {
+	oldEscaped := url.PathEscape(oldBase)
+	newEscaped := url.PathEscape(newBase)
+	return strings.NewReplacer(
+		"(<"+oldBase+".assets/", "(<"+newBase+".assets/",
+		"("+oldBase+".assets/", "("+newBase+".assets/",
+		"(<"+oldEscaped+".assets/", "(<"+newEscaped+".assets/",
+		"("+oldEscaped+".assets/", "("+newEscaped+".assets/",
+	).Replace(content)
 }
 
 func syncDirectory(directory string) error {

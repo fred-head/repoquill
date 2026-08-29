@@ -810,6 +810,55 @@ func TestRepositoryMutationAPI(t *testing.T) {
 	}
 }
 
+func TestRepositoryLinkAPIRequiresAndAppliesReviewedMoveRewrites(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "A.md"), []byte("[B](B.md)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "B.md"), []byte("target"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(target string, body map[string]string) *httptest.ResponseRecorder {
+		encoded, _ := json.Marshal(body)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, target, bytes.NewReader(encoded)))
+		return recorder
+	}
+
+	blocked := request("/api/repository/move", map[string]string{"source": "B.md", "target": "Moved.md"})
+	if blocked.Code != http.StatusConflict || !strings.Contains(blocked.Body.String(), "Review the internal note-link updates") {
+		t.Fatalf("unreviewed link rewrite was not blocked: %d %s", blocked.Code, blocked.Body.String())
+	}
+	previewResponse := request("/api/repository/move/preview", map[string]string{"source": "B.md", "target": "Moved.md"})
+	var preview struct {
+		Token    string `json:"token"`
+		Rewrites []struct {
+			Before string `json:"before"`
+			After  string `json:"after"`
+		} `json:"rewrites"`
+	}
+	if previewResponse.Code != http.StatusOK || json.NewDecoder(previewResponse.Body).Decode(&preview) != nil || len(preview.Rewrites) != 1 || preview.Rewrites[0].After != "Moved.md" {
+		t.Fatalf("unexpected link rewrite preview: %d %s", previewResponse.Code, previewResponse.Body.String())
+	}
+	moved := request("/api/repository/move", map[string]string{"source": "B.md", "target": "Moved.md", "rewriteToken": preview.Token})
+	if moved.Code != http.StatusOK {
+		t.Fatalf("reviewed move failed: %d %s", moved.Code, moved.Body.String())
+	}
+	content, err := os.ReadFile(filepath.Join(root, "A.md"))
+	if err != nil || string(content) != "[B](Moved.md)\n" {
+		t.Fatalf("inbound link was not updated: %q %v", content, err)
+	}
+	links := httptest.NewRecorder()
+	handler.ServeHTTP(links, httptest.NewRequest(http.MethodGet, "/api/repository/links?path=A.md", nil))
+	if links.Code != http.StatusOK || !strings.Contains(links.Body.String(), `"targetPath":"Moved.md"`) || !strings.Contains(links.Body.String(), `"exists":true`) {
+		t.Fatalf("link inventory failed: %d %s", links.Code, links.Body.String())
+	}
+}
+
 func TestRepositoryAssetAPI(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "Note.md"), []byte("# Note"), 0o644); err != nil {
@@ -1210,6 +1259,8 @@ func TestEveryApplicationAPIRouteDeniesUnauthenticatedAccess(t *testing.T) {
 		{http.MethodPost, "/api/repository/history/restore"},
 		{http.MethodPost, "/api/repository/entries"},
 		{http.MethodPost, "/api/repository/move"},
+		{http.MethodPost, "/api/repository/move/preview"},
+		{http.MethodGet, "/api/repository/links?path=Secret.md"},
 		{http.MethodDelete, "/api/repository/entry"},
 		{http.MethodGet, "/api/repository/trash"},
 		{http.MethodPost, "/api/repository/trash/example/restore"},

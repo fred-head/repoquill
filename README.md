@@ -24,7 +24,9 @@ versioned even without RepoQuill.
 - Managed SSH deploy keys and explicit SSH host fingerprint approval
 - Manual and configurable automatic commit, pull/rebase, and push workflows
 - Conflict-safe saves with visible local-save and Git-sync status
+- Guided conflict resolution for notes, deletions, renames, and images without requiring Git knowledge
 - Note-focused Git version history with readable comparison and safe restore
+- Portable internal note links with search, broken-link detection, and safe rename/move updates
 - Full-text search across note names, folders, and Markdown content
 - Responsive desktop/mobile UI, dark/light mode, and installable online-first PWA
 - Multi-architecture Docker images for `linux/amd64` and `linux/arm64`
