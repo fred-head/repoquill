@@ -31,7 +31,9 @@ The supplied Compose configuration publishes port 8080 on `127.0.0.1` by default
 - Notebook onboarding accepts SSH repository URLs only. Embedded credentials, local paths, option-like values, unsafe protocols, and malformed branches are rejected.
 - SSH host keys require explicit fingerprint review and strict host verification.
 - Managed private keys stay below `/data/keys`, use restrictive permissions, and are never returned by the API.
-- Git failures do not roll back successfully saved Markdown files. Force-push and automatic conflict resolution are not used.
+- Git failures do not roll back successfully saved Markdown files. RepoQuill
+  never force-pushes or silently chooses a conflict winner; its guided review
+  preserves both versions and requires an explicit owner decision.
 - The PWA is online-first. Its service worker caches the application shell, never API responses or note contents.
 
 `REPOQUILL_ALLOW_LOCAL_REMOTES=true` exists only for isolated automated tests. Do not enable it in a deployed instance.
@@ -71,7 +73,9 @@ and coordinated-disclosure process is documented in
 - Keep the container image, reverse proxy, host OS, Git provider, and authentication layer patched.
 - Verify SSH fingerprints through an independent trusted source before approval.
 - Use dedicated deploy keys with access limited to the intended repository.
-- Review Git conflicts manually and keep independent backups in addition to the Git remote.
+- Resolve reported overlaps through RepoQuill's guided conflict review, inspect
+  the optional technical details when troubleshooting, and keep independent
+  backups in addition to the Git remote.
 - Do not mount arbitrary host directories or a Docker socket into the container.
 
 ## Reporting a vulnerability

@@ -30,8 +30,10 @@ before using it with important notebooks.
 - Browser-close synchronization is best effort because a browser may terminate
   before delivering the request. It is not a backup guarantee.
 - Concurrent edits to the same note are not merged collaboratively. Version
-  checks prevent known stale browser writes, while Git conflicts stop automatic
-  synchronization and require manual resolution with a normal Git client.
+  checks prevent known stale browser writes, while overlapping changes stop
+  automatic synchronization and open RepoQuill's guided conflict review. The
+  original versions and a Git recovery point are preserved while the owner
+  chooses the resulting note or asset.
 - Git synchronization groups pending working-tree changes into ordinary
   commits. RepoQuill does not expose staging or per-file commit composition.
 - Removing an image reference does not automatically delete its stored asset.

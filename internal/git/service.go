@@ -84,6 +84,18 @@ func NewService(root string, logger *slog.Logger) *Service {
 	return &Service{root: filepath.Clean(root), logger: logger}
 }
 
+// RestoreLastSyncedAt hydrates informational sync state persisted outside the
+// Git working tree. Invalid metadata is ignored rather than affecting Git.
+func (s *Service) RestoreLastSyncedAt(value string) {
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	s.lastSyncedAt = parsed.UTC()
+	s.mu.Unlock()
+}
+
 func (s *Service) Status(ctx context.Context) Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -1029,6 +1029,27 @@ func TestCloneAndActivateNotebookAPI(t *testing.T) {
 	if _, err := os.Stat(metadata); err != nil {
 		t.Fatalf("notebook metadata was not persisted: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(seed, "Local.md"), []byte("# Local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	syncResponse := httptest.NewRecorder()
+	handler.ServeHTTP(syncResponse, httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil))
+	if syncResponse.Code != http.StatusOK || !strings.Contains(syncResponse.Body.String(), `"state":"synced"`) {
+		t.Fatalf("sync failed: %d %s", syncResponse.Code, syncResponse.Body.String())
+	}
+	registry, err := loadNotebookRegistry(metadata)
+	if err != nil || len(registry.Entries) != 1 || registry.Entries[0].LastSyncedAt == "" {
+		t.Fatalf("last successful sync was not persisted: %#v, %v", registry, err)
+	}
+	restarted, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	health := httptest.NewRecorder()
+	restarted.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/api/notebooks/"+registry.Entries[0].ID+"/health", nil))
+	if health.Code != http.StatusOK || !strings.Contains(health.Body.String(), registry.Entries[0].LastSyncedAt) {
+		t.Fatalf("persisted sync time was not restored after restart: %d %s", health.Code, health.Body.String())
+	}
 }
 
 func TestManagedSSHKeyAPINeverReturnsPrivateMaterial(t *testing.T) {

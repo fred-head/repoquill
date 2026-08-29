@@ -95,6 +95,9 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 	} else if activeLoadErr == nil && activeRecord.AuthType == "existing-server-ssh" {
 		gitService = gitrepo.NewManagedService(repositoryRoot, gitrepo.SSHCommand("", knownHostsPath), logger)
 	}
+	if activeLoadErr == nil {
+		gitService.RestoreLastSyncedAt(activeRecord.LastSyncedAt)
+	}
 	var activeMu sync.RWMutex
 	currentRepository := func() *files.Repository {
 		activeMu.RLock()
@@ -105,6 +108,25 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		activeMu.RLock()
 		defer activeMu.RUnlock()
 		return gitService
+	}
+	currentGitContext := func() (*gitrepo.Service, notebookRecord) {
+		activeMu.RLock()
+		defer activeMu.RUnlock()
+		return gitService, activeRecord
+	}
+	recordSuccessfulSync := func(record notebookRecord, status gitrepo.Status) {
+		if record.ID == "" || status.LastSyncedAt == "" {
+			return
+		}
+		if err := recordNotebookSync(metadataPath, record.ID, status.LastSyncedAt); err != nil {
+			logger.Warn("persist last successful synchronization failed", "notebook", record.ID, "error", err)
+			return
+		}
+		activeMu.Lock()
+		if activeRecord.ID == record.ID {
+			activeRecord.LastSyncedAt = status.LastSyncedAt
+		}
+		activeMu.Unlock()
 	}
 	currentNotebookName := func() string {
 		activeMu.RLock()
@@ -613,6 +635,8 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		activeMu.Lock()
 		repository = nextRepository
 		gitService = gitrepo.NewManagedService(record.LocalPath, sshCommand, logger)
+		gitService.RestoreLastSyncedAt(record.LastSyncedAt)
+		activeRecord = record
 		activeNotebookName = record.Name
 		activeMu.Unlock()
 		writeJSON(w, http.StatusOK, record)
@@ -690,11 +714,12 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		statusContext, statusCancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer statusCancel()
 		service := gitrepo.NewManagedService(record.LocalPath, sshCommand, logger)
+		service.RestoreLastSyncedAt(record.LastSyncedAt)
 		if active, activeErr := loadActiveNotebook(metadataPath); activeErr == nil && active.ID == record.ID {
 			service = currentGit()
 		}
 		status := service.Status(statusContext)
-		writeJSON(w, http.StatusOK, map[string]any{"localFiles": map[string]string{"state": localState, "message": localMessage}, "writeAccess": map[string]string{"state": writeState, "message": writeMessage}, "connection": map[string]string{"state": connectionState, "message": connectionMessage}, "pendingWork": map[string]string{"state": string(status.State), "message": status.Message}, "lastSyncedAt": status.LastSyncedAt})
+		writeJSON(w, http.StatusOK, map[string]any{"localFiles": map[string]string{"state": localState, "message": localMessage}, "writeAccess": map[string]string{"state": writeState, "message": writeMessage}, "connection": map[string]string{"state": connectionState, "message": connectionMessage}, "pendingWork": map[string]string{"state": string(status.State), "message": status.Message}, "lastSyncedAt": record.LastSyncedAt})
 	})
 	mux.HandleFunc("DELETE /api/notebooks/{notebookID}", func(w http.ResponseWriter, r *http.Request) {
 		notebookID := r.PathValue("notebookID")
@@ -1027,14 +1052,20 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 	mux.HandleFunc("POST /api/repository/git/sync", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
-		writeJSON(w, http.StatusOK, currentGit().Sync(ctx))
+		service, record := currentGitContext()
+		result := service.Sync(ctx)
+		if result.State == gitrepo.StateSynced {
+			recordSuccessfulSync(record, service.Status(ctx))
+		}
+		writeJSON(w, http.StatusOK, result)
 	})
 	mux.HandleFunc("POST /api/repository/git/sync-background", func(w http.ResponseWriter, _ *http.Request) {
-		service := currentGit()
+		service, record := currentGitContext()
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			result := service.Sync(ctx)
+			recordSuccessfulSync(record, result)
 			logger.Info("background Git sync completed", "state", result.State)
 		}()
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
@@ -1069,10 +1100,14 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
-		result, err := currentGit().ResolveConflicts(ctx, input)
+		service, record := currentGitContext()
+		result, err := service.ResolveConflicts(ctx, input)
 		if err != nil {
 			writeGitConflictError(w, err)
 			return
+		}
+		if result.State == gitrepo.StateSynced {
+			recordSuccessfulSync(record, service.Status(ctx))
 		}
 		writeJSON(w, http.StatusOK, result)
 	})
@@ -1170,6 +1205,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		activeMu.Lock()
 		repository = clonedRepository
 		gitService = gitrepo.NewManagedService(cloned.Path, sshCommand, logger)
+		activeRecord = record
 		activeNotebookName = record.Name
 		activeMu.Unlock()
 		writeJSON(w, http.StatusCreated, record)

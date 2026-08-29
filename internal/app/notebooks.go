@@ -5,16 +5,37 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
+var notebookRegistryMu sync.Mutex
+
 type notebookRecord struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	LocalPath string `json:"localPath"`
-	RemoteURL string `json:"remoteUrl,omitempty"`
-	Branch    string `json:"branch"`
-	AuthType  string `json:"authType"`
-	KeyID     string `json:"keyId,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	LocalPath    string `json:"localPath"`
+	RemoteURL    string `json:"remoteUrl,omitempty"`
+	Branch       string `json:"branch"`
+	AuthType     string `json:"authType"`
+	KeyID        string `json:"keyId,omitempty"`
+	LastSyncedAt string `json:"lastSyncedAt,omitempty"`
+}
+
+func recordNotebookSync(metadataPath, notebookID, lastSyncedAt string) error {
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
+	registry, err := loadNotebookRegistry(metadataPath)
+	if err != nil {
+		return err
+	}
+	for index := range registry.Entries {
+		if registry.Entries[index].ID != notebookID {
+			continue
+		}
+		registry.Entries[index].LastSyncedAt = lastSyncedAt
+		return writeNotebookRegistry(metadataPath, registry)
+	}
+	return os.ErrNotExist
 }
 
 type notebookRegistry struct {
@@ -58,6 +79,8 @@ func loadNotebookRegistry(metadataPath string) (notebookRegistry, error) {
 }
 
 func registerActiveNotebook(metadataPath string, record notebookRecord) error {
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
 	if metadataPath == "" {
 		return errors.New("notebook metadata path is not configured")
 	}
@@ -81,6 +104,8 @@ func registerActiveNotebook(metadataPath string, record notebookRecord) error {
 }
 
 func registerNotebookWithoutActivation(metadataPath string, record notebookRecord) error {
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
 	registry, err := loadNotebookRegistry(metadataPath)
 	if err != nil {
 		return err
@@ -108,6 +133,8 @@ func findNotebook(metadataPath, notebookID string) (notebookRecord, error) {
 }
 
 func setActiveNotebook(metadataPath, notebookID string) error {
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
 	registry, err := loadNotebookRegistry(metadataPath)
 	if err != nil {
 		return err
@@ -117,6 +144,8 @@ func setActiveNotebook(metadataPath, notebookID string) error {
 }
 
 func removeLocalNotebook(metadataPath, notebookID string) error {
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
 	registry, err := loadNotebookRegistry(metadataPath)
 	if err != nil {
 		return err
@@ -135,6 +164,8 @@ func removeLocalNotebook(metadataPath, notebookID string) error {
 }
 
 func renameNotebook(metadataPath, notebookID, name string) (notebookRecord, error) {
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
 	registry, err := loadNotebookRegistry(metadataPath)
 	if err != nil {
 		return notebookRecord{}, err
