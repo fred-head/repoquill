@@ -617,11 +617,108 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		activeMu.Unlock()
 		writeJSON(w, http.StatusOK, record)
 	})
+	mux.HandleFunc("PATCH /api/notebooks/{notebookID}", func(w http.ResponseWriter, r *http.Request) {
+		notebookID := r.PathValue("notebookID")
+		var input struct {
+			Name string `json:"name"`
+		}
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		input.Name = strings.TrimSpace(input.Name)
+		if notebookID == "" || strings.ContainsAny(notebookID, "/\\\x00") || input.Name == "" || len(input.Name) > 100 || strings.ContainsAny(input.Name, "\r\n\x00") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a valid notebook name is required"})
+			return
+		}
+		record, err := renameNotebook(metadataPath, notebookID, input.Name)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
+			} else {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook name could not be saved"})
+			}
+			return
+		}
+		activeMu.Lock()
+		if current, activeErr := loadActiveNotebook(metadataPath); activeErr == nil && current.ID == notebookID {
+			activeNotebookName = input.Name
+		}
+		activeMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]string{"id": record.ID, "name": record.Name})
+	})
+	mux.HandleFunc("GET /api/notebooks/{notebookID}/health", func(w http.ResponseWriter, r *http.Request) {
+		record, err := findNotebook(metadataPath, r.PathValue("notebookID"))
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
+			return
+		}
+		localState, localMessage := "ok", "Local files are available"
+		if _, repositoryErr := files.NewRepository(record.LocalPath); repositoryErr != nil {
+			localState, localMessage = "failed", "Local files cannot be opened"
+		}
+		writeState, writeMessage := "ok", "Local storage is writable"
+		if localState == "ok" {
+			probe, probeErr := os.CreateTemp(record.LocalPath, ".repoquill-health-*")
+			if probeErr != nil {
+				writeState, writeMessage = "failed", "RepoQuill cannot write to this notebook"
+			} else {
+				probeName := probe.Name()
+				closeErr := probe.Close()
+				removeErr := os.Remove(probeName)
+				if closeErr != nil || removeErr != nil {
+					writeState, writeMessage = "failed", "RepoQuill cannot safely update this notebook"
+				}
+			}
+		} else {
+			writeState, writeMessage = "failed", "Write access cannot be checked until local files are available"
+		}
+		sshCommand := ""
+		if record.AuthType == "managed-ssh" {
+			_, sshCommand, err = gitrepo.ResolveManagedSSH(keysDirectory, record.KeyID, knownHostsPath)
+		} else if record.AuthType == "existing-server-ssh" {
+			sshCommand = gitrepo.SSHCommand("", knownHostsPath)
+		}
+		connectionState, connectionMessage := "not_checked", "Remote connection has not been checked"
+		if err != nil {
+			connectionState, connectionMessage = "failed", "The assigned SSH key is unavailable"
+		} else if r.URL.Query().Get("remote") == "true" && record.RemoteURL != "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+			connection := gitrepo.TestConnection(ctx, record.RemoteURL, record.Branch, sshCommand, logger)
+			connectionState, connectionMessage = connection.State, connection.Message
+		}
+		statusContext, statusCancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer statusCancel()
+		service := gitrepo.NewManagedService(record.LocalPath, sshCommand, logger)
+		if active, activeErr := loadActiveNotebook(metadataPath); activeErr == nil && active.ID == record.ID {
+			service = currentGit()
+		}
+		status := service.Status(statusContext)
+		writeJSON(w, http.StatusOK, map[string]any{"localFiles": map[string]string{"state": localState, "message": localMessage}, "writeAccess": map[string]string{"state": writeState, "message": writeMessage}, "connection": map[string]string{"state": connectionState, "message": connectionMessage}, "pendingWork": map[string]string{"state": string(status.State), "message": status.Message}, "lastSyncedAt": status.LastSyncedAt})
+	})
 	mux.HandleFunc("DELETE /api/notebooks/{notebookID}", func(w http.ResponseWriter, r *http.Request) {
 		notebookID := r.PathValue("notebookID")
 		if notebookID == "" || strings.ContainsAny(notebookID, "/\\\x00") {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid notebook ID"})
 			return
+		}
+		record, findErr := findNotebook(metadataPath, notebookID)
+		if findErr != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
+			return
+		}
+		deleteLocal := r.URL.Query().Get("deleteLocal") == "true"
+		if deleteLocal {
+			var input struct {
+				Confirmation string `json:"confirmation"`
+			}
+			if !decodeJSON(w, r, &input) {
+				return
+			}
+			if input.Confirmation != record.Name {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "type the exact notebook name to confirm local file deletion"})
+				return
+			}
 		}
 		if err := removeLocalNotebook(metadataPath, notebookID); err != nil {
 			switch {
@@ -629,12 +726,27 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
 			case err.Error() == "active notebook cannot be removed":
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "switch to another notebook before removing this local notebook"})
-			case err.Error() == "only the local legacy notebook can be removed":
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only locally configured legacy notebooks can be removed in this version"})
 			default:
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook registration could not be removed"})
 			}
 			return
+		}
+		if deleteLocal {
+			notebookBase := strings.TrimSpace(os.Getenv("REPOQUILL_NOTEBOOKS_DIR"))
+			base, baseErr := filepath.Abs(notebookBase)
+			target, targetErr := filepath.Abs(record.LocalPath)
+			relative, relErr := filepath.Rel(base, target)
+			info, statErr := os.Lstat(target)
+			if notebookBase == "" || baseErr != nil || targetErr != nil || relErr != nil || relative != record.ID || statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				_ = registerNotebookWithoutActivation(metadataPath, record)
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "local files were retained because their location could not be verified safely"})
+				return
+			}
+			if err := os.RemoveAll(target); err != nil {
+				_ = registerNotebookWithoutActivation(metadataPath, record)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "registration was restored because local files could not be deleted"})
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})

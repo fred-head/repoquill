@@ -127,17 +127,17 @@ describe('App auto-lock integration', () => {
   })
 
   it('unregisters an inactive legacy notebook without presenting file deletion', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const view = render(<App />)
     const switcher = view.container.querySelector('[aria-haspopup="menu"]') as HTMLButtonElement
     await waitFor(() => expect(switcher.textContent).toContain('Notebooks'))
     await waitFor(() => expect(view.getAllByRole('button', { name: 'Personal Notes' }).length).toBeGreaterThan(0))
     fireEvent.click(switcher)
     fireEvent.click(view.getByRole('menuitem', { name: 'Manage Notebooks' }))
-    const remove = await view.findByRole('button', { name: 'Remove registration' })
+    const legacyCard = (await view.findByRole('heading', { name: 'repos' })).closest('section') as HTMLElement
+    const remove = Array.from(legacyCard.querySelectorAll('button')).find(button => button.textContent === 'Remove…')!
     fireEvent.click(remove)
+    fireEvent.click(view.getByRole('button', { name: 'Remove registration' }))
     await waitFor(() => expect(view.queryByRole('heading', { name: 'repos' })).toBeNull())
-    expect(window.confirm).toHaveBeenCalledWith('Remove repos from RepoQuill? Files in its local directory will not be deleted.')
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([url, init]) => String(url) === '/api/notebooks/local' && init?.method === 'DELETE')).toBe(true)
   })
 

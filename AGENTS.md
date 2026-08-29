@@ -1945,6 +1945,11 @@ Completion criteria:
 
 ## Milestone 15 - Complete Notebook Management
 
+Implementation status: completed on the Alpha 2 development branch. Notebook
+registrations can be renamed or safely removed, optional local working-copy
+deletion requires the exact notebook name, and compact actionable health checks
+keep remote and technical details out of the normal management view.
+
 Turn the existing Manage Notebooks overview into a small, safe management
 surface.
 
@@ -2169,6 +2174,11 @@ Completion criteria:
   mobile/PWA layouts.
 
 ## Milestone 18 - Guided Notebook Connection Onboarding
+
+Implementation status: completed on the Alpha 2 development branch. The
+provider-independent clone flow is presented as a five-step assistant with
+provider-specific examples, retained progress, guided managed SSH keys, explicit
+host trust, actionable connection failures, and a final review.
 
 Make connecting an existing Git-backed notebook achievable without prior Git or
 SSH knowledge while keeping the underlying synchronization provider-independent.

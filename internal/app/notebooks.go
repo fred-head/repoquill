@@ -80,6 +80,20 @@ func registerActiveNotebook(metadataPath string, record notebookRecord) error {
 	return writeNotebookRegistry(metadataPath, registry)
 }
 
+func registerNotebookWithoutActivation(metadataPath string, record notebookRecord) error {
+	registry, err := loadNotebookRegistry(metadataPath)
+	if err != nil {
+		return err
+	}
+	for _, entry := range registry.Entries {
+		if entry.ID == record.ID {
+			return nil
+		}
+	}
+	registry.Entries = append(registry.Entries, record)
+	return writeNotebookRegistry(metadataPath, registry)
+}
+
 func findNotebook(metadataPath, notebookID string) (notebookRecord, error) {
 	registry, err := loadNotebookRegistry(metadataPath)
 	if err != nil {
@@ -114,13 +128,28 @@ func removeLocalNotebook(metadataPath, notebookID string) error {
 		if entry.ID != notebookID {
 			continue
 		}
-		if entry.ID != "local" || entry.RemoteURL != "" {
-			return errors.New("only the local legacy notebook can be removed")
-		}
 		registry.Entries = append(registry.Entries[:index], registry.Entries[index+1:]...)
 		return writeNotebookRegistry(metadataPath, registry)
 	}
 	return os.ErrNotExist
+}
+
+func renameNotebook(metadataPath, notebookID, name string) (notebookRecord, error) {
+	registry, err := loadNotebookRegistry(metadataPath)
+	if err != nil {
+		return notebookRecord{}, err
+	}
+	for index := range registry.Entries {
+		if registry.Entries[index].ID != notebookID {
+			continue
+		}
+		registry.Entries[index].Name = name
+		if err := writeNotebookRegistry(metadataPath, registry); err != nil {
+			return notebookRecord{}, err
+		}
+		return registry.Entries[index], nil
+	}
+	return notebookRecord{}, os.ErrNotExist
 }
 
 func writeNotebookRegistry(metadataPath string, registry notebookRegistry) error {
