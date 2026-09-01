@@ -2,7 +2,7 @@
 
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { App } from './App'
+import { App, TrashDialog } from './App'
 
 class ResizeObserverStub {
   observe() {}
@@ -26,6 +26,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url === '/api/health') return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url === '/api/auth/logout' && init?.method === 'POST') return Response.json({ authenticated: false })
     if (url === '/api/notebook') return Response.json({ name: active === 'personal' ? 'Personal Notes' : 'Work', configured: true })
     if (url === '/api/notebooks') return Response.json({ activeId: active, notebooks })
     if (url === '/api/notebooks/work/activate' && init?.method === 'POST') { active = 'work'; return Response.json({ id: 'work', name: 'Work' }) }
@@ -203,12 +204,14 @@ describe('App auto-lock integration', () => {
 		fireEvent.click(view.getByRole('button',{ name:'Use your version' }))
 		fireEvent.click(view.getByRole('button',{ name:'Review complete — apply' }))
 		await waitFor(()=>expect(view.queryByRole('dialog',{ name:'Choose the resulting content' })).toBeNull())
+		expect(await view.findByText('Changes synchronized. Recovery point: recovery-1')).toBeTruthy()
+		fireEvent.click(view.getByRole('button',{ name:'Dismiss notification' }))
+		expect(view.queryByText('Changes synchronized. Recovery point: recovery-1')).toBeNull()
 		const call = vi.mocked(globalThis.fetch).mock.calls.find(([url,request])=>String(url)==='/api/repository/git/conflicts/resolve'&&request?.method==='POST')
 		expect(JSON.parse(String(call?.[1]?.body))).toEqual({ token:'conflict-token',decisions:[{ path:'Note.md',action:'use_yours' }] })
 	})
 
   it('views a readable note history diff and restores through a normal version-checked save', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const view = render(<App />)
     fireEvent.click(await view.findByRole('button', { name: 'Note' }))
     await waitFor(() => expect(view.container.textContent).toContain('Auto-lock note'))
@@ -221,6 +224,7 @@ describe('App auto-lock integration', () => {
     expect(comparison.textContent).toContain('Auto-lock note')
 
     fireEvent.click(view.getByRole('button', { name: 'Restore this version' }))
+    fireEvent.click(view.getByRole('button', { name: 'Restore version' }))
     await waitFor(() => expect(view.queryByRole('dialog', { name: 'Version history' })).toBeNull())
     await waitFor(() => expect(view.container.textContent).toContain('Earlier note'))
     const restoreCall = vi.mocked(globalThis.fetch).mock.calls.find(([url, init]) => String(url) === '/api/repository/history/restore' && init?.method === 'POST')
@@ -230,12 +234,12 @@ describe('App auto-lock integration', () => {
   })
 
   it('moves a note to notebook Trash and restores it from the touch-friendly Trash view', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const view = render(<App />)
     fireEvent.click(await view.findByRole('button', { name: 'Note' }))
     await waitFor(() => expect(view.container.textContent).toContain('Auto-lock note'))
     fireEvent.click(view.getByRole('button', { name: 'Selected item actions' }))
     fireEvent.click(view.getByRole('menuitem', { name: 'Move to Trash' }))
+    fireEvent.click(view.getByRole('button', { name: 'Move to Trash' }))
     await waitFor(() => expect(view.queryByRole('button', { name: 'Note' })).toBeNull())
 
     fireEvent.click(view.getByRole('button', { name: 'Open Trash' }))
@@ -248,17 +252,38 @@ describe('App auto-lock integration', () => {
   })
 
   it('requires explicit confirmation before permanently deleting a trashed note', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const view = render(<App />)
     fireEvent.click(await view.findByRole('button', { name: 'Note' }))
     fireEvent.click(view.getByRole('button', { name: 'Selected item actions' }))
     fireEvent.click(view.getByRole('menuitem', { name: 'Move to Trash' }))
+    fireEvent.click(view.getByRole('button', { name: 'Move to Trash' }))
     await waitFor(() => expect(view.queryByRole('button', { name: 'Note' })).toBeNull())
     fireEvent.click(view.getByRole('button', { name: 'Open Trash' }))
     fireEvent.click(await view.findByRole('button', { name: 'Permanently delete' }))
+    fireEvent.click(view.getAllByRole('button', { name: 'Permanently delete' }).at(-1)!)
     await waitFor(() => expect(view.getByText('Trash is empty.')).toBeTruthy())
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('cannot be undone in RepoQuill'))
+    expect(view.queryByRole('alertdialog', { name: 'Permanently delete?' })).toBeNull()
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([url, init]) => String(url) === `/api/repository/trash/${'b'.repeat(32)}` && init?.method === 'DELETE')).toBe(true)
+  })
+
+  it('offers creation from note and notebook-root context menus', async () => {
+    const view = render(<App />)
+    const note = await view.findByRole('button', { name: 'Note' })
+    fireEvent.contextMenu(note.closest('div')!)
+    expect(view.getByRole('menuitem', { name: 'New Note' })).toBeTruthy()
+    expect(view.getByRole('menuitem', { name: 'New Folder' })).toBeTruthy()
+    fireEvent.click(view.getByRole('menuitem', { name: 'New Folder' }))
+    expect(view.getByRole('dialog', { name: 'New Folder' })).toBeTruthy()
+    fireEvent.click(view.getByRole('button', { name: 'Cancel' }))
+    fireEvent.contextMenu(view.getByRole('button', { name: 'Personal Notes' }))
+    expect(view.getByRole('menuitem', { name: 'New Note' })).toBeTruthy()
+  })
+
+  it('shows a direct sign-out action when local authentication is enabled', async () => {
+    const onLoggedOut = vi.fn()
+    const view = render(<App authMode="local" onLoggedOut={onLoggedOut} />)
+    fireEvent.click(await view.findByRole('button', { name: 'Sign out' }))
+    await waitFor(() => expect(onLoggedOut).toHaveBeenCalledOnce())
   })
 
   it('requests best-effort background sync when a saved tab closes', async () => {
@@ -337,6 +362,32 @@ describe('App auto-lock integration', () => {
 		await waitFor(()=>expect(view.queryByRole('dialog',{ name:'Choose the resulting content' })).toBeNull())
 		expect(sessionStorage.getItem('repoquill.recovery-draft')).toBeNull()
 		expect(view.container.textContent).toContain('Auto-lock note')
+  })
+})
+
+describe('Trash bulk actions', () => {
+  it('selects all items and permanently deletes the complete selection', async () => {
+    const items = [
+      { id: '1'.repeat(32), originalPath: 'One.md', type: 'file' as const, deletedAt: '2026-08-28T10:00:00Z', size: 10 },
+      { id: '2'.repeat(32), originalPath: 'Folder', type: 'directory' as const, deletedAt: '2026-08-28T11:00:00Z', size: 20 },
+    ]
+    let remaining = [...items]
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/repository/trash') return Response.json({ items: remaining })
+      if (init?.method === 'DELETE') {
+        const item = remaining.find((candidate) => url.endsWith(candidate.id))!
+        remaining = remaining.filter((candidate) => candidate.id !== item.id)
+        return Response.json(item)
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    })
+    const view = render(<TrashDialog onChanged={vi.fn(async () => undefined)} onClose={vi.fn()} />)
+    fireEvent.click(await view.findByLabelText('Select all Trash items'))
+    fireEvent.click(view.getByRole('button', { name: 'Delete selected' }))
+    fireEvent.click(view.getAllByRole('button', { name: 'Permanently delete' }).at(-1)!)
+    await waitFor(() => expect(view.getByText('Trash is empty.')).toBeTruthy())
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(2)
   })
 })
 

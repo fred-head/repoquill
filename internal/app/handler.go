@@ -205,6 +205,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			}
 			if state.Mode == auth.ModeLocal {
 				response["csrfToken"] = sessions.ExistingCSRFToken(r.Context())
+				response["mfaRequired"] = sessions.MFAPending(r.Context())
 			}
 			writeJSON(w, http.StatusOK, response)
 		})
@@ -261,6 +262,10 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 				Code string `json:"code"`
 			}
 			if !decodeJSONWithLimit(w, r, &input, maxAuthRequestBodySize) {
+				return
+			}
+			if !sessions.MFAPending(r.Context()) {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "The two-factor sign-in step expired. Enter your password again.", "code": "mfa_challenge_expired"})
 				return
 			}
 			clientIP, release, allowed := beginCredentialAttempt(w, r, auth.ThrottleOperationLogin)
@@ -741,6 +746,8 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
 			return
 		}
+		activeBeforeRemoval, activeErr := loadActiveNotebook(metadataPath)
+		wasActive := activeErr == nil && activeBeforeRemoval.ID == notebookID
 		deleteLocal := r.URL.Query().Get("deleteLocal") == "true"
 		if deleteLocal {
 			var input struct {
@@ -772,15 +779,32 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			relative, relErr := filepath.Rel(base, target)
 			info, statErr := os.Lstat(target)
 			if notebookBase == "" || baseErr != nil || targetErr != nil || relErr != nil || relative != record.ID || statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-				_ = registerNotebookWithoutActivation(metadataPath, record)
+				if wasActive {
+					_ = registerActiveNotebook(metadataPath, record)
+				} else {
+					_ = registerNotebookWithoutActivation(metadataPath, record)
+				}
 				writeJSON(w, http.StatusConflict, map[string]string{"error": "local files were retained because their location could not be verified safely"})
 				return
 			}
 			if err := os.RemoveAll(target); err != nil {
-				_ = registerNotebookWithoutActivation(metadataPath, record)
+				if wasActive {
+					_ = registerActiveNotebook(metadataPath, record)
+				} else {
+					_ = registerNotebookWithoutActivation(metadataPath, record)
+				}
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "registration was restored because local files could not be deleted"})
 				return
 			}
+		}
+		if wasActive {
+			emptyRepository, _ := files.NewRepository("")
+			activeMu.Lock()
+			repository = emptyRepository
+			gitService = gitrepo.NewService("", logger)
+			activeRecord = notebookRecord{}
+			activeNotebookName = "Notebooks"
+			activeMu.Unlock()
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})

@@ -171,7 +171,7 @@ in a deployment.
 Requirements:
 
 - Go 1.26+
-- Node.js 20.19+ or 22+
+- Node.js 24 LTS (Node.js 26+ is also supported by the current dependency set)
 - npm
 
 The development launcher prepares disposable local data and starts the Go

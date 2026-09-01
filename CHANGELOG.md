@@ -39,6 +39,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Milkdown kit/react now use 7.22.1. RepoQuill's empty-cursor inline-code mode
+  preserves its explicit start/type/stop behavior across Milkdown's safer
+  non-inclusive code-mark boundary, with a dedicated regression test.
+- Frontend builds, CI, release jobs, and local-development requirements now use
+  Node.js 24 LTS, with compatible Testing Library, React type, and
+  TypeScript-ESLint patch/minor updates applied reproducibly.
+- The maintained frontend toolchain now uses Vite 8, ESLint 10, Vitest 4,
+  jsdom 30, and the latest TypeScript release officially supported by
+  typescript-eslint.
 - Human-readable synchronization details now distinguish locally saved content
   from remote synchronization, report received changes, and keep note switching
   responsive while Git work continues safely in the background.

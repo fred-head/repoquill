@@ -18,7 +18,7 @@ export function AuthGate() {
     try {
       const next = await authStatus()
       setStatus(next)
-      setState(next.mode === 'disabled' || next.authenticated ? 'ready' : next.setupRequired ? 'setup' : 'login')
+      setState(next.mode === 'disabled' || next.authenticated ? 'ready' : next.setupRequired ? 'setup' : next.mfaRequired ? 'mfa' : 'login')
       setError(undefined)
       const health = await fetch('/api/health', { cache: 'no-store' })
       const type = health.headers.get('content-type') ?? ''
@@ -55,8 +55,11 @@ export function AuthGate() {
         : state === 'mfa' ? { code:String(form.get('code') ?? '') }
         : { password, rememberDevice:form.get('rememberDevice') === 'on' }
       const response = await apiFetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) })
-      const result = await response.json() as { error?:string; csrfToken?:string; mfaRequired?:boolean }
-      if (!response.ok) throw new Error(result.error ?? `Authentication failed (${response.status})`)
+      const result = await response.json() as { error?:string; code?:string; csrfToken?:string; mfaRequired?:boolean }
+      if (!response.ok) {
+        if (state === 'mfa' && result.code === 'mfa_challenge_expired') setState('login')
+        throw new Error(result.error ?? `Authentication failed (${response.status})`)
+      }
       if (result.mfaRequired) { setState('mfa'); return }
       setCSRFToken(result.csrfToken)
       notifyAuthChanged()

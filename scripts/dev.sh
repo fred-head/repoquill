@@ -39,6 +39,12 @@ for command_name in go node npm; do
   fi
 done
 
+node_major="$(node -p "Number(process.versions.node.split('.')[0])")"
+if [[ ! "${node_major}" =~ ^[0-9]+$ ]] || (( node_major < 24 )) || (( node_major == 25 )); then
+  echo "RepoQuill development requires Node.js 24 LTS or Node.js 26+. Found: $(node --version)" >&2
+  exit 1
+fi
+
 if [[ ! -d "${project_root}/frontend/node_modules" ]]; then
   echo "Installing frontend dependencies…"
   (cd -- "${project_root}/frontend" && npm install)

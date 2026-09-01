@@ -4343,6 +4343,12 @@ baseline, not blindly selecting the numerically newest major version.
 
 ### Phase 1 - Complete inventory and currency review
 
+Status: completed on 2026-08-30. The reviewed baseline, dependency classes,
+license/maintenance findings, official currency sources, reproducibility gaps,
+and controlled Phase 2 decision queue are recorded in
+`docs/dependency-inventory-alpha2.md`. No dependency or toolchain update was
+applied in this inventory phase.
+
 - inventory direct and transitive npm dependencies, Go modules, Docker base
   images, system packages, and pinned GitHub Actions from the final lockfiles,
   image, and SBOM,
@@ -4357,6 +4363,15 @@ baseline, not blindly selecting the numerically newest major version.
   dependencies.
 
 ### Phase 2 - Controlled updates
+
+Status: in progress. Node.js 24 LTS, compatible dependency updates, Vite 8,
+ESLint 10, Vitest 4, jsdom 30, TypeScript 6, and Milkdown 7.22.1 were adopted
+through isolated green migration blocks. RepoQuill's empty-cursor inline-code
+extension was adapted to Milkdown's non-inclusive mark boundary and is guarded
+by a regression test; reassess and remove that compatibility logic only when a
+future Milkdown command natively provides the same start/type/stop behavior.
+React plugin 6 and TypeScript 7 remain blocked by unresolved official peer
+constraints. Go/toolchain and base-image decisions remain separate.
 
 - apply compatible patch and minor updates where their release notes and
   transitive changes are acceptable,

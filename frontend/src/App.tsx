@@ -18,7 +18,7 @@ type Theme = 'dark' | 'light'
 type TreeNode = { name: string; path: string; type: 'directory' | 'file'; children?: TreeNode[] }
 type FileResponse = { path: string; content: string; version: string }
 type Draft = FileResponse & { savedContent: string }
-type MenuState = { entry: TreeNode; x: number; y: number }
+type MenuState = { entry?: TreeNode; x: number; y: number }
 type CleanupAsset = { path: string; size: number }
 type CleanupFailure = { path: string; error: string }
 type TrashItem = { id:string; originalPath:string; type:'file'|'directory'; deletedAt:string; size:number }
@@ -39,6 +39,7 @@ type NotebookHealth = { localFiles:NotebookCheck; writeAccess:NotebookCheck; con
 type SearchResult = { path: string; type: 'directory' | 'file' | 'content'; line?: number; excerpt?: string }
 type NoteTab = { path: string; readOnly: boolean }
 type RecoveryDraft = { notebookId: string; path: string; content: string; version: string; savedContent: string; capturedAt: string }
+type CreateEntryRequest = { type:'file'|'directory'; parent:string; suggested:string }
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }
 const expandedFoldersStorageKey = 'repoquill.expanded-folders'
 const themeStorageKey = 'repoquill.theme'
@@ -156,7 +157,10 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   const [editorRevision, setEditorRevision] = useState(0)
   const [trashOpen, setTrashOpen] = useState(false)
   const [operationError, setOperationError] = useState<string>()
+  const [operationNotice, setOperationNotice] = useState<string>()
   const [operationBusy, setOperationBusy] = useState(false)
+  const [createRequest, setCreateRequest] = useState<CreateEntryRequest>()
+  const [deleteRequest, setDeleteRequest] = useState<TreeNode>()
   const [selectedItem, setSelectedItem] = useState<TreeNode>()
   const [contextMenu, setContextMenu] = useState<MenuState>()
   const [overflowOpen, setOverflowOpen] = useState(false)
@@ -247,6 +251,12 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     }
   }, [activeNotebookID, searchQuery])
 
+  useEffect(() => {
+    if (!operationNotice) return
+    const timer = globalThis.setTimeout(() => setOperationNotice(undefined), 8000)
+    return () => globalThis.clearTimeout(timer)
+  }, [operationNotice])
+
   const loadTree = useCallback(async () => {
     setTreeLoading(true)
     setTreeError(undefined)
@@ -306,6 +316,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       setActiveNotebookID(data.activeId)
       const active = data.notebooks.find((notebook) => notebook.id === data.activeId)
       if (active) setNotebookName(active.name)
+      return data
     } catch {
       // Directly configured notebooks remain usable without a registry.
     }
@@ -536,6 +547,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   async function applyConflictResolution(token:string, decisions:ConflictDecision[]) {
 		setConflictLoading(true)
 		setConflictError(undefined)
+		setOperationNotice(undefined)
 		try {
 			const response = await apiFetch('/api/repository/git/conflicts/resolve', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ token,decisions }) })
 			const result = await responseJSON<{ state:GitState; message:string; safetyPoint?:string }>(response)
@@ -544,7 +556,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
 			await loadTree()
 			await refreshGitStatus()
 			if (result.state === 'conflict') await openConflictAssistant()
-			else setOperationError(result.safetyPoint ? `Changes synchronized. Recovery point: ${result.safetyPoint}` : undefined)
+			else setOperationNotice(result.safetyPoint ? `Changes synchronized. Recovery point: ${result.safetyPoint}` : 'Changes synchronized.')
 		} catch (error) {
 			setConflictError(messageFrom(error))
 			try { const current = await responseJSON<ConflictOverview>(await apiFetch('/api/repository/git/conflicts')); setConflictOverview(current) } catch { /* source versions remain in Git */ }
@@ -640,9 +652,28 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     await refreshGitStatus()
   }
 
+  async function refreshNotebookRegistrations() {
+    const data = await loadNotebooks()
+    if (data?.activeId) {
+      await loadNotebookInfo()
+      return
+    }
+    activeDraft.current = undefined
+    setTabs([])
+    setSelectedPath(undefined)
+    setSelectedItem(undefined)
+    setNote(undefined)
+    setEntries([])
+    setNotebookConfigured(false)
+    setNotebookName('Notebooks')
+    setTreeError(undefined)
+    setGitStatus({ state: 'invalid', message: 'Add a notebook to enable synchronization.' })
+  }
+
   async function switchNotebook(notebook: NotebookInfo) {
     setMobileNavigationOpen(false)
     setNotebookSwitcherOpen(false)
+    setOperationNotice(undefined)
     if (notebook.id === activeNotebookID) return
     if (!(await saveDraft())) return
     if (syncPreferences.syncOnNotebookSwitch) await syncRepository()
@@ -786,26 +817,33 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     }
   }
 
-  async function createEntry(type: 'file' | 'directory') {
-    const parent = selectedItem?.type === 'directory' ? selectedItem.path : selectedItem ? parentPath(selectedItem.path) : ''
+  function createEntry(type: 'file' | 'directory', relativeTo: TreeNode | undefined = selectedItem) {
+    const parent = relativeTo?.type === 'directory' ? relativeTo.path : relativeTo ? parentPath(relativeTo.path) : ''
     const suggested = type === 'file' ? 'New note.md' : 'New folder'
-    let name = window.prompt(type === 'file' ? `New note name${parent ? ` in ${parent}` : ''}` : 'New folder name', suggested)?.trim()
+    setCreateRequest({ type, parent, suggested })
+  }
+
+  async function submitCreateEntry(value:string) {
+    const request = createRequest
+    if (!request) return
+    let name = value.trim()
     if (!name) return
     if (name.includes('/') || name.includes('\\')) {
       setOperationError('Enter a name only. Choose the destination folder in the tree.')
       return
     }
-    if (type === 'file' && !name.toLowerCase().endsWith('.md')) name += '.md'
-    const path = parent ? `${parent}/${name}` : name
+    if (request.type === 'file' && !name.toLowerCase().endsWith('.md')) name += '.md'
+    const path = request.parent ? `${request.parent}/${name}` : name
+    setCreateRequest(undefined)
     setOperationBusy(true)
     setOperationError(undefined)
     try {
-      const response = await apiFetch('/api/repository/entries', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, type }) })
+      const response = await apiFetch('/api/repository/entries', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, type:request.type }) })
       await responseJSON<{ path: string; type: string }>(response)
-      if (parent) setExpandedFolders((current) => new Set(current).add(parent))
+      if (request.parent) setExpandedFolders((current) => new Set(current).add(request.parent))
       await loadTree()
-      setSelectedItem({ name: baseName(path), path, type })
-      if (type === 'file') await openNote(path)
+      setSelectedItem({ name: baseName(path), path, type:request.type })
+      if (request.type === 'file') await openNote(path)
     } catch (error) {
       setOperationError(messageFrom(error))
     } finally {
@@ -908,8 +946,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   }
 
   async function deleteEntry(entry: TreeNode) {
-    const assetNotice = entry.type === 'file' ? ' Its owned image assets will move with it.' : ' Everything inside this folder will move with it.'
-    if (!window.confirm(`Move “${entry.path}” to Trash?${assetNotice} You can restore it later.`)) return
     if (!(await saveDraft())) return
     setOperationBusy(true)
     setOperationError(undefined)
@@ -939,6 +975,12 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     } finally {
       setOperationBusy(false)
     }
+  }
+
+  function requestDeleteEntry(entry:TreeNode) {
+    setContextMenu(undefined)
+    setOverflowOpen(false)
+    setDeleteRequest(entry)
   }
 
   function selectEntry(entry: TreeNode, disposition: 'current' | 'new' = 'current') {
@@ -1003,6 +1045,23 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     setSelectedItem(entry)
     setOverflowOpen(false)
     setContextMenu({ entry, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 176)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 132)) })
+  }
+
+  function showRootContextMenu(event: MouseEvent) {
+    event.preventDefault()
+    setSelectedItem(undefined)
+    setOverflowOpen(false)
+    setContextMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 176)), y: Math.max(8, Math.min(event.clientY, window.innerHeight - 132)) })
+  }
+
+  async function logout() {
+    setOperationError(undefined)
+    try {
+      await responseJSON(await apiFetch('/api/auth/logout', { method: 'POST' }))
+      onLoggedOut()
+    } catch (caught) {
+      setOperationError(messageFrom(caught))
+    }
   }
 
   function openEntryInNewTab(entry: TreeNode) {
@@ -1117,7 +1176,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100 lg:h-screen lg:flex-row lg:overflow-hidden">
       {mobileNavigationOpen && <button type="button" aria-label="Close notebook navigation" className="fixed inset-0 z-30 bg-black/65 lg:hidden" onClick={() => setMobileNavigationOpen(false)} />}
       <aside aria-label="Notebook navigation" className={`fixed inset-y-0 left-0 z-40 flex w-[min(20rem,calc(100vw-3rem))] shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 shadow-2xl transition-transform duration-200 lg:static lg:z-auto lg:w-80 lg:translate-x-0 lg:bg-zinc-900/60 lg:shadow-none ${mobileNavigationOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <header className="relative border-b border-zinc-800 px-5 py-5"><div className="flex items-center justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-xs font-semibold uppercase tracking-[0.22em] text-amber-400">RepoQuill</p><button type="button" aria-haspopup="menu" aria-expanded={notebookSwitcherOpen} onClick={() => setNotebookSwitcherOpen((open) => !open)} className="mt-1 flex min-h-9 max-w-full items-center gap-2 rounded-md pr-2 text-left text-lg font-semibold outline-none hover:text-amber-200 focus-visible:ring-2 focus-visible:ring-amber-500"><span className="truncate">Notebooks</span><span aria-hidden="true" className="text-sm text-zinc-500">▾</span></button></div><div className="flex items-center gap-2"><button type="button" onClick={() => setSettingsOpen(true)} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Settings" title="Settings"><SettingsIcon /></button><button type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button><StatusDot health={health} /></div></div>{notebookSwitcherOpen && <><button type="button" aria-label="Close notebook switcher" className="fixed inset-0 z-20 cursor-default" onClick={() => setNotebookSwitcherOpen(false)} /><div role="menu" aria-label="Notebooks" className="absolute top-[4.8rem] right-3 left-3 z-30 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl">{notebooks.map((notebook) => <button key={notebook.id} type="button" role="menuitemradio" aria-checked={notebook.id === activeNotebookID} onClick={() => void switchNotebook(notebook)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-zinc-200 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"><span className="w-4 text-amber-400" aria-hidden="true">{notebook.id === activeNotebookID ? '✓' : ''}</span><span className="truncate">{notebook.name}</span></button>)}<div className="my-1 border-t border-zinc-700" /><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setAddNotebookOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-amber-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">+ Add Notebook</button><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setManageNotebooksOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Manage Notebooks</button></div></>}</header>
+        <header className="relative border-b border-zinc-800 px-5 py-5"><div className="flex items-center justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-xs font-semibold uppercase tracking-[0.22em] text-amber-400">RepoQuill</p><button type="button" aria-haspopup="menu" aria-expanded={notebookSwitcherOpen} onClick={() => setNotebookSwitcherOpen((open) => !open)} className="mt-1 flex min-h-9 max-w-full items-center gap-2 rounded-md pr-2 text-left text-lg font-semibold outline-none hover:text-amber-200 focus-visible:ring-2 focus-visible:ring-amber-500"><span className="truncate">Notebooks</span><span aria-hidden="true" className="text-sm text-zinc-500">▾</span></button></div><div className="flex items-center gap-2"><button type="button" onClick={() => setSettingsOpen(true)} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Settings" title="Settings"><SettingsIcon /></button>{authMode === 'local' && <button type="button" onClick={() => void logout()} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Sign out" title="Sign out"><LogoutIcon /></button>}<button type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button><StatusDot health={health} /></div></div>{notebookSwitcherOpen && <><button type="button" aria-label="Close notebook switcher" className="fixed inset-0 z-20 cursor-default" onClick={() => setNotebookSwitcherOpen(false)} /><div role="menu" aria-label="Notebooks" className="absolute top-[4.8rem] right-3 left-3 z-30 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl">{notebooks.map((notebook) => <button key={notebook.id} type="button" role="menuitemradio" aria-checked={notebook.id === activeNotebookID} onClick={() => void switchNotebook(notebook)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-zinc-200 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"><span className="w-4 text-amber-400" aria-hidden="true">{notebook.id === activeNotebookID ? '✓' : ''}</span><span className="truncate">{notebook.name}</span></button>)}<div className="my-1 border-t border-zinc-700" /><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setAddNotebookOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-amber-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">+ Add Notebook</button><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setManageNotebooksOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Manage Notebooks</button></div></>}</header>
         <div className="relative grid grid-cols-[1fr_1fr_auto_auto_auto] gap-1.5 border-b border-zinc-800 p-3">
           <TreeAction disabled={operationBusy || notebookConfigured === false} onClick={() => void createEntry('file')}>New Note</TreeAction>
           <TreeAction disabled={operationBusy || notebookConfigured === false} onClick={() => void createEntry('directory')}>New Folder</TreeAction>
@@ -1125,7 +1184,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
           <TreeAction label="Selected item actions" disabled={operationBusy || !selectedItem} onClick={() => setOverflowOpen((open) => !open)}>•••</TreeAction>
           <TreeAction label="Open Trash" disabled={operationBusy || notebookConfigured === false} onClick={() => setTrashOpen(true)}>♲</TreeAction>
           {overflowOpen && <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="Close action menu" onClick={() => setOverflowOpen(false)} />}
-          {overflowOpen && selectedItem && <div className="absolute top-12 right-3 z-30"><ActionMenu entry={selectedItem} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={(entry) => { setOverflowOpen(false); void deleteEntry(entry) }} /></div>}
+          {overflowOpen && selectedItem && <div className="absolute top-12 right-3 z-30"><ActionMenu entry={selectedItem} onNewNote={(entry) => { setOverflowOpen(false); createEntry('file', entry) }} onNewFolder={(entry) => { setOverflowOpen(false); createEntry('directory', entry) }} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={requestDeleteEntry} /></div>}
         </div>
         {notebookConfigured !== false && <div className="border-b border-zinc-800 px-3 py-2 text-xs text-zinc-500">Create in: <span className="text-zinc-300">{createInName}</span></div>}
         {notebookConfigured !== false && <div className="border-b border-zinc-800 p-3">
@@ -1137,12 +1196,13 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         </div>}
         <div className="max-h-80 overflow-y-auto p-3 lg:max-h-none lg:flex-1">
           {operationError && <div className="mb-3 rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{operationError}</div>}
+          {operationNotice && <div role="status" className="mb-3 flex items-start justify-between gap-2 rounded-lg border border-emerald-900/70 bg-emerald-950/20 p-3 text-sm text-emerald-200"><span>{operationNotice}</span><button type="button" aria-label="Dismiss notification" onClick={() => setOperationNotice(undefined)} className="-m-1 min-h-8 min-w-8 shrink-0 rounded text-emerald-300 hover:bg-emerald-900/40">×</button></div>}
           {searchQuery.trim() && <SearchResults query={searchQuery.trim()} results={searchResults} loading={searchLoading} error={searchError} onSelect={selectSearchResult} />}
           {!searchQuery.trim() && <>
           {treeLoading && <SidebarMessage>Loading notebook…</SidebarMessage>}
           {notebookConfigured === false && <div className="rounded-lg border border-zinc-700 bg-zinc-950/40 p-4 text-sm text-zinc-300"><p className="font-medium text-zinc-100">No notebook yet</p><p className="mt-1 text-xs leading-5 text-zinc-500">Connect an existing notebook to start taking notes.</p><button type="button" className="mt-3 min-h-10 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 hover:bg-amber-400" onClick={() => setAddNotebookOpen(true)}>Add Notebook</button></div>}
           {treeError && notebookConfigured !== false && <div className="rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200"><p>{treeError}</p><button className="mt-3 rounded-md bg-red-900/60 px-3 py-1.5 text-xs hover:bg-red-800" onClick={() => void loadTree()}>Try again</button></div>}
-          {!treeLoading && !treeError && <button type="button" className={`mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${!selectedItem ? 'bg-amber-400/15 text-amber-200' : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'}`} onClick={() => { setSelectedItem(undefined); setOverflowOpen(false) }}><span aria-hidden="true">⌂</span><span className="truncate">{notebookName}</span></button>}
+          {!treeLoading && !treeError && <button type="button" onContextMenu={showRootContextMenu} className={`mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${!selectedItem ? 'bg-amber-400/15 text-amber-200' : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'}`} onClick={() => { setSelectedItem(undefined); setOverflowOpen(false) }}><span aria-hidden="true">⌂</span><span className="truncate">{notebookName}</span></button>}
           {!treeLoading && !treeError && entries.length === 0 && <SidebarMessage>No Markdown files found.</SidebarMessage>}
           {!treeLoading && !treeError && entries.length > 0 && <nav aria-label="Notebook notes"><ul className="space-y-0.5">{entries.map((entry) => <TreeEntry key={entry.path} entry={entry} selectedPath={selectedItem?.path} expandedFolders={expandedFolders} renamePath={renameEntry?.path} renameValue={renameValue} onSelect={selectEntry} onToggleFolder={toggleFolder} onContextMenu={showContextMenu} onRenameValue={setRenameValue} onRenameCommit={() => void commitRename()} onRenameCancel={() => setRenameEntry(undefined)} />)}</ul></nav>}
           </>}
@@ -1153,7 +1213,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         <div className="sticky top-0 z-10 bg-zinc-950/90 backdrop-blur">
         <header className="flex items-center justify-between gap-2 border-b border-zinc-800 px-3 py-3 sm:gap-4 sm:px-8">
           <div className="flex min-w-0 items-center gap-2"><button type="button" aria-label="Open notebook navigation" aria-expanded={mobileNavigationOpen} onClick={() => setMobileNavigationOpen(true)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 lg:hidden">☰</button><p className="min-w-0 truncate text-sm text-zinc-400">{selectedPath ?? 'Select a Markdown file'}</p></div>
-          <div className="flex shrink-0 items-center gap-2">{selectedPath && <><button type="button" onClick={() => void toggleReadOnly()} className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${readOnly ? 'border-amber-500 bg-amber-400/15 text-amber-200' : 'border-zinc-700 text-zinc-200 hover:bg-zinc-800'}`} aria-pressed={readOnly}>{readOnly ? '🔒 Read only' : '✎ Edit'}</button><button type="button" disabled={readOnly || saveStatus === 'saved' || saveStatus === 'saving'} onClick={() => void saveDraft()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">Save</button><button type="button" onClick={() => void openVersionHistory()} aria-label="Version history" title="Version history" className="min-h-9 rounded-md border border-zinc-700 px-2.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"><span aria-hidden="true">↶</span><span className="ml-1 hidden sm:inline">History</span></button></>}<button type="button" disabled={notebookConfigured === false || gitSyncing || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict'} onClick={() => void syncRepository()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">{gitSyncing ? 'Syncing…' : 'Sync'}</button></div>
+          <div className="flex shrink-0 items-center gap-2">{selectedPath && <><button type="button" onClick={() => void toggleReadOnly()} className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${readOnly ? 'border-amber-500 bg-amber-400/15 text-amber-200' : 'border-zinc-700 text-zinc-200 hover:bg-zinc-800'}`} aria-pressed={readOnly}>{readOnly ? '🔒 Read only' : '✎ Edit'}</button><button type="button" disabled={readOnly || saveStatus === 'saved' || saveStatus === 'saving'} onClick={() => void saveDraft()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">Save</button><button type="button" onClick={() => void openVersionHistory()} aria-label="Version history" title="Version history" className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"><span aria-hidden="true">↶</span><span className="ml-1 hidden sm:inline">History</span></button></>}<button type="button" disabled={notebookConfigured === false || gitSyncing || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict'} onClick={() => void syncRepository()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">{gitSyncing ? 'Syncing…' : 'Sync'}</button></div>
         </header>
         {tabs.length > 0 && <NoteTabs tabs={tabs} activePath={selectedPath} onActivate={(path) => void activateTab(path)} onClose={(path) => void closeTab(path)} />}
         </div>
@@ -1170,12 +1230,14 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         </article>
 		{selectedPath && note && <DocumentStatusBar status={saveStatus} gitStatus={gitStatus} gitSyncing={gitSyncing} markdown={note.content} onOpenSyncDetails={() => setSyncDetailsOpen(true)} />}
       </main>
-      {contextMenu && <div className="fixed inset-0 z-40" onClick={() => setContextMenu(undefined)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined) }}><div className="fixed" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><ActionMenu entry={contextMenu.entry} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={(entry) => { setContextMenu(undefined); void deleteEntry(entry) }} /></div></div>}
+      {contextMenu && <div className="fixed inset-0 z-40" onClick={() => setContextMenu(undefined)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined) }}><div className="fixed" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><ActionMenu entry={contextMenu.entry} onNewNote={(entry) => { setContextMenu(undefined); createEntry('file', entry) }} onNewFolder={(entry) => { setContextMenu(undefined); createEntry('directory', entry) }} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={requestDeleteEntry} /></div></div>}
+      {createRequest && <TextInputDialog title={createRequest.type === 'file' ? 'New Note' : 'New Folder'} label={createRequest.type === 'file' ? `Note name${createRequest.parent ? ` in ${createRequest.parent}` : ''}` : `Folder name${createRequest.parent ? ` in ${createRequest.parent}` : ''}`} initialValue={createRequest.suggested} confirmLabel="Create" onCancel={() => setCreateRequest(undefined)} onConfirm={(value) => void submitCreateEntry(value)} />}
+      {deleteRequest && <ConfirmationDialog title="Move to Trash?" message={`Move “${deleteRequest.path}” to Trash?${deleteRequest.type === 'file' ? ' Its owned image assets will move with it.' : ' Everything inside this folder will move with it.'} You can restore it later.`} confirmLabel="Move to Trash" danger onCancel={() => setDeleteRequest(undefined)} onConfirm={() => { const entry = deleteRequest; setDeleteRequest(undefined); void deleteEntry(entry) }} />}
       {moveEntry && <FolderPicker entries={entries} notebookName={notebookName} moving={moveEntry} destination={moveDestination} onDestination={setMoveDestination} onCancel={() => setMoveEntry(undefined)} onConfirm={() => void confirmMove()} />}
       {moveLinkPreview && <MoveLinkPreviewDialog preview={moveLinkPreview.preview} onCancel={() => setMoveLinkPreview(undefined)} onConfirm={() => void confirmMoveLinkRewrites()} />}
       {settingsOpen && <SettingsDialog mode="settings" authMode={authMode} runningVersion={runningVersion} onLoggedOut={onLoggedOut} autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} syncPreferences={syncPreferences} onSyncPreferences={setSyncPreferences} onClose={() => setSettingsOpen(false)} />}
       {addNotebookOpen && <SettingsDialog mode="onboarding" autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} onNotebookAdded={async () => { await activateClonedNotebook(); setAddNotebookOpen(false); setManageNotebooksOpen(true) }} onClose={() => setAddNotebookOpen(false)} />}
-      {manageNotebooksOpen && <ManageNotebooksDialog notebooks={notebooks} activeNotebookID={activeNotebookID} operationsBlocked={operationBusy || saveStatus === 'saving' || saveStatus === 'unsaved'} onChanged={loadNotebooks} onClose={() => setManageNotebooksOpen(false)} />}
+      {manageNotebooksOpen && <ManageNotebooksDialog notebooks={notebooks} activeNotebookID={activeNotebookID} operationsBlocked={operationBusy || saveStatus === 'saving' || saveStatus === 'unsaved'} onChanged={refreshNotebookRegistrations} onClose={() => setManageNotebooksOpen(false)} />}
 	  {syncDetailsOpen && <SynchronizationDetailsPanel saveStatus={saveStatus} gitStatus={gitStatus} syncing={gitSyncing} browserOnline={browserOnline && health !== 'offline'} lastSuccessfulSyncAt={lastSuccessfulSyncAt} lastSyncAttemptAt={lastSyncAttemptAt} lastSyncError={lastSyncError} nextScheduledSyncAt={nextScheduledSyncAt} receivedChanges={receivedChanges} onSync={() => void syncRepository()} onReviewConflicts={() => void openConflictAssistant()} conflictLoading={conflictLoading} conflictError={conflictError} onOpenNote={(path) => void openNote(path, 'new')} onOpenSettings={() => { setSyncDetailsOpen(false); setSettingsOpen(true) }} onCheckConnection={() => { setSyncDetailsOpen(false); setManageNotebooksOpen(true) }} onClose={() => setSyncDetailsOpen(false)} />}
 	  {conflictOverview && <ConflictResolutionDialog overview={conflictOverview} busy={conflictLoading} error={conflictError} notePaths={markdownPaths(entries)} onPostpone={() => setConflictOverview(undefined)} onApply={(decisions) => void applyConflictResolution(conflictOverview.token,decisions)} />}
 	  {saveConflict && <ConflictResolutionDialog overview={saveConflict.overview} busy={conflictLoading} error={conflictError} notePaths={markdownPaths(entries)} onPostpone={() => setSaveConflict(undefined)} onApply={(decisions) => void applySaveConflict(decisions)} />}
@@ -1434,13 +1496,8 @@ export function SettingsDialog({ mode = 'settings', authMode = 'disabled', runni
 			<h3 className="text-sm font-semibold text-zinc-200">General</h3>
             <label className="mt-4 block text-sm text-zinc-300">Auto-lock notes<select value={autoLockMinutes} onChange={(event) => onAutoLockMinutes(parseAutoLockMinutes(event.target.value))} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-amber-500">{autoLockOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
             <p className="mt-2 text-xs leading-5 text-zinc-500">Switch an editable note to Read only after no document changes. Reading, scrolling, and text selection do not reset the timer.</p>
-			<div className="mt-5 border-t border-zinc-800 pt-5"><h3 className="text-sm font-semibold text-zinc-200">Synchronization</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Saving writes a note to this RepoQuill server. Synchronization separately exchanges those saved changes with the connected service.</p><label className="mt-4 block text-sm text-zinc-300">Scheduled synchronization<select aria-label="Scheduled sync" value={syncPreferences.scheduledMinutes} onChange={(event) => onSyncPreferences({ ...syncPreferences, scheduledMinutes: Number(event.target.value) as SyncPreferences['scheduledMinutes'] })} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100"><option value={0}>Off</option><option value={5}>Every 5 minutes</option><option value={15}>Every 15 minutes</option><option value={30}>Every 30 minutes</option><option value={60}>Every hour</option></select></label><label className="mt-4 block text-sm text-zinc-300">Synchronize after editing inactivity<select aria-label="Sync after editing inactivity" value={syncPreferences.inactivityMinutes} onChange={(event) => onSyncPreferences({ ...syncPreferences, inactivityMinutes: Number(event.target.value) as SyncPreferences['inactivityMinutes'] })} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100"><option value={0}>Off</option><option value={1}>1 minute</option><option value={2}>2 minutes</option><option value={5}>5 minutes</option><option value={10}>10 minutes</option></select></label><label className="mt-4 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncOnNotebookSwitch} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncOnNotebookSwitch: event.target.checked })} className="h-5 w-5 accent-amber-500" />Synchronize before switching notebooks</label><label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncOnClose} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncOnClose: event.target.checked })} className="h-5 w-5 accent-amber-500" />Best-effort synchronization when closing the tab</label><p className="mt-2 text-xs leading-5 text-zinc-500">Browsers cannot guarantee completion during tab or browser shutdown. Unsaved editor content still triggers the normal leave warning instead of starting synchronization.</p></div>
-            <label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncOnStartup} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncOnStartup: event.target.checked })} className="h-5 w-5 accent-amber-500" />Sync when RepoQuill opens</label>
-            <label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncOnFocus} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncOnFocus: event.target.checked })} className="h-5 w-5 accent-amber-500" />Sync when returning to the tab</label>
-            <label className="mt-2 flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={syncPreferences.syncBeforeOpeningNote} onChange={(event) => onSyncPreferences({ ...syncPreferences, syncBeforeOpeningNote: event.target.checked })} className="h-5 w-5 accent-amber-500" />Background sync after switching notes</label>
+			<div className="mt-5 border-t border-zinc-800 pt-5"><h3 className="text-sm font-semibold text-zinc-200">Synchronization</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Saving writes a note to this RepoQuill server. Synchronization separately exchanges those saved changes with the connected service.</p><label className="mt-4 block text-sm text-zinc-300">Scheduled synchronization<select aria-label="Scheduled sync" value={syncPreferences.scheduledMinutes} onChange={(event) => onSyncPreferences({ ...syncPreferences, scheduledMinutes: Number(event.target.value) as SyncPreferences['scheduledMinutes'] })} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100"><option value={0}>Off</option><option value={5}>Every 5 minutes</option><option value={15}>Every 15 minutes</option><option value={30}>Every 30 minutes</option><option value={60}>Every hour</option></select></label><label className="mt-4 block text-sm text-zinc-300">Synchronize after editing inactivity<select aria-label="Sync after editing inactivity" value={syncPreferences.inactivityMinutes} onChange={(event) => onSyncPreferences({ ...syncPreferences, inactivityMinutes: Number(event.target.value) as SyncPreferences['inactivityMinutes'] })} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100"><option value={0}>Off</option><option value={1}>1 minute</option><option value={2}>2 minutes</option><option value={5}>5 minutes</option><option value={10}>10 minutes</option></select></label><p className="mt-3 text-xs leading-5 text-zinc-500">RepoQuill also synchronizes at safe transition points such as startup, returning to the app, and changing notes or notebooks. Closing-tab synchronization remains best effort because browsers cannot guarantee its completion.</p></div>
           </section>}
-
-		  {mode === 'settings' && <section className="order-2 mt-6 border-t border-zinc-800 pt-5"><h3 className="text-sm font-semibold text-zinc-200">Notebooks</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Add, switch, and manage notebooks from the Notebooks menu in the main sidebar. Connection internals remain under Advanced after setup.</p></section>}
 
           {mode === 'settings' && <SecurityPanel authMode={authMode} runningVersion={runningVersion} onLoggedOut={onLoggedOut} />}
 
@@ -1554,13 +1611,17 @@ function ManageNotebooksDialog({ notebooks, activeNotebookID, operationsBlocked,
   useEffect(()=>{notebooks.forEach(notebook=>void checkHealth(notebook))},[notebooks,checkHealth])
   async function saveName(event:FormEvent){event.preventDefault();if(!editing)return;setBusy(true);setError(undefined);try{await responseJSON(await apiFetch(`/api/notebooks/${encodeURIComponent(editing.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}));setEditing(undefined);await onChanged()}catch(caught){setError(messageFrom(caught))}finally{setBusy(false)}}
   async function remove(){if(!removing)return;setBusy(true);setError(undefined);try{const response=await apiFetch(`/api/notebooks/${encodeURIComponent(removing.id)}${deleteLocal?'?deleteLocal=true':''}`,{method:'DELETE',...(deleteLocal?{headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation})}:{})});if(!response.ok)await responseJSON(response);setRemoving(undefined);await onChanged()}catch(caught){setError(messageFrom(caught))}finally{setBusy(false)}}
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={event=>{if(event.target===event.currentTarget)onClose()}}><div role="dialog" aria-modal="true" aria-labelledby="manage-notebooks-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="border-b border-zinc-800 px-5 py-4"><h2 id="manage-notebooks-title" className="text-lg font-semibold">Manage Notebooks</h2><p className="mt-1 text-xs text-zinc-500">Names, connection health, and safe local registration controls.</p></header><div className="overflow-y-auto p-4 sm:p-5">{error&&<ErrorMessage>{error}</ErrorMessage>}{operationsBlocked&&<p role="status" className="mb-3 rounded border border-amber-800/60 p-3 text-xs text-amber-200">Finish the current save or notebook operation before renaming or removing a notebook.</p>}<div className="space-y-3">{notebooks.map(notebook=>{const item=health[notebook.id];return <section key={notebook.id} className="rounded-lg border border-zinc-800 p-3"><div className="flex flex-wrap items-center justify-between gap-2">{editing?.id===notebook.id?<form onSubmit={event=>void saveName(event)} className="flex flex-1 gap-2"><label className="sr-only" htmlFor={`notebook-name-${notebook.id}`}>Notebook name</label><input id={`notebook-name-${notebook.id}`} autoFocus required maxLength={100} value={name} onChange={event=>setName(event.target.value)} className="min-h-10 flex-1 rounded border border-zinc-700 bg-zinc-950 px-2 text-sm"/><button disabled={busy||operationsBlocked} className="rounded border border-zinc-700 px-3 text-xs">Save</button><button type="button" onClick={()=>setEditing(undefined)} className="px-2 text-xs text-zinc-400">Cancel</button></form>:<><div><h3 className="font-medium text-zinc-100">{notebook.name}</h3><p className="text-[11px] text-zinc-500">{notebook.id===activeNotebookID?'Currently open':'Not currently open'}</p></div><button type="button" disabled={busy||operationsBlocked} onClick={()=>{setEditing(notebook);setName(notebook.name)}} className="min-h-10 rounded px-3 text-xs text-amber-300 hover:bg-zinc-800">Rename</button></>}</div><div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">{item?<><HealthLine label="Local files" check={item.localFiles}/><HealthLine label="Write access" check={item.writeAccess}/><HealthLine label="Connected service" check={item.connection}/><HealthLine label="Pending work" check={item.pendingWork}/></>:<p className="text-zinc-500">Checking notebook…</p>}</div><div className="mt-3 flex flex-wrap items-center gap-2"><button type="button" disabled={busy} onClick={()=>void checkHealth(notebook,true)} className="min-h-10 rounded border border-zinc-700 px-3 text-xs">{item?.connection.state==='failed'?'Check connection':'Test connection'}</button>{item?.writeAccess.state==='failed'&&<span className="text-xs text-amber-300">Repair the mounted folder permissions, then retry.</span>}<span className="text-[11px] text-zinc-500">Last synchronized: {item?.lastSyncedAt?new Date(item.lastSyncedAt).toLocaleString():'Not recorded'}</span></div><details className="mt-3 text-xs"><summary className="cursor-pointer text-zinc-500">Technical details</summary><dl className="mt-2 grid gap-1 break-all text-zinc-400"><div><dt className="inline text-zinc-500">Address: </dt><dd className="inline">{notebook.remoteUrl||'No remote configured'}</dd></div><div><dt className="inline text-zinc-500">Branch: </dt><dd className="inline">{notebook.branch||'Remote default'}</dd></div><div><dt className="inline text-zinc-500">Credentials: </dt><dd className="inline">{notebook.authType==='managed-ssh'?`Managed key ${notebook.keyId?.slice(0,12)||''}…`:'Existing server SSH configuration'}</dd></div></dl></details>{notebook.id!==activeNotebookID&&<button type="button" disabled={busy||operationsBlocked} onClick={()=>{setRemoving(notebook);setDeleteLocal(false);setConfirmation('')}} className="mt-3 min-h-10 rounded border border-red-900/70 px-3 text-xs text-red-300">Remove…</button>}</section>})}</div></div><footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950">Done</button></footer></div>{removing&&<div role="alertdialog" aria-modal="true" aria-labelledby="remove-notebook-title" className="fixed inset-0 z-10 flex items-center justify-center bg-black/75 p-4"><div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-5"><h3 id="remove-notebook-title" className="font-semibold">Remove {removing.name}?</h3><p className="mt-2 text-xs leading-5 text-zinc-400">The safe default only removes this registration from RepoQuill. The local files and remote repository stay unchanged.</p><label className="mt-4 flex items-start gap-2 text-xs text-red-200"><input type="checkbox" checked={deleteLocal} onChange={event=>{setDeleteLocal(event.target.checked);setConfirmation('')}} className="mt-0.5"/>Also permanently delete this local working copy. The remote repository is never deleted.</label>{deleteLocal&&<label className="mt-3 block text-xs text-zinc-300">Type <strong>{removing.name}</strong> to confirm<input value={confirmation} onChange={event=>setConfirmation(event.target.value)} className="mt-1 min-h-10 w-full rounded border border-red-800 bg-zinc-950 px-2"/></label>}<div className="mt-5 flex justify-end gap-2"><button type="button" onClick={()=>setRemoving(undefined)} className="min-h-10 px-3 text-xs">Cancel</button><button type="button" disabled={busy||operationsBlocked||(deleteLocal&&confirmation!==removing.name)} onClick={()=>void remove()} className="min-h-10 rounded border border-red-800 px-3 text-xs text-red-200">{deleteLocal?'Delete local copy':'Remove registration'}</button></div></div></div>}</div>
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={event=>{if(event.target===event.currentTarget)onClose()}}><div role="dialog" aria-modal="true" aria-labelledby="manage-notebooks-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="border-b border-zinc-800 px-5 py-4"><h2 id="manage-notebooks-title" className="text-lg font-semibold">Manage Notebooks</h2><p className="mt-1 text-xs text-zinc-500">Names, connection health, and safe local registration controls.</p></header><div className="overflow-y-auto p-4 sm:p-5">{error&&<ErrorMessage>{error}</ErrorMessage>}{operationsBlocked&&<p role="status" className="mb-3 rounded border border-amber-800/60 p-3 text-xs text-amber-200">Finish the current save or notebook operation before renaming or removing a notebook.</p>}<div className="space-y-3">{notebooks.map(notebook=>{const item=health[notebook.id];return <section key={notebook.id} className="rounded-lg border border-zinc-800 p-3"><div className="flex flex-wrap items-center justify-between gap-2">{editing?.id===notebook.id?<form onSubmit={event=>void saveName(event)} className="flex flex-1 gap-2"><label className="sr-only" htmlFor={`notebook-name-${notebook.id}`}>Notebook name</label><input id={`notebook-name-${notebook.id}`} autoFocus required maxLength={100} value={name} onChange={event=>setName(event.target.value)} className="min-h-10 flex-1 rounded border border-zinc-700 bg-zinc-950 px-2 text-sm"/><button disabled={busy||operationsBlocked} className="rounded border border-zinc-700 px-3 text-xs">Save</button><button type="button" onClick={()=>setEditing(undefined)} className="px-2 text-xs text-zinc-400">Cancel</button></form>:<><div><h3 className="font-medium text-zinc-100">{notebook.name}</h3><p className="text-[11px] text-zinc-500">{notebook.id===activeNotebookID?'Currently open':'Not currently open'}</p></div><button type="button" disabled={busy||operationsBlocked} onClick={()=>{setEditing(notebook);setName(notebook.name)}} className="min-h-10 rounded px-3 text-xs text-amber-300 hover:bg-zinc-800">Rename</button></>}</div><div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">{item?<><HealthLine label="Local files" check={item.localFiles}/><HealthLine label="Write access" check={item.writeAccess}/><HealthLine label="Connected service" check={item.connection}/><HealthLine label="Pending work" check={item.pendingWork}/></>:<p className="text-zinc-500">Checking notebook…</p>}</div><div className="mt-3 flex flex-wrap items-center gap-2"><button type="button" disabled={busy} onClick={()=>void checkHealth(notebook,true)} className="min-h-10 rounded border border-zinc-700 px-3 text-xs">{item?.connection.state==='failed'?'Check connection':'Test connection'}</button>{item?.writeAccess.state==='failed'&&<span className="text-xs text-amber-300">Repair the mounted folder permissions, then retry.</span>}<span className="text-[11px] text-zinc-500">Last synchronized: {item?.lastSyncedAt?new Date(item.lastSyncedAt).toLocaleString():'Not recorded'}</span></div><details className="mt-3 text-xs"><summary className="cursor-pointer text-zinc-500">Technical details</summary><dl className="mt-2 grid gap-1 break-all text-zinc-400"><div><dt className="inline text-zinc-500">Address: </dt><dd className="inline">{notebook.remoteUrl||'No remote configured'}</dd></div><div><dt className="inline text-zinc-500">Branch: </dt><dd className="inline">{notebook.branch||'Remote default'}</dd></div><div><dt className="inline text-zinc-500">Credentials: </dt><dd className="inline">{notebook.authType==='managed-ssh'?`Managed key ${notebook.keyId?.slice(0,12)||''}…`:'Existing server SSH configuration'}</dd></div></dl></details>{(notebook.id!==activeNotebookID||notebooks.length===1)&&<button type="button" disabled={busy||operationsBlocked} onClick={()=>{setRemoving(notebook);setDeleteLocal(false);setConfirmation('')}} className="mt-3 min-h-10 rounded border border-red-900/70 px-3 text-xs text-red-300">Remove…</button>}</section>})}</div></div><footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950">Done</button></footer></div>{removing&&<div role="alertdialog" aria-modal="true" aria-labelledby="remove-notebook-title" className="fixed inset-0 z-10 flex items-center justify-center bg-black/75 p-4"><div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-5"><h3 id="remove-notebook-title" className="font-semibold">Remove {removing.name}?</h3><p className="mt-2 text-xs leading-5 text-zinc-400">The safe default only removes this registration from RepoQuill. The local files and remote repository stay unchanged.</p><label className="mt-4 flex items-start gap-2 text-xs text-red-200"><input type="checkbox" checked={deleteLocal} onChange={event=>{setDeleteLocal(event.target.checked);setConfirmation('')}} className="mt-0.5"/>Also permanently delete this local working copy. The remote repository is never deleted.</label>{deleteLocal&&<label className="mt-3 block text-xs text-zinc-300">Type <strong>{removing.name}</strong> to confirm<input value={confirmation} onChange={event=>setConfirmation(event.target.value)} className="mt-1 min-h-10 w-full rounded border border-red-800 bg-zinc-950 px-2"/></label>}<div className="mt-5 flex justify-end gap-2"><button type="button" onClick={()=>setRemoving(undefined)} className="min-h-10 px-3 text-xs">Cancel</button><button type="button" disabled={busy||operationsBlocked||(deleteLocal&&confirmation!==removing.name)} onClick={()=>void remove()} className="min-h-10 rounded border border-red-800 px-3 text-xs text-red-200">{deleteLocal?'Delete local copy':'Remove registration'}</button></div></div></div>}</div>
 }
 
 function HealthLine({label,check}:{label:string;check:NotebookCheck}){const okay=check.state==='ok'||check.state==='clean'||check.state==='synced'||check.state==='success';return <div title={check.message} className="flex items-center justify-between gap-2 rounded bg-zinc-950/60 px-2 py-2"><span className="text-zinc-400">{label}</span><span className={okay?'text-emerald-400':check.state==='not_checked'?'text-zinc-500':'text-amber-300'}>{okay?'Ready':check.state==='not_checked'?'Not checked':'Needs attention'}</span></div>}
 
 function SettingsIcon() {
   return <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 15.25a3.25 3.25 0 1 0 0-6.5 3.25 3.25 0 0 0 0 6.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.1A1.7 1.7 0 0 0 8.4 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2.2V9.55h.1A1.7 1.7 0 0 0 4 8.4a1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.46 3.6l.06.06A1.7 1.7 0 0 0 8.4 4a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1v-.1h4.05v.1A1.7 1.7 0 0 0 15 4a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.4 8.4a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1.1.4h.1v4.05h-.1A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+}
+
+function LogoutIcon() {
+  return <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M10 5H5.5A1.5 1.5 0 0 0 4 6.5v11A1.5 1.5 0 0 0 5.5 19H10"/><path d="M14 8l4 4-4 4M8 12h10"/></svg>
 }
 
 type TreeEntryProps = {
@@ -1609,6 +1670,15 @@ function InlineRename({ value, onChange, onCommit, onCancel }: { value: string; 
 
 function TreeAction({ children, label, disabled, onClick }: { children: ReactNode; label?: string; disabled: boolean; onClick: () => void }) { return <button type="button" title={label} aria-label={label} disabled={disabled} onClick={onClick} className="rounded-md border border-zinc-700 px-2 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white disabled:opacity-40">{children}</button> }
 
+function TextInputDialog({ title, label, initialValue, confirmLabel, onCancel, onConfirm }: { title:string; label:string; initialValue:string; confirmLabel:string; onCancel:()=>void; onConfirm:(value:string)=>void }) {
+  const [value,setValue]=useState(initialValue)
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" onMouseDown={(event)=>{if(event.target===event.currentTarget)onCancel()}}><form role="dialog" aria-modal="true" aria-labelledby="text-input-dialog-title" onSubmit={(event)=>{event.preventDefault();onConfirm(value)}} className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="text-input-dialog-title" className="text-lg font-semibold">{title}</h2><label className="mt-4 block text-sm text-zinc-300">{label}<input autoFocus required value={value} onChange={(event)=>setValue(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 text-zinc-100 outline-none focus:border-amber-500"/></label><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={onCancel} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400">{confirmLabel}</button></div></form></div>
+}
+
+function ConfirmationDialog({ title, message, confirmLabel, danger=false, busy=false, onCancel, onConfirm }: { title:string; message:string; confirmLabel:string; danger?:boolean; busy?:boolean; onCancel:()=>void; onConfirm:()=>void }) {
+  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4" onMouseDown={(event)=>{if(event.target===event.currentTarget&&!busy)onCancel()}}><section role="alertdialog" aria-modal="true" aria-labelledby="confirmation-dialog-title" aria-describedby="confirmation-dialog-message" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="confirmation-dialog-title" className="text-lg font-semibold">{title}</h2><p id="confirmation-dialog-message" className="mt-3 text-sm leading-6 text-zinc-400">{message}</p><div className="mt-5 flex justify-end gap-2"><button type="button" disabled={busy} onClick={onCancel} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">Cancel</button><button type="button" disabled={busy} onClick={onConfirm} className={`min-h-10 rounded-md px-4 text-sm font-medium disabled:opacity-40 ${danger?'border border-red-800 bg-red-950/40 text-red-200 hover:bg-red-950/70':'bg-amber-500 text-zinc-950 hover:bg-amber-400'}`}>{busy?'Working…':confirmLabel}</button></div></section></div>
+}
+
 function SearchResults({ query, results, loading, error, onSelect }: { query: string; results: SearchResult[]; loading: boolean; error?: string; onSelect: (result: SearchResult) => void }) {
   if (loading) return <SidebarMessage>Searching…</SidebarMessage>
   if (error) return <div className="rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">Search failed: {error}</div>
@@ -1616,8 +1686,8 @@ function SearchResults({ query, results, loading, error, onSelect }: { query: st
   return <nav aria-label="Search results"><p className="mb-2 px-2 text-xs text-zinc-500">{results.length === 100 ? 'First 100 results' : `${results.length} ${results.length === 1 ? 'result' : 'results'}`}</p><ul className="space-y-1">{results.map((result, index) => <li key={`${result.type}:${result.path}:${result.line ?? 0}:${index}`}><button type="button" onClick={() => onSelect(result)} className="w-full rounded-md px-2 py-2 text-left hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"><span className="flex items-center gap-2 text-sm text-zinc-200"><span aria-hidden="true" className="text-zinc-500">{result.type === 'directory' ? '▸' : result.type === 'file' ? '◇' : '≡'}</span><span className="truncate">{result.path.replace(/\.md$/i, '')}</span>{result.line && <span className="ml-auto shrink-0 text-xs text-zinc-500">L{result.line}</span>}</span>{result.excerpt && <span className="mt-1 block truncate pl-5 text-xs text-zinc-500">{result.excerpt}</span>}</button></li>)}</ul></nav>
 }
 
-function ActionMenu({ entry, onOpenNewTab, onRename, onMove, onDelete }: { entry: TreeNode; onOpenNewTab: (entry: TreeNode) => void; onRename: (entry: TreeNode) => void; onMove: (entry: TreeNode) => void; onDelete: (entry: TreeNode) => void }) {
-  return <div role="menu" className="w-44 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-2xl">{entry.type === 'file' && <MenuButton onClick={() => onOpenNewTab(entry)}>Open in new tab</MenuButton>}<MenuButton onClick={() => onRename(entry)}>Rename</MenuButton><MenuButton onClick={() => onMove(entry)}>Move…</MenuButton><MenuButton danger onClick={() => onDelete(entry)}>Move to Trash</MenuButton></div>
+function ActionMenu({ entry, onNewNote, onNewFolder, onOpenNewTab, onRename, onMove, onDelete }: { entry?: TreeNode; onNewNote: (entry?: TreeNode) => void; onNewFolder: (entry?: TreeNode) => void; onOpenNewTab: (entry: TreeNode) => void; onRename: (entry: TreeNode) => void; onMove: (entry: TreeNode) => void; onDelete: (entry: TreeNode) => void }) {
+  return <div role="menu" className="w-44 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-2xl"><MenuButton onClick={() => onNewNote(entry)}>New Note</MenuButton><MenuButton onClick={() => onNewFolder(entry)}>New Folder</MenuButton>{entry && <div className="my-1 border-t border-zinc-800" />}{entry?.type === 'file' && <MenuButton onClick={() => onOpenNewTab(entry)}>Open in new tab</MenuButton>}{entry && <><MenuButton onClick={() => onRename(entry)}>Rename</MenuButton><MenuButton onClick={() => onMove(entry)}>Move…</MenuButton><MenuButton danger onClick={() => onDelete(entry)}>Move to Trash</MenuButton></>}</div>
 }
 
 function NoteTabs({ tabs, activePath, onActivate, onClose }: { tabs: NoteTab[]; activePath?: string; onActivate: (path: string) => void; onClose: (path: string) => void }) {
@@ -1648,17 +1718,21 @@ function FolderChoice({ label, depth, selected, onClick }: { label: string; dept
   return <button type="button" onClick={onClick} style={{ paddingLeft: `${0.75 + depth * 1.25}rem` }} className={`flex w-full items-center gap-2 rounded-md py-2 pr-3 text-left text-sm ${selected ? 'bg-amber-400/15 text-amber-200' : 'text-zinc-300 hover:bg-zinc-800'}`}><span aria-hidden="true">📁</span><span className="truncate">{label}</span></button>
 }
 
-function TrashDialog({ onChanged, onClose }: { onChanged:()=>Promise<void>; onClose:()=>void }) {
+export function TrashDialog({ onChanged, onClose }: { onChanged:()=>Promise<void>; onClose:()=>void }) {
   const [items, setItems] = useState<TrashItem[]>()
-  const [busyID, setBusyID] = useState<string>()
+  const [selectedIDs, setSelectedIDs] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const [notice, setNotice] = useState<string>()
+  const [deleteConfirmation, setDeleteConfirmation] = useState<TrashItem[]>()
 
   const load = useCallback(async () => {
     setError(undefined)
     try {
       const response = await apiFetch('/api/repository/trash')
-      setItems((await responseJSON<{items:TrashItem[]}>(response)).items)
+      const loaded = (await responseJSON<{items:TrashItem[]}>(response)).items
+      setItems(loaded)
+      setSelectedIDs((current) => new Set([...current].filter((id) => loaded.some((item) => item.id === id))))
     } catch (caught) {
       setError(messageFrom(caught))
     }
@@ -1671,40 +1745,49 @@ function TrashDialog({ onChanged, onClose }: { onChanged:()=>Promise<void>; onCl
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [load, onClose])
 
-  async function restore(item:TrashItem) {
-    setBusyID(item.id)
+  async function run(itemsToProcess:TrashItem[], operation:'restore'|'delete') {
+    if (itemsToProcess.length === 0) return
+    setBusy(true)
     setError(undefined)
     setNotice(undefined)
+    const failures:string[] = []
+    let completed = 0
     try {
-      const response = await apiFetch(`/api/repository/trash/${encodeURIComponent(item.id)}/restore`, { method:'POST' })
-      await responseJSON<TrashItem>(response)
-      setNotice(`Restored “${item.originalPath}”.`)
-      await Promise.all([load(), onChanged()])
-    } catch (caught) {
-      setError(messageFrom(caught))
+      for (const item of itemsToProcess) {
+        try {
+          const suffix = operation === 'restore' ? '/restore' : ''
+          const method = operation === 'restore' ? 'POST' : 'DELETE'
+          await responseJSON<TrashItem>(await apiFetch(`/api/repository/trash/${encodeURIComponent(item.id)}${suffix}`, { method }))
+          completed += 1
+        } catch (caught) {
+          failures.push(`${item.originalPath}: ${messageFrom(caught)}`)
+        }
+      }
+      setSelectedIDs(new Set())
+      if (completed > 0) {
+        const successful = itemsToProcess.filter((item) => !failures.some((failure) => failure.startsWith(`${item.originalPath}:`)))
+        setNotice(completed === 1 ? `${operation === 'restore' ? 'Restored' : 'Permanently deleted'} “${successful[0].originalPath}”.` : `${operation === 'restore' ? 'Restored' : 'Permanently deleted'} ${completed} items.`)
+      }
+      if (failures.length > 0) setError(`${failures.length} ${failures.length === 1 ? 'item could' : 'items could'} not be ${operation === 'restore' ? 'restored' : 'deleted'}: ${failures.join('; ')}`)
+      await Promise.all([load(), operation === 'restore' ? onChanged() : Promise.resolve()])
     } finally {
-      setBusyID(undefined)
+      setBusy(false)
     }
   }
 
-  async function permanentlyDelete(item:TrashItem) {
-    if (!window.confirm(`Permanently delete “${item.originalPath}”? This removes the trashed files from this notebook and cannot be undone in RepoQuill.`)) return
-    setBusyID(item.id)
-    setError(undefined)
-    setNotice(undefined)
-    try {
-      const response = await apiFetch(`/api/repository/trash/${encodeURIComponent(item.id)}`, { method:'DELETE' })
-      await responseJSON<TrashItem>(response)
-      setNotice(`Permanently deleted “${item.originalPath}”.`)
-      await load()
-    } catch (caught) {
-      setError(messageFrom(caught))
-    } finally {
-      setBusyID(undefined)
-    }
+  function toggleSelection(id:string) {
+    setSelectedIDs((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }
 
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="trash-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-5 py-4"><div><h2 id="trash-title" className="text-lg font-semibold">Trash</h2><p className="mt-1 text-xs leading-5 text-zinc-500">Deleted notes, folders, and their owned image assets remain ordinary notebook files until permanently deleted.</p></div><button type="button" autoFocus onClick={onClose} aria-label="Close Trash" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header><div className="overflow-y-auto p-4 sm:p-5">{error && <ErrorMessage>{error}</ErrorMessage>}{notice && <p role="status" className="mb-4 rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3 text-sm text-emerald-300">{notice}</p>}{items === undefined && !error && <p className="text-sm text-zinc-500">Loading Trash…</p>}{items?.length === 0 && <div className="rounded-md border border-zinc-800 p-5 text-center"><p className="text-sm text-zinc-300">Trash is empty.</p><p className="mt-1 text-xs text-zinc-500">Items you delete from the notebook tree will appear here.</p></div>}<ul className="space-y-2">{items?.map((item) => <li key={item.id} className="rounded-md border border-zinc-800 p-3"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><p className="break-all text-sm text-zinc-200"><span aria-hidden="true" className="mr-2">{item.type === 'directory' ? '📁' : '◇'}</span>{item.originalPath}</p><p className="mt-1 text-xs text-zinc-500">Deleted {new Date(item.deletedAt).toLocaleString()} · {formatBytes(item.size)}</p></div><div className="flex shrink-0 flex-wrap gap-2"><button type="button" disabled={busyID !== undefined} onClick={() => void restore(item)} className="min-h-10 rounded-md bg-amber-500 px-3 text-xs font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-40">{busyID === item.id ? 'Working…' : 'Restore'}</button><button type="button" disabled={busyID !== undefined} onClick={() => void permanentlyDelete(item)} className="min-h-10 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Permanently delete</button></div></div></li>)}</ul></div><footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Done</button></footer></section></div>
+  const selectedItems = items?.filter((item) => selectedIDs.has(item.id)) ?? []
+  const allSelected = Boolean(items?.length && selectedIDs.size === items.length)
+
+  return <><div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="trash-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-5 py-4"><div><h2 id="trash-title" className="text-lg font-semibold">Trash</h2><p className="mt-1 text-xs leading-5 text-zinc-500">Deleted notes, folders, and their owned image assets remain ordinary notebook files until permanently deleted.</p></div><button type="button" autoFocus onClick={onClose} aria-label="Close Trash" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header>{items && items.length > 0 && <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2"><label className="flex min-h-10 items-center gap-2 text-xs text-zinc-300"><input type="checkbox" aria-label="Select all Trash items" checked={allSelected} onChange={() => setSelectedIDs(allSelected ? new Set() : new Set(items.map((item) => item.id)))} className="h-4 w-4 accent-amber-500"/>Select all</label><span className="text-xs text-zinc-500">{selectedIDs.size} selected</span><div className="ml-auto flex flex-wrap gap-2"><button type="button" disabled={busy || selectedItems.length === 0} onClick={() => void run(selectedItems, 'restore')} className="min-h-9 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">Restore selected</button><button type="button" disabled={busy || selectedItems.length === 0} onClick={() => setDeleteConfirmation(selectedItems)} className="min-h-9 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Delete selected</button><button type="button" disabled={busy} onClick={() => setDeleteConfirmation(items)} className="min-h-9 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Empty Trash</button></div></div>}<div className="overflow-y-auto p-4 sm:p-5">{error && <ErrorMessage>{error}</ErrorMessage>}{notice && <p role="status" className="mb-4 rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3 text-sm text-emerald-300">{notice}</p>}{items === undefined && !error && <p className="text-sm text-zinc-500">Loading Trash…</p>}{items?.length === 0 && <div className="rounded-md border border-zinc-800 p-5 text-center"><p className="text-sm text-zinc-300">Trash is empty.</p><p className="mt-1 text-xs text-zinc-500">Items you delete from the notebook tree will appear here.</p></div>}<ul className="space-y-2">{items?.map((item) => <li key={item.id} className="rounded-md border border-zinc-800 p-3"><label className="flex cursor-pointer items-start gap-3"><input type="checkbox" aria-label={`Select ${item.originalPath}`} checked={selectedIDs.has(item.id)} onChange={() => toggleSelection(item.id)} className="mt-1 h-4 w-4 shrink-0 accent-amber-500"/><span className="min-w-0 flex-1"><span className="break-all text-sm text-zinc-200"><span aria-hidden="true" className="mr-2">{item.type === 'directory' ? '📁' : '◇'}</span>{item.originalPath}</span><span className="mt-1 block text-xs text-zinc-500">Deleted {new Date(item.deletedAt).toLocaleString()} · {formatBytes(item.size)}</span></span></label><div className="mt-2 flex justify-end gap-2"><button type="button" disabled={busy} onClick={() => void run([item], 'restore')} className="min-h-9 rounded-md px-3 text-xs text-amber-300 hover:bg-zinc-800 disabled:opacity-40">Restore</button><button type="button" disabled={busy} onClick={() => setDeleteConfirmation([item])} className="min-h-9 rounded-md px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Permanently delete</button></div></li>)}</ul></div><footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Done</button></footer></section></div>{deleteConfirmation && <ConfirmationDialog title="Permanently delete?" message={"Permanently delete "+deleteConfirmation.length+" "+(deleteConfirmation.length === 1 ? "item" : "items")+"? This cannot be undone in RepoQuill."} confirmLabel="Permanently delete" danger busy={busy} onCancel={() => setDeleteConfirmation(undefined)} onConfirm={() => { const pending=deleteConfirmation; setDeleteConfirmation(undefined); void run(pending,'delete') }}/>}</>
 }
 
 type NoteDiffLine = { kind: 'same' | 'removed' | 'added'; text: string }
@@ -1715,6 +1798,7 @@ function NoteHistoryDialog({ notePath, currentContent, onRestore, onClose }: { n
   const [selected, setSelected] = useState<NoteHistoryVersion>()
   const [loadingVersion, setLoadingVersion] = useState(false)
   const [restoring, setRestoring] = useState(false)
+  const [confirmRestore, setConfirmRestore] = useState(false)
   const [error, setError] = useState<string>()
 
   useEffect(() => {
@@ -1742,7 +1826,8 @@ function NoteHistoryDialog({ notePath, currentContent, onRestore, onClose }: { n
   }
 
   async function restoreSelected() {
-    if (!selected || !window.confirm(`Restore the version from ${new Date(selected.timestamp).toLocaleString()}? Your current saved note will remain available in version history after the next synchronization.`)) return
+    if (!selected) return
+    setConfirmRestore(false)
     setRestoring(true)
     setError(undefined)
     try {
@@ -1756,7 +1841,7 @@ function NoteHistoryDialog({ notePath, currentContent, onRestore, onClose }: { n
   }
 
   const diff = selected ? readableNoteDiff(selected.content, currentContent) : []
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-2 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="note-history-title" className="flex max-h-[94vh] w-full max-w-5xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3 sm:px-5"><div className="min-w-0"><h2 id="note-history-title" className="text-lg font-semibold">Version history</h2><p className="truncate text-xs text-zinc-500">{notePath}</p></div><button type="button" autoFocus onClick={onClose} aria-label="Close version history" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header><div className="grid min-h-0 flex-1 md:grid-cols-[17rem_1fr]"><aside aria-label="Note versions" className="max-h-56 overflow-y-auto border-b border-zinc-800 p-3 md:max-h-none md:border-r md:border-b-0">{entries === undefined && !error && <p className="p-2 text-sm text-zinc-500">Loading versions…</p>}{limited && <p role="status" className="mb-2 rounded border border-amber-800/60 bg-amber-950/25 p-2 text-xs leading-5 text-amber-200">This notebook has a shallow Git history, so older versions may not be available on this server.</p>}{entries?.length === 0 && <p className="p-2 text-sm leading-6 text-zinc-400">No synchronized versions are available for this note yet.</p>}<ul className="space-y-1">{entries?.map((entry) => <li key={entry.versionId}><button type="button" aria-pressed={selected?.versionId === entry.versionId} onClick={() => void loadVersion(entry)} className={`w-full rounded-md px-3 py-2 text-left ${selected?.versionId === entry.versionId ? 'bg-amber-400/15 text-amber-100' : 'text-zinc-300 hover:bg-zinc-800'}`}><span className="block text-xs font-medium">{new Date(entry.timestamp).toLocaleString()}</span><span className="mt-1 block truncate text-[11px] text-zinc-500">{entry.summary}</span>{entry.path !== notePath && <span className="mt-1 block truncate text-[11px] text-zinc-600">Previously: {entry.path}</span>}</button></li>)}</ul></aside><div className="min-h-0 overflow-y-auto p-4 sm:p-5">{error && <ErrorMessage>{error}</ErrorMessage>}{loadingVersion && <p className="text-sm text-zinc-500">Loading this version…</p>}{!selected && !loadingVersion && <div className="flex min-h-48 items-center justify-center text-center text-sm text-zinc-500">Choose a version to view its changes.</div>}{selected && !loadingVersion && <><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-medium text-zinc-200">Changes compared with the current note</h3><p className="mt-1 text-xs text-zinc-500">Removed lines use − and added lines use +. The underlying note remains ordinary Markdown.</p></div><button type="button" disabled={restoring} onClick={() => void restoreSelected()} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-50">{restoring ? 'Restoring…' : 'Restore this version'}</button></div><div role="region" aria-label="Version comparison" className="mt-4 overflow-x-auto rounded-md border border-zinc-800 bg-zinc-950"><pre className="min-w-max p-3 font-mono text-xs leading-5">{diff.map((line,index) => <span key={`${index}:${line.kind}`} className={`block whitespace-pre-wrap break-words ${line.kind === 'removed' ? 'bg-red-950/35 text-red-200' : line.kind === 'added' ? 'bg-emerald-950/30 text-emerald-200' : 'text-zinc-500'}`}><span aria-hidden="true" className="mr-2 inline-block w-3 select-none text-zinc-600">{line.kind === 'removed' ? '−' : line.kind === 'added' ? '+' : ' '}</span>{line.text || ' '}</span>)}</pre></div><details className="mt-4 rounded-md border border-zinc-800 p-3"><summary className="cursor-pointer text-sm text-zinc-300">View this complete Markdown version</summary><pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-400">{selected.content}</pre></details></>}</div></div></section></div>
+  return <><div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-2 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="note-history-title" className="flex max-h-[94vh] w-full max-w-5xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3 sm:px-5"><div className="min-w-0"><h2 id="note-history-title" className="text-lg font-semibold">Version history</h2><p className="truncate text-xs text-zinc-500">{notePath}</p></div><button type="button" autoFocus onClick={onClose} aria-label="Close version history" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header><div className="grid min-h-0 flex-1 md:grid-cols-[17rem_1fr]"><aside aria-label="Note versions" className="max-h-56 overflow-y-auto border-b border-zinc-800 p-3 md:max-h-none md:border-r md:border-b-0">{entries === undefined && !error && <p className="p-2 text-sm text-zinc-500">Loading versions…</p>}{limited && <p role="status" className="mb-2 rounded border border-amber-800/60 bg-amber-950/25 p-2 text-xs leading-5 text-amber-200">This notebook has a shallow Git history, so older versions may not be available on this server.</p>}{entries?.length === 0 && <p className="p-2 text-sm leading-6 text-zinc-400">No synchronized versions are available for this note yet.</p>}<ul className="space-y-1">{entries?.map((entry) => <li key={entry.versionId}><button type="button" aria-pressed={selected?.versionId === entry.versionId} onClick={() => void loadVersion(entry)} className={`w-full rounded-md px-3 py-2 text-left ${selected?.versionId === entry.versionId ? 'bg-amber-400/15 text-amber-100' : 'text-zinc-300 hover:bg-zinc-800'}`}><span className="block text-xs font-medium">{new Date(entry.timestamp).toLocaleString()}</span><span className="mt-1 block truncate text-[11px] text-zinc-500">{entry.summary}</span>{entry.path !== notePath && <span className="mt-1 block truncate text-[11px] text-zinc-600">Previously: {entry.path}</span>}</button></li>)}</ul></aside><div className="min-h-0 overflow-y-auto p-4 sm:p-5">{error && <ErrorMessage>{error}</ErrorMessage>}{loadingVersion && <p className="text-sm text-zinc-500">Loading this version…</p>}{!selected && !loadingVersion && <div className="flex min-h-48 items-center justify-center text-center text-sm text-zinc-500">Choose a version to view its changes.</div>}{selected && !loadingVersion && <><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-medium text-zinc-200">Changes compared with the current note</h3><p className="mt-1 text-xs text-zinc-500">Removed lines use − and added lines use +. The underlying note remains ordinary Markdown.</p></div><button type="button" disabled={restoring} onClick={() => setConfirmRestore(true)} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-50">{restoring ? 'Restoring…' : 'Restore this version'}</button></div><div role="region" aria-label="Version comparison" className="mt-4 overflow-x-auto rounded-md border border-zinc-800 bg-zinc-950"><pre className="min-w-max p-3 font-mono text-xs leading-5">{diff.map((line,index) => <span key={`${index}:${line.kind}`} className={`block whitespace-pre-wrap break-words ${line.kind === 'removed' ? 'bg-red-950/35 text-red-200' : line.kind === 'added' ? 'bg-emerald-950/30 text-emerald-200' : 'text-zinc-500'}`}><span aria-hidden="true" className="mr-2 inline-block w-3 select-none text-zinc-600">{line.kind === 'removed' ? '−' : line.kind === 'added' ? '+' : ' '}</span>{line.text || ' '}</span>)}</pre></div><details className="mt-4 rounded-md border border-zinc-800 p-3"><summary className="cursor-pointer text-sm text-zinc-300">View this complete Markdown version</summary><pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-400">{selected.content}</pre></details></>}</div></div></section></div>{confirmRestore && selected && <ConfirmationDialog title="Restore this version?" message={"Restore the version from "+new Date(selected.timestamp).toLocaleString()+"? Your current saved note will remain available in version history after the next synchronization."} confirmLabel="Restore version" onCancel={() => setConfirmRestore(false)} onConfirm={() => void restoreSelected()}/>}</>
 }
 
 function readableNoteDiff(previous:string, current:string):NoteDiffLine[] {

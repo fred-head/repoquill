@@ -176,6 +176,11 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const openNoteLinkRef = useRef(onOpenNoteLink)
   const noteLinkTriggerRef = useRef<NoteLinkTriggerState | undefined>(undefined)
   const noteLinkTriggerIndexRef = useRef(0)
+  // Compatibility layer for RepoQuill's empty-cursor inline-code workflow.
+  // Milkdown 7.22 intentionally makes the mark non-inclusive, so ProseMirror
+  // otherwise drops it after the first typed character. Keep this explicit
+  // mode until Milkdown offers an equivalent empty-selection command itself.
+  const inlineCodeTypingRef = useRef(false)
   const presentationRequestRef = useRef('')
   notePathsRef.current = notePaths
   openNoteLinkRef.current = onOpenNoteLink
@@ -338,6 +343,16 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
               class: 'repoquill-editor',
               'aria-label': 'Markdown editor',
             },
+            handleTextInput: (view, from, to, text, defaultHandler) => {
+              if (inlineCodeTypingRef.current && view.state.selection.empty) {
+                const inlineCode = view.state.schema.marks.inlineCode
+                if (inlineCode) {
+                  view.dispatch(view.state.tr.insertText(text, from, to).addStoredMark(inlineCode.create()))
+                  return true
+                }
+              }
+              return previous.handleTextInput?.(view, from, to, text, defaultHandler) ?? false
+            },
             handleKeyDown: (view, event) => {
               const { $from } = view.state.selection
               if (event.key === 'Enter' && view.state.selection.empty && $from.parent.type.name === 'code_block' && $from.parentOffset === $from.parent.content.size && $from.parent.textContent.endsWith('\n\n')) {
@@ -384,8 +399,9 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
               }
               const inlineCode = view.state.schema.marks.inlineCode
               const inlineCodeActive = inlineCode?.isInSet(view.state.storedMarks ?? $from.marks())
-              if (event.key === 'Escape' && inlineCodeActive) {
+              if (event.key === 'Escape' && (inlineCodeTypingRef.current || inlineCodeActive)) {
                 event.preventDefault()
+                inlineCodeTypingRef.current = false
                 view.dispatch(view.state.tr.removeStoredMark(inlineCode))
                 setToolbarState(toolbarStateFromEditor(view.state))
                 return true
@@ -607,9 +623,12 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       const mark = view.state.schema.marks.inlineCode
       if (!mark) return
       if (!view.state.selection.empty) {
+        inlineCodeTypingRef.current = false
         ctx.get(commandsCtx).call(toggleInlineCodeCommand.key)
       } else {
-        const active = mark.isInSet(view.state.storedMarks ?? view.state.selection.$from.marks())
+        const active = inlineCodeTypingRef.current
+          || Boolean(mark.isInSet(view.state.storedMarks ?? view.state.selection.$from.marks()))
+        inlineCodeTypingRef.current = !active
         const transaction = active ? view.state.tr.removeStoredMark(mark) : view.state.tr.addStoredMark(mark.create())
         view.dispatch(transaction)
       }

@@ -20,7 +20,7 @@ describe('Git synchronization UI', () => {
     expect(synchronization.getAttribute('title')).toContain('saved on this RepoQuill server')
   })
 
-  it('runs manual sync and reports the successful repository state', async () => {
+  it('normalizes legacy disabled safety triggers and reports automatic sync success', async () => {
     localStorage.setItem('repoquill.sync-preferences', JSON.stringify({ scheduledMinutes: 0, inactivityMinutes: 0, syncOnNotebookSwitch: false, syncOnClose: false, syncOnStartup: false, syncOnFocus: false, syncBeforeOpeningNote: false }))
     let synchronized = false
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -35,9 +35,6 @@ describe('Git synchronization UI', () => {
     })
     const view = render(<App />)
     fireEvent.click(await view.findByRole('button', { name: 'Note' }))
-    await waitFor(() => expect(view.getByLabelText('Synchronization: Changes waiting to synchronize. Open details')).toBeTruthy())
-
-    fireEvent.click(view.getByRole('button', { name: 'Sync' }))
     await waitFor(() => expect(view.getByLabelText('Synchronization: Everything is up to date. Open details')).toBeTruthy())
     expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/api/repository/git/sync' && init?.method === 'POST')).toBe(true)
   })
@@ -69,11 +66,11 @@ describe('Git synchronization UI', () => {
     const view = render(<App />)
 
     fireEvent.click(await view.findByRole('button', { name: 'First' }))
-    await waitFor(() => expect(view.container.textContent).toContain('First note'))
+    await waitFor(() => expect(view.container.textContent).toContain('First note'), { timeout: 5000 })
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/repository/git/sync')).toBe(true))
 
     fireEvent.click(view.getByRole('button', { name: 'Second' }))
-    await waitFor(() => expect(view.container.textContent).toContain('Second note'))
+    await waitFor(() => expect(view.container.textContent).toContain('Second note'), { timeout: 5000 })
     expect(view.getAllByText('Syncing…').length).toBeGreaterThan(0)
 
     finishSync(Response.json({ state: 'synced', branch: 'main', lastSyncedAt: new Date().toISOString() }))

@@ -256,7 +256,7 @@ describe('Settings asset cleanup', () => {
     expect(view.getByDisplayValue(available.publicKey)).toBeTruthy()
   })
 
-  it('exposes independently configurable automatic sync behavior in Settings', () => {
+  it('exposes only the two timing controls for automatic sync behavior', () => {
     const onSyncPreferences = vi.fn()
     const preferences = { scheduledMinutes: 15 as const, inactivityMinutes: 2 as const, syncOnNotebookSwitch: true, syncOnClose: true, syncOnStartup: true, syncOnFocus: true, syncBeforeOpeningNote: true }
     const view = render(<SettingsDialog autoLockMinutes={0} onAutoLockMinutes={vi.fn()} syncPreferences={preferences} onSyncPreferences={onSyncPreferences} onClose={vi.fn()} />)
@@ -264,16 +264,8 @@ describe('Settings asset cleanup', () => {
     expect(onSyncPreferences).toHaveBeenCalledWith({ ...preferences, scheduledMinutes: 30 })
     fireEvent.change(view.getByLabelText('Sync after editing inactivity'), { target: { value: '5' } })
     expect(onSyncPreferences).toHaveBeenCalledWith({ ...preferences, inactivityMinutes: 5 })
-    fireEvent.click(view.getByLabelText('Synchronize before switching notebooks'))
-    expect(onSyncPreferences).toHaveBeenCalledWith({ ...preferences, syncOnNotebookSwitch: false })
-    fireEvent.click(view.getByLabelText('Best-effort synchronization when closing the tab'))
-    expect(onSyncPreferences).toHaveBeenCalledWith({ ...preferences, syncOnClose: false })
-    fireEvent.click(view.getByLabelText('Sync when RepoQuill opens'))
-    expect(onSyncPreferences).toHaveBeenCalledWith({ ...preferences, syncOnStartup: false })
-    fireEvent.click(view.getByLabelText('Sync when returning to the tab'))
-    expect(onSyncPreferences).toHaveBeenCalledWith({ ...preferences, syncOnFocus: false })
-    fireEvent.click(view.getByLabelText('Background sync after switching notes'))
-    expect(onSyncPreferences).toHaveBeenCalledWith({ ...preferences, syncBeforeOpeningNote: false })
+    expect(view.queryByLabelText('Synchronize before switching notebooks')).toBeNull()
+    expect(view.queryByText('Notebooks', { selector: 'h3' })).toBeNull()
   })
 
   it('scans, allows selection, confirms, and deletes only selected assets', async () => {
