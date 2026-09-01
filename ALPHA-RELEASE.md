@@ -1,12 +1,13 @@
-# RepoQuill 0.1.0-alpha.1.security.1
+# RepoQuill 0.1.0-alpha.1.security.2
 
 ## Release scope
 
-This is an Alpha 1 security refresh, not the product's planned Alpha 2 release.
-It replaces vulnerable Alpine OpenSSL packages in the published container,
-adds continuous security surveillance and supply-chain controls, hardens path
-and request-log input handling, and includes the accumulated Alpha 1 fixes on
-`main`. Milestone 19 authentication remains intentionally deferred.
+This is an Alpha 1 container security rebuild, not the product's planned Alpha
+2 release. It rebuilds the unchanged Alpha 1 application source with current
+Alpine packages that fix the OpenSSH and libexpat vulnerabilities detected by
+scheduled published-image surveillance. It retains the security controls and
+accumulated Alpha 1 fixes from the preceding security release. Milestone 19
+authentication remains intentionally deferred.
 
 RepoQuill Alpha releases provide portable Markdown editing, folders and file
 operations, note-owned images, explicit unused-asset cleanup, Git

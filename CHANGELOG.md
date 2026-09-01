@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0-alpha.1.security.2] - 2026-09-01
+
+### Security
+
+- Rebuilt the unchanged Alpha 1 application source with current Alpine runtime
+  packages, replacing OpenSSH `10.3_p1-r0` with `10.3_p1-r1` and libexpat
+  `2.8.3-r0` with `2.8.4-r0` after scheduled published-image surveillance
+  detected one critical and four distinct high-severity CVEs.
+- Confirmed the freshly rebuilt production image has no known high or critical
+  vulnerability or embedded-secret findings before publication.
+
 ## [0.1.0-alpha.1.security.1] - 2026-08-26
 
 ### Security
