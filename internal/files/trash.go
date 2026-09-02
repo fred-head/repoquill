@@ -96,6 +96,7 @@ func (r *Repository) MoveToTrash(relative string) (TrashItem, error) {
 	}
 	pendingRoot := filepath.Join(trashRoot, ".pending-"+id)
 	finalRoot := filepath.Join(trashRoot, id)
+	// #nosec G301 -- Trash holds ordinary portable notebook content inside the repository boundary.
 	if err := os.Mkdir(pendingRoot, 0o755); err != nil {
 		return TrashItem{}, err
 	}
@@ -103,6 +104,7 @@ func (r *Repository) MoveToTrash(relative string) (TrashItem, error) {
 
 	contentRoot := filepath.Join(pendingRoot, trashContentName)
 	trashedPath := filepath.Join(contentRoot, "item")
+	// #nosec G301 -- Trash content retains ordinary notebook directory permissions inside the repository boundary.
 	if err := os.Mkdir(contentRoot, 0o755); err != nil {
 		cleanupPending()
 		return TrashItem{}, err
@@ -269,6 +271,7 @@ func (r *Repository) loadTrashItem(id string) (resolvedTrashItem, error) {
 	if err := rejectTrashUnsafeEntries(itemRoot); err != nil {
 		return resolvedTrashItem{}, err
 	}
+	// #nosec G304 -- itemRoot uses a validated random Trash ID and rejects symlinks before this fixed metadata filename is opened.
 	metadataFile, err := os.Open(filepath.Join(itemRoot, trashMetadataName))
 	if err != nil {
 		return resolvedTrashItem{}, err
@@ -325,6 +328,7 @@ func (r *Repository) ensureTrashRoot(create bool) (string, error) {
 	trashRoot := filepath.Join(r.root, trashDirectoryName)
 	info, err := os.Lstat(trashRoot)
 	if errors.Is(err, os.ErrNotExist) && create {
+		// #nosec G301 -- .trash is repository content and intentionally uses ordinary portable directory permissions.
 		if err := os.Mkdir(trashRoot, 0o755); err != nil {
 			return "", err
 		}
@@ -349,6 +353,7 @@ func (r *Repository) ensureSafeRestoreParent(relative string) error {
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
+			// #nosec G301 -- restored notebook directories intentionally use ordinary Git-portable permissions.
 			if err := os.Mkdir(current, 0o755); err != nil {
 				return err
 			}
@@ -394,6 +399,7 @@ func validatePortableEntryPath(relative string, markdown bool) error {
 }
 
 func writeTrashMetadata(root string, metadata trashMetadata) error {
+	// #nosec G302,G304 -- root is a generated and validated Trash directory; metadata contains no credentials and remains Git-portable.
 	file, err := os.OpenFile(filepath.Join(root, trashMetadataName), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err

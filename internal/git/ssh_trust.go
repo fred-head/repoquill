@@ -162,6 +162,7 @@ func (s *HostTrustService) pruneExpiredLocked() {
 
 func (s *HostTrustService) scanHost(ctx context.Context, target hostTarget) ([]discoveredHostKey, error) {
 	arguments := []string{"-T", "10", "-p", strconv.Itoa(target.port), target.host}
+	// #nosec G204 -- no shell is used and parseSSHHost validates both hostname and numeric port before invocation.
 	command := exec.CommandContext(ctx, "ssh-keyscan", arguments...)
 	output, err := command.Output()
 	if err != nil && len(output) == 0 {
@@ -232,6 +233,7 @@ func parseScannedHostKeys(output string) ([]discoveredHostKey, error) {
 }
 
 func readTrustedHostKeys(path, lookup string) ([]discoveredHostKey, error) {
+	// #nosec G304 -- path is the operator-configured known_hosts file, never request input.
 	content, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -266,6 +268,7 @@ func appendKnownHostKeys(path, lookup string, keys []discoveredHostKey) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
+	// #nosec G304 -- path is the operator-configured known_hosts file; request data cannot select another filesystem path.
 	existing, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

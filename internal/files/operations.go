@@ -32,6 +32,7 @@ func (r *Repository) create(relative, entryType string) error {
 	}
 
 	if entryType == "directory" {
+		// #nosec G301 -- notebook directories intentionally use ordinary Git-portable permissions.
 		if err := os.Mkdir(target, 0o755); err != nil {
 			if errors.Is(err, os.ErrExist) {
 				return ErrAlreadyExists
@@ -42,6 +43,7 @@ func (r *Repository) create(relative, entryType string) error {
 	}
 
 	title := strings.TrimSuffix(filepath.Base(target), filepath.Ext(target))
+	// #nosec G302,G304 -- resolveNew confines the new path; Markdown remains an ordinary portable repository file.
 	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
@@ -260,6 +262,7 @@ func validateOwnedAssets(root, assets string) (bool, error) {
 }
 
 func rewriteAssetLinks(markdownPath, oldBase, newBase string) error {
+	// #nosec G304 -- markdownPath originates from a previously root-confined resolved note path.
 	content, err := os.ReadFile(markdownPath)
 	if err != nil {
 		return err
@@ -313,6 +316,7 @@ func rewriteAssetLinksContent(content, oldBase, newBase string) string {
 }
 
 func syncDirectory(directory string) error {
+	// #nosec G304 -- callers pass only repository directories already resolved and confined by their operation.
 	handle, err := os.Open(directory)
 	if err != nil {
 		return err

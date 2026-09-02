@@ -46,6 +46,7 @@ func loadOrCreateEncryptionKey(config Config) ([]byte, error) {
 	if keyPath == "" {
 		keyPath = filepath.Join(filepath.Dir(config.MetadataPath), "auth.key")
 	}
+	// #nosec G304 -- keyPath is derived from the absolute operator auth configuration, not request input.
 	value, err := os.ReadFile(keyPath)
 	if err == nil {
 		if len(value) != 32 {
@@ -74,15 +75,18 @@ func loadOrCreateEncryptionKey(config Config) ([]byte, error) {
 	if _, err := rand.Read(value); err != nil {
 		return nil, fmt.Errorf("generate authentication encryption key: %w", err)
 	}
+	// #nosec G304 -- keyPath is confined to the operator-configured auth directory and created exclusively with mode 0600.
 	file, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("create authentication encryption key: %w", err)
 	}
 	if _, err := file.Write(value); err != nil {
+		// #nosec G104 -- preserve the actionable write error; Close is best-effort on this failure path.
 		file.Close()
 		return nil, err
 	}
 	if err := file.Sync(); err != nil {
+		// #nosec G104 -- preserve the actionable sync error; Close is best-effort on this failure path.
 		file.Close()
 		return nil, err
 	}

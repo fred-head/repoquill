@@ -28,8 +28,13 @@ func (r *Repository) Search(query string) ([]SearchResult, error) {
 	}
 	lowerQuery := strings.ToLower(query)
 	results := make([]SearchResult, 0)
+	confinedRoot, err := os.OpenRoot(r.root)
+	if err != nil {
+		return nil, err
+	}
+	defer confinedRoot.Close()
 
-	err := filepath.WalkDir(r.root, func(current string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(r.root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -69,11 +74,11 @@ func (r *Repository) Search(query string) ([]SearchResult, error) {
 		if len(results) >= maxSearchResults {
 			return filepath.SkipAll
 		}
-		info, err := entry.Info()
-		if err != nil || info.Size() > maxMarkdownSize {
+		expected, err := entry.Info()
+		if err != nil {
 			return err
 		}
-		file, err := os.Open(current)
+		file, _, err := openConfinedRegularFile(confinedRoot, filepath.FromSlash(relative), expected, maxMarkdownSize)
 		if err != nil {
 			return err
 		}

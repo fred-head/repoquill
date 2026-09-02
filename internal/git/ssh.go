@@ -111,6 +111,7 @@ func GenerateSSHKey(keysDirectory string, logger *slog.Logger) (SSHKey, error) {
 	}
 	privateKey := filepath.Join(directory, "id_ed25519")
 	started := time.Now()
+	// #nosec G204 -- no shell is used; id is a freshly generated lowercase hexadecimal identifier.
 	command := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "repoquill-"+id, "-f", privateKey)
 	output, commandErr := command.CombinedOutput()
 	logger.Info("git credential operation", "keyId", id, "operation", "generate-ssh-key", "success", commandErr == nil, "duration", time.Since(started).String())
@@ -121,9 +122,11 @@ func GenerateSSHKey(keysDirectory string, logger *slog.Logger) (SSHKey, error) {
 	if err := os.Chmod(privateKey, 0o600); err != nil {
 		return SSHKey{}, err
 	}
+	// #nosec G302 -- this is intentionally the public key; the private key immediately above remains 0600.
 	if err := os.Chmod(privateKey+".pub", 0o644); err != nil {
 		return SSHKey{}, err
 	}
+	// #nosec G304 -- privateKey is constructed beneath the prepared 0700 key root using a random validated ID.
 	public, err := os.ReadFile(privateKey + ".pub")
 	if err != nil {
 		return SSHKey{}, err
@@ -149,6 +152,7 @@ func ListManagedSSHKeys(keysDirectory string) ([]ManagedSSHKey, error) {
 		if resolveErr != nil {
 			continue
 		}
+		// #nosec G304 -- ResolveManagedSSH validates the ID and confines privatePath beneath the prepared key root.
 		public, readErr := os.ReadFile(privatePath + ".pub")
 		info, statErr := os.Stat(privatePath)
 		if readErr != nil || statErr != nil || !strings.HasPrefix(strings.TrimSpace(string(public)), "ssh-ed25519 ") {
@@ -343,6 +347,7 @@ func prepareKeysDirectory(keysDirectory string) (string, error) {
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", err
 	}
+	// #nosec G302 -- 0700 is the restrictive executable mode required for a private key directory, not a regular file.
 	if err := os.Chmod(base, 0o700); err != nil {
 		return "", err
 	}

@@ -38,6 +38,7 @@ func clone(ctx context.Context, baseDirectory, remoteURL, branch, sshCommand str
 	if err != nil {
 		return CloneResult{}, err
 	}
+	// #nosec G301 -- notebook working trees contain intentionally portable Git files; secrets are stored separately below the 0700 keys root.
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return CloneResult{}, err
 	}

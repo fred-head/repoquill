@@ -71,6 +71,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Hardened notebook search and asset-reference scanning against concurrent
+  symlink replacement by using root-scoped file access, bounded stored
+  authentication material before integer conversion, and added `gosec` as a
+  required CI, scheduled-security, and release gate.
+
 - The browser-provided PWA installation suggestion can be dismissed, and the
   choice remains dismissed in that browser.
 

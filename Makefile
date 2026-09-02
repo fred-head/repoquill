@@ -1,4 +1,4 @@
-.PHONY: build go-cache-dirs test vet test-race audit frontend release-check dev
+.PHONY: build go-cache-dirs test vet test-race gosec audit frontend release-check dev
 
 GOCACHE ?= $(HOME)/.cache/go-build
 GOMODCACHE ?= $(HOME)/go/pkg/mod
@@ -23,7 +23,10 @@ vet: go-cache-dirs
 test-race: go-cache-dirs
 	go test -race ./...
 
-audit: go-cache-dirs
+gosec: go-cache-dirs
+	go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -quiet ./...
+
+audit: go-cache-dirs gosec
 	govulncheck ./...
 	cd frontend && npm audit
 

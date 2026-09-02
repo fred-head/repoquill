@@ -121,6 +121,7 @@ func (r *Repository) MoveWithLinkUpdates(source, target, expectedToken string) (
 			err = errors.Join(ErrInvalidPath, resolveErr)
 			break
 		}
+		// #nosec G304 -- destination was re-resolved beneath the repository and checked as a regular file immediately above.
 		current, readErr := os.ReadFile(destination)
 		if readErr != nil {
 			err = readErr

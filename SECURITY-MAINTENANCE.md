@@ -12,7 +12,8 @@ a newly disclosed vulnerability:
 - Dependabot alerts and reviewed update pull requests for Go, npm, Docker, and
   GitHub Actions;
 - CodeQL Extended analysis for Go, JavaScript/TypeScript, and workflow files;
-- `govulncheck`, `npm audit`, static analysis, and complete-history secret scans;
+- `govulncheck`, `gosec`, `npm audit`, static analysis, and complete-history
+  secret scans;
 - daily Trivy builds of the current source against fresh base images;
 - daily rescans of both the newest immutable Alpha image and the moving Alpha
   channel tag;
@@ -48,7 +49,7 @@ For every dependency pull request:
    must remain reproducible, and CI must not create uncommitted dependency
    resolution.
 5. Require the complete protected-branch checks: backend tests, race detection,
-   `go vet`, `govulncheck`, frontend lint/tests/build, `npm audit`, secret scan,
+   `go vet`, `gosec`, `govulncheck`, frontend lint/tests/build, `npm audit`, secret scan,
    CodeQL, container build, Trivy, and runtime/persistence smoke tests.
 6. For changes affecting authentication, session handling, MFA, cryptography,
    persistence, Git credentials, or PWA sessions, also run the dedicated
@@ -66,7 +67,7 @@ a separately reviewed policy naming an extremely narrow development-only class.
 
 ## Finding triage
 
-Every Dependabot, CodeQL, Trivy, `govulncheck`, npm, secret-scanning, or private
+Every Dependabot, CodeQL, Trivy, `gosec`, `govulncheck`, npm, secret-scanning, or private
 report receives the following assessment:
 
 1. Record the affected source revision, release tags/digests, component,

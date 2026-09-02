@@ -2,6 +2,7 @@ package files
 
 import (
 	"bufio"
+	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -161,7 +162,12 @@ func (r *Repository) cleanupCandidates() ([]UnreferencedAsset, error) {
 func (r *Repository) assetReferences() (map[string]bool, map[string]bool, error) {
 	referenced := map[string]bool{}
 	conservativeNames := map[string]bool{}
-	err := filepath.WalkDir(r.root, func(current string, entry fs.DirEntry, walkErr error) error {
+	confinedRoot, err := os.OpenRoot(r.root)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer confinedRoot.Close()
+	err = filepath.WalkDir(r.root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -181,20 +187,28 @@ func (r *Repository) assetReferences() (map[string]bool, map[string]bool, error)
 		if !strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
 			return nil
 		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.Size() > maxMarkdownSize {
-			return ErrFileTooLarge
-		}
-		content, err := os.ReadFile(current)
-		if err != nil {
-			return err
-		}
 		noteRelative, err := filepath.Rel(r.root, current)
 		if err != nil {
 			return err
+		}
+		expected, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		file, _, err := openConfinedRegularFile(confinedRoot, noteRelative, expected, maxMarkdownSize)
+		if err != nil {
+			return err
+		}
+		content, err := io.ReadAll(io.LimitReader(file, maxMarkdownSize+1))
+		closeErr := file.Close()
+		if err != nil {
+			return err
+		}
+		if len(content) > maxMarkdownSize {
+			return ErrFileTooLarge
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 		for _, destination := range markdownDestinations(string(content)) {
 			resolved, name, ok := resolveAssetReference(filepath.ToSlash(noteRelative), destination)
