@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { App } from './App'
 import { apiFetch, authStatus, AuthStatusError, listenForAuthEvents, notifyAuthChanged, setCSRFToken, type AuthStatus } from './api'
+import { clearConflictDecisionDrafts } from './app/conflictDraftStorage'
 
 type GateState = 'checking' | 'ready' | 'setup' | 'login' | 'mfa' | 'offline' | 'backend' | 'update'
 
@@ -11,6 +12,12 @@ export function AuthGate() {
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const checking = useRef(false)
+
+  const endBrowserSession = useCallback(() => {
+    setCSRFToken()
+    clearConflictDecisionDrafts(sessionStorage)
+    setState('login')
+  }, [])
 
   const check = useCallback(async () => {
     if (checking.current) return
@@ -37,9 +44,9 @@ export function AuthGate() {
     window.addEventListener('online', retry)
     window.addEventListener('focus', retry)
     document.addEventListener('visibilitychange', retry)
-    const stop = listenForAuthEvents(() => { setCSRFToken(); setState('login') }, retry)
+    const stop = listenForAuthEvents(endBrowserSession, retry)
     return () => { window.removeEventListener('online', retry); window.removeEventListener('focus', retry); document.removeEventListener('visibilitychange', retry); stop() }
-  }, [check])
+  }, [check, endBrowserSession])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -68,7 +75,7 @@ export function AuthGate() {
     finally { setBusy(false) }
   }
 
-  if (state === 'ready' && status) return <App authMode={status.mode} runningVersion={version} onLoggedOut={() => { setCSRFToken(); setState('login'); notifyAuthChanged() }} />
+  if (state === 'ready' && status) return <App authMode={status.mode} runningVersion={version} onLoggedOut={() => { endBrowserSession(); notifyAuthChanged() }} />
   if (state === 'checking') return <GateMessage title="Opening RepoQuill…">Checking the secure session.</GateMessage>
   if (state === 'offline') return <GateMessage title="You are offline" action={() => void check()}>RepoQuill is online-first. Reconnect to the server before opening or editing notes.</GateMessage>
   if (state === 'backend') return <GateMessage title="Backend unavailable" action={() => void check()}>{error ?? 'The RepoQuill server could not be reached.'}</GateMessage>

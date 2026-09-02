@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { AutoLockController, autoLockOptions, loadAutoLockPreference, parseAutoLockMinutes, saveAutoLockPreference, type AutoLockMinutes } from './app/autoLock'
+import { readConflictDecisionDraft, removeConflictDecisionDraft, writeConflictDecisionDraft } from './app/conflictDraftStorage'
 import { documentStats } from './app/documentStats'
 import { defaultSyncPreferences, loadSyncPreferences, saveSyncPreferences, type SyncPreferences } from './app/syncPreferences'
 import { apiFetch, listenForAuthEvents, notifyAuthChanged, setCSRFToken } from './api'
@@ -551,7 +552,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
 		try {
 			const response = await apiFetch('/api/repository/git/conflicts/resolve', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ token,decisions }) })
 			const result = await responseJSON<{ state:GitState; message:string; safetyPoint?:string }>(response)
-			localStorage.removeItem(`repoquill:conflict-decisions:${token}`)
+			removeConflictDecisionDraft(sessionStorage, token)
 			setConflictOverview(undefined)
 			await loadTree()
 			await refreshGitStatus()
@@ -594,7 +595,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
 			setTabs((current)=>current.some((tab)=>tab.path===resolved.path)?current:[...current,{ path:resolved.path,readOnly:false }])
 			setReadOnly(false)
 			setSaveConflict(undefined)
-			localStorage.removeItem(`repoquill:conflict-decisions:${pending.overview.token}`)
+			removeConflictDecisionDraft(sessionStorage, pending.overview.token)
 			setSaveStatus('saved')
 			setSaveError(undefined)
 			sessionStorage.removeItem(recoveryDraftStorageKey)
@@ -1924,11 +1925,10 @@ function SynchronizationDetailsPanel({ saveStatus, gitStatus, syncing, browserOn
 }
 
 function ConflictResolutionDialog({ overview, busy, error, notePaths, onPostpone, onApply }: { overview:ConflictOverview; busy:boolean; error?:string; notePaths:string[]; onPostpone:()=>void; onApply:(decisions:ConflictDecision[])=>void }) {
-	const storageKey = `repoquill:conflict-decisions:${overview.token}`
 	const [activePath,setActivePath] = useState(overview.items[0]?.path ?? '')
 	const [decisions,setDecisions] = useState<Record<string,ConflictDecision>>(() => {
 		try {
-			const saved = JSON.parse(localStorage.getItem(storageKey) ?? '{}') as Record<string,ConflictDecision>
+			const saved = JSON.parse(readConflictDecisionDraft(sessionStorage, overview.token) ?? '{}') as Record<string,ConflictDecision>
 			if (saved && typeof saved === 'object') return saved
 		} catch { /* begin with conservative defaults */ }
 		const defaults:Record<string,ConflictDecision> = {}
@@ -1937,7 +1937,7 @@ function ConflictResolutionDialog({ overview, busy, error, notePaths, onPostpone
 		}
 		return defaults
 	})
-	useEffect(() => { localStorage.setItem(storageKey,JSON.stringify(decisions)) },[decisions,storageKey])
+	useEffect(() => { writeConflictDecisionDraft(sessionStorage,overview.token,JSON.stringify(decisions)) },[decisions,overview.token])
 	const item = overview.items.find((candidate) => candidate.path === activePath) ?? overview.items[0]
 	const decision = item ? decisions[item.path] : undefined
 	const complete = overview.items.length > 0 && overview.items.every((candidate) => Boolean(decisions[candidate.path]))

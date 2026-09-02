@@ -29,6 +29,10 @@ important notebooks.
 
 - The PWA is online-first. The application shell may load without a connection,
   but offline note editing and queued synchronization are not supported.
+- Standard Markdown images may reference external HTTP(S) servers. Opening such
+  a note can contact that server and disclose the client's IP address even
+  though RepoQuill sends a no-referrer policy. Use note-owned assets when this
+  privacy tradeoff is not acceptable.
 - Browser-close synchronization is best effort because a browser may terminate
   before delivering the request. It is not a backup guarantee.
 - Concurrent edits to the same note are not merged collaboratively. Version
@@ -36,6 +40,9 @@ important notebooks.
   automatic synchronization and open RepoQuill's guided conflict review. The
   original versions and a Git recovery point are preserved while the owner
   chooses the resulting note or asset.
+- In-progress guided conflict decisions are retained only in the current tab's
+  browser session so an accidental reload can be recovered. They are cleared
+  on logout/session expiry and are not an offline queue or durable backup.
 - RepoQuill does not provide collaborative editing, CRDT merging, or multiple
   backend writers. External tools can still create overlapping versions that
   require the guided conflict review.

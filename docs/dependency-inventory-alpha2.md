@@ -1,12 +1,14 @@
 # Alpha 2 dependency and toolchain inventory
 
-Snapshot date: 2026-08-30
+Initial snapshot: 2026-08-30
+
+Final source review: 2026-09-01
 
 This document began as the Milestone 24 Phase 1 review baseline. It records what
 the repository declared and resolved, what the upstream package managers would
-permit, and which newer releases require a controlled decision in Phase 2. The
-Phase 2 decisions accepted so far are recorded below without rewriting the
-original comparison out of the audit trail.
+permit, and which newer releases required a controlled decision in Phase 2. The
+accepted and deliberately retained Phase 2 decisions are recorded below without
+rewriting the original comparison out of the audit trail.
 
 ## Accepted Phase 2 updates
 
@@ -15,16 +17,17 @@ On 2026-08-30 the first two controlled update blocks were applied:
 - Node.js 24 LTS replaced Node.js 22 for the frontend Docker build and every
   CI, release, and scheduled-security workflow.
 - Testing Library React moved to 16.3.3 and user-event to 14.6.6.
-- React DOM types moved to 19.2.5 and typescript-eslint to 8.68.0.
+- React DOM types moved to 19.2.5 and typescript-eslint to 8.69.0.
 - Vite moved to 8.2.2 and successfully builds the production/PWA assets with
   Rolldown. React plugin 5.2.0 remains because Vite documents it as compatible
   while plugin 6.1.1 currently produces an unresolved optional Babel/Rolldown
   peer conflict under npm's normal resolver.
-- ESLint moved to 10.9.1 with `@eslint/js` 10.0.1, globals 17.11.0, and the
+- ESLint moved to 10.9.1 with `@eslint/js` 10.0.1, globals 17.12.0, and the
   React Refresh lint plugin 0.5.5.
-- Vitest moved to 4.1.11 and jsdom to 30.0.1; all 80 frontend tests pass.
+- Vitest moved to 4.1.11 and jsdom to 30.0.1; the final suite contains 85
+  frontend tests.
 - TypeScript moved to 6.0.3, the newest stable line supported by
-  typescript-eslint 8.68.0. TypeScript 7.0.2 is intentionally retained as a
+  typescript-eslint 8.69.0. TypeScript 7.0.2 is intentionally retained as a
   future candidate because both stable and canary typescript-eslint currently
   require TypeScript `<6.1.0`.
 
@@ -54,8 +57,9 @@ gates in Milestone 24 Phases 3-5.
 
 - `frontend/package.json` declares 6 browser/build dependencies and 16 direct
   development dependencies. `frontend/package-lock.json` is the complete npm
-  resolution: 804 locked packages, of which npm marks 319 production and 485
-  development; 76 are optional/platform-specific.
+  resolution with 778 non-root package records, including 76 marked optional.
+  A clean install on the current Linux development platform audits 714 packages;
+  platform-specific optional packages explain why that installed count differs.
 - The root `go.mod` declares 5 direct and 10 explicit indirect modules. The
   resolved `go list -m all` graph contains 35 third-party modules. `go.sum` is
   the checksum set, not by itself a list of shipped modules.
@@ -115,10 +119,10 @@ seen by npm on the snapshot date. Exact Milkdown pins deliberately do not float.
 | `eslint` | Development/lint | `^10.9.1` | 10.9.1 | 10.9.1 | 10.9.1 | MIT | Updated from unsupported line; current |
 | `eslint-plugin-react-hooks` | Development/lint | `^7.1.0` | 7.1.1 | 7.1.1 | 7.1.1 | MIT | Current |
 | `eslint-plugin-react-refresh` | Development/lint | `^0.5.5` | 0.5.5 | 0.5.5 | 0.5.5 | MIT | Updated; current |
-| `globals` | Development/lint | `^17.11.0` | 17.11.0 | 17.11.0 | 17.11.0 | MIT | Updated; current |
+| `globals` | Development/lint | `^17.12.0` | 17.12.0 | 17.12.0 | 17.12.0 | MIT | Updated; current |
 | `jsdom` | Test DOM | `^30.0.1` | 30.0.1 | 30.0.1 | 30.0.1 | MIT | Updated; current |
 | `typescript` | Build/typecheck | `^6.0.3` | 6.0.3 | 6.0.3 | 7.0.2 | Apache-2.0 | Latest officially supported by typescript-eslint; TS 7 blocked |
-| `typescript-eslint` | Development/lint | `^8.68.0` | 8.68.0 | 8.68.0 | 8.68.0 | MIT | Updated; current |
+| `typescript-eslint` | Development/lint | `^8.69.0` | 8.69.0 | 8.69.0 | 8.69.0 | MIT | Updated; current |
 | `vite` | Build | `^8.2.2` | 8.2.2 | 8.2.2 | 8.2.2 | MIT | Updated; current |
 | `vite-plugin-pwa` | Build/PWA | `^1.3.0` | 1.3.0 | 1.3.0 | 1.3.0 | MIT | Current |
 | `vitest` | Test | `^4.1.11` | 4.1.11 | 4.1.11 | 4.1.11 | MIT | Updated; current |
@@ -180,12 +184,12 @@ independently force transitive versions without a demonstrated reason.
 
 | Component | Use | Declared/current source | Latest maintained line | Phase 1 result |
 | --- | --- | --- | --- | --- |
-| Go language directive | Module compatibility | 1.25.0 | 1.27.0 | Supported; evaluate language/toolchain alignment separately |
-| Go builder and CI | Build/test only | 1.26.7 / `1.26.x` | 1.27.0 | 1.26.7 is current patch on older supported line; Go 1.27 evaluation queued |
+| Go language directive | Module compatibility | 1.25.0 | 1.27.0 | Retained language baseline; production builds use the supported Go 1.26 line |
+| Go builder and CI | Build/test only | 1.26.7 / `1.26.x` | 1.27.0 | Retained supported previous line to avoid a late toolchain migration; revisit before 1.26 support ends |
 | Node builder and CI | Build/test only | `node:24-alpine` / 24 | Node 24.20.0 LTS; Node 26.8.1 current | Updated to current LTS |
 | Alpine runtime | Server runtime | `alpine:3.24` | 3.24.1 branch | Current branch; upstream support through 2028-06-01 |
-| Node builder Alpine | Build only | floating `node:24-alpine` | image-dependent | Resolve exact digest and OS packages in release-candidate SBOM |
-| Go builder Alpine | Build only | `golang:1.26.7-alpine` | Go 1.27 line available | Evaluate with Go upgrade; builders do not ship |
+| Node builder Alpine | Build only | floating `node:24-alpine` | image-dependent | Fresh input; exact released candidate is identified and validated by OCI digest |
+| Go builder Alpine | Build only | `golang:1.26.7-alpine` | Go 1.27 line available | Retained supported build line; builder does not ship |
 | Runtime packages | Server runtime | `ca-certificates`, `git`, `openssh-client` after `apk upgrade` | Alpine 3.24 repositories | Exact versions are build-time resolutions; final SBOM/Trivy gate required |
 
 The final runtime has no Node.js, npm, Go compiler, shell-based application
@@ -193,10 +197,14 @@ runtime, or frontend source tree. Git and OpenSSH are intentional runtime tools
 for provider-independent synchronization.
 
 Floating base tags and build-time `apk upgrade` improve patch uptake but mean
-the same commit is not byte-for-byte reproducible indefinitely. Phase 2 should
-decide whether to pin reviewed image digests while retaining automated digest
-refreshes; Phase 5 must always bind the SBOM and provenance to the exact image
-digest that passed the gate.
+the same source commit is not byte-for-byte reproducible indefinitely. This is
+an explicit Phase 2 decision rather than an unnoticed gap: scheduled fresh-image
+builds and Docker Dependabot remain the patch-discovery path. The release
+workflow builds one immutable source-SHA candidate, records its manifest digest
+and SBOM/provenance, validates both supported architectures from that exact
+digest, and only then attaches version/channel aliases. It never rebuilds after
+validation. The promoted OCI digest, rather than a later source rebuild, is the
+canonical reproducible Alpha artifact.
 
 ## CI and release tooling
 
@@ -228,7 +236,7 @@ Completed low-risk compatible updates:
 
 - Testing Library React 16.3.3 and user-event 14.6.6,
 - React DOM type definitions 19.2.5,
-- typescript-eslint 8.68.0,
+- typescript-eslint 8.69.0 and globals 17.12.0,
 - Node 24 LTS for local, CI, and container frontend builds.
 
 Remaining compatible maintenance candidates:
@@ -256,12 +264,12 @@ Retained pending upstream compatibility:
 - `@vitejs/plugin-react` 6.1.1 until its optional Babel/Rolldown peer graph
   resolves normally through npm,
 - TypeScript 7 until typescript-eslint officially permits it,
-- Go 1.27 for module directive, CI, and builder,
-- digest pinning strategy for base images.
+- Go 1.27 until the next deliberate supported-toolchain migration. Go 1.26
+  remains an upstream-supported release line for Alpha 2.
 
 No installed direct dependency is now classified as unsupported or
-unmaintained. The four remaining `npm outdated` entries are the deliberately
-retained Milkdown pair, React plugin 6, and TypeScript 7 described above. That
-does not authorize release: the exact selected Phase 2 graph and built
+unmaintained. The two remaining `npm outdated` entries are the deliberately
+retained React plugin 6 and TypeScript 7 described above. That does not authorize
+release: the exact selected Phase 2 graph and built
 multi-architecture image still require all later M24 security and regression
 gates.

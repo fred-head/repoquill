@@ -83,8 +83,8 @@ Before creating an immutable tag, maintainers must:
    Git tag, GitHub release title, and image tags.
 2. Require protected CI, CodeQL, Dependabot, secret scanning, `govulncheck`,
    `npm audit`, Trivy, container hardening, architecture, runtime, and
-   persistence gates to pass for the exact candidate without an expired
-   exception.
+   persistence gates to pass for the exact source-SHA candidate digest without
+   an expired exception.
 3. Exercise a fresh `/data` volume and a sanitized representative Alpha 1 data
    copy, including bootstrap, login, session expiry/renewal, password recovery,
    TOTP/recovery codes, notebook onboarding, Git synchronization, conflict
@@ -97,11 +97,14 @@ Before creating an immutable tag, maintainers must:
 6. Create a new `vMAJOR.MINOR.PATCH-alpha.NUMBER` tag. Never reuse or move an
    immutable Git or image tag.
 
-The tag-gated workflow validates both `linux/amd64` and `linux/arm64`, scans the
-actual built images, creates an SBOM and signed provenance attestation, publishes
-the immutable version and source-SHA aliases, and only then moves the
-`0.1.0-alpha` convenience tag. After success, update the repository variable
-`REPOQUILL_LATEST_ALPHA_VERSION` to the new immutable version without `v`.
+The tag-gated workflow builds and pushes one immutable multi-architecture
+source-SHA candidate with its SBOM/provenance, resolves its digest, and validates
+both `linux/amd64` and `linux/arm64` from that exact digest. Only after both
+architecture scans and smoke tests pass does it attach the immutable version
+and moving `0.1.0-alpha` aliases to the same manifest and create the signed
+GitHub attestation. A failed candidate remains unpromoted. After success, update
+the repository variable `REPOQUILL_LATEST_ALPHA_VERSION` to the new immutable
+version without `v`.
 
 ## Synchronization and conflict recovery
 
@@ -120,6 +123,11 @@ force-pushing. The normal workflow is **Synchronization → Review affected
 items**. RepoQuill preserves **Your version** and **Other version**, supports
 guided Markdown, delete/modify, rename/move, image, and binary decisions, and
 creates a recovery point before applying a complete review. Postponing is safe.
+
+Draft decisions, including a manually combined note, stay only in the current
+tab's `sessionStorage` to survive an accidental reload. Logout, session expiry,
+or closing that browser session removes them; Git remains the durable source for
+both preserved versions.
 
 Use `git status` and a normal Git client only as an administrator fallback for a
 repository state the guided flow cannot represent or if the working tree was

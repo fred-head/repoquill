@@ -42,7 +42,7 @@ RepoQuill HTTP authentication boundary
        |                         |
        v                         v
 authentication metadata      notebook/Git services
-/data/app/auth.db             /data/repos, /data/keys
+/data/app/auth.db             /data/notebooks, /data/keys
 ```
 
 The design protects notebook, Git, SSH, maintenance, and management APIs from

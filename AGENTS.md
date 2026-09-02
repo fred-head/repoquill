@@ -2,6 +2,14 @@
 
 # Project: Git-Backed Markdown Notes
 
+## Local Go cache policy
+
+Local development, tests, `go vet`, race tests, `govulncheck`, and `gosec` must
+share the persistent caches `GOCACHE=/home/fredmin/.cache/go-build` and
+`GOMODCACHE=/home/fredmin/go/pkg/mod`, with temporary Go work files in
+`GOTMPDIR=/home/fredmin/.cache/repoquill/go-tmp`. Do not use the RAM-backed
+`/tmp` filesystem for large build, module, or security-scan caches.
+
 ## 1. Purpose
 
 This project is a self-hosted, browser-based notes application whose canonical data store is a normal Git repository containing plain Markdown files and regular image/assets files.
@@ -166,10 +174,10 @@ Browser / PWA
       |
       | HTTPS
       v
-Reverse Proxy / External Auth
+Reverse Proxy / TLS termination
       |
       v
-Notes Application
+RepoQuill / Built-in Auth
       |
       v
 Local Git Working Trees
@@ -195,8 +203,11 @@ Example:
 ```text
 /data/
 ├── app/
-│   └── metadata.db
-└── repos/
+│   ├── auth.db
+│   ├── auth.key
+│   └── notebooks.json
+├── keys/
+└── notebooks/
     ├── 01ABCDEF...
     ├── 01GHIJKL...
     └── 01MNOPQR...
@@ -228,7 +239,7 @@ Required notebook metadata may include:
 {
   "id": "01ABC...",
   "name": "Private",
-  "localPath": "/data/repos/01ABC...",
+  "localPath": "/data/notebooks/01ABC...",
   "remoteUrl": "git@github.com:user/private-notes.git",
   "branch": "main"
 }
@@ -1237,7 +1248,7 @@ Backend:
 
 1. validate input,
 2. create notebook ID,
-3. clone repository into `/data/repos/<id>`,
+3. clone repository into `/data/notebooks/<id>`,
 4. register metadata,
 5. return notebook,
 6. render repository tree.
@@ -4364,14 +4375,18 @@ applied in this inventory phase.
 
 ### Phase 2 - Controlled updates
 
-Status: in progress. Node.js 24 LTS, compatible dependency updates, Vite 8,
-ESLint 10, Vitest 4, jsdom 30, TypeScript 6, and Milkdown 7.22.1 were adopted
-through isolated green migration blocks. RepoQuill's empty-cursor inline-code
-extension was adapted to Milkdown's non-inclusive mark boundary and is guarded
-by a regression test; reassess and remove that compatibility logic only when a
-future Milkdown command natively provides the same start/type/stop behavior.
-React plugin 6 and TypeScript 7 remain blocked by unresolved official peer
-constraints. Go/toolchain and base-image decisions remain separate.
+Status: completed on 2026-09-01. Node.js 24 LTS, compatible dependency updates,
+Vite 8, ESLint 10, Vitest 4, jsdom 30, TypeScript 6, and Milkdown 7.22.1 were
+adopted through isolated green migration blocks. RepoQuill's empty-cursor
+inline-code extension was adapted to Milkdown's non-inclusive mark boundary and
+is guarded by a regression test; reassess and remove that compatibility logic
+only when a future Milkdown command natively provides the same start/type/stop
+behavior. React plugin 6 and TypeScript 7 remain blocked by unresolved official
+peer constraints. Go 1.26 remains an upstream-supported release line and was
+retained to avoid a late Alpha 2 toolchain migration. Floating supported base
+tags remain the fresh-patch input, while the release pipeline now validates and
+promotes one exact immutable candidate digest instead of rebuilding after its
+security gate.
 
 - apply compatible patch and minor updates where their release notes and
   transitive changes are acceptable,
@@ -4392,6 +4407,11 @@ constraints. Go/toolchain and base-image decisions remain separate.
   resolution merely to complete an upgrade.
 
 ### Phase 3 - Full Alpha 2 regression
+
+Status: in progress. The complete local Go and frontend regression, race,
+static-analysis, vulnerability, and production-build gates passed on 2026-09-01.
+The final protected pull-request and exact container-candidate runs remain
+required because this code server does not provide Docker.
 
 Run the complete Milestone 20 pull-request and release checks after the final
 dependency set is selected.
@@ -4431,6 +4451,14 @@ Do not treat successful compilation as sufficient regression coverage.
 
 ### Phase 4 - Final security and container gate
 
+Status: in progress. The manual Alpha 2 security review found no Critical or
+High application vulnerability. Combined conflict drafts were moved from
+persistent `localStorage` to tab-scoped `sessionStorage` with authentication-end
+cleanup. The release workflow now builds one immutable source-SHA manifest,
+scans and smoke-tests both architectures from its exact digest, and promotes
+only that digest. Hosted CodeQL, secret, Trivy, hardened-container, fresh-data,
+upgrade, and rollback evidence remains mandatory before tagging.
+
 - run the complete Milestone 19 authentication/security gate,
 - run the complete Milestone 20 supply-chain/security gate,
 - build the final production image from a clean checkout,
@@ -4454,6 +4482,8 @@ A scanner or advisory-database failure must not be interpreted as a clean scan.
 
 ### Phase 5 - Exact release-candidate artifacts
 
+Status: pending the immutable Alpha 2 tag and successful hosted release gate.
+
 Generate release artifacts from the exact immutable candidate that passed the
 gate.
 
@@ -4472,6 +4502,10 @@ Do not generate security or dependency documentation from a different commit
 than the artifact being released.
 
 ### Phase 6 - Final documentation verification
+
+Status: source documentation reviewed and synchronized on 2026-09-01. The final
+version, digest, release-note, changelog-date, and published-link pass remains
+pending until the immutable release candidate has passed Phase 4.
 
 Because Milestone 23 occurs before the dependency/toolchain review, verify that
 the final dependency updates did not invalidate release documentation.
@@ -4535,7 +4569,7 @@ Alpha 2 is ready when:
 - the final dependency and toolchain baseline has been deliberately reviewed,
   updated where justified, and documented where a maintained older major is
   retained,
-- all ten milestones work on desktop and mobile/PWA layouts where a user
+- all applicable Alpha 2 milestones work on desktop and mobile/PWA layouts where a user
   interface is applicable,
 - destructive, path-sensitive, Markdown-rewriting, Git-history, and conflict
   recovery behavior plus synchronization wording and onboarding failures are
@@ -4740,7 +4774,10 @@ Before calling a build "alpha", verify:
 - image paste works,
 - Docker volume behavior is documented,
 - Git credentials are not leaked,
-- no note content is stored only in SQLite.
+- no note content is stored only in SQLite,
+- the default local authentication boundary fails closed,
+- session expiry and operator recovery do not discard notebook content,
+- the exact released container digest passed both supported-architecture gates.
 
 ---
 
@@ -4749,8 +4786,6 @@ Before calling a build "alpha", verify:
 Potential later features:
 
 - raw Markdown/source mode,
-- configurable sync intervals,
-- manual sync,
 - OIDC authentication,
 - provider-specific repository creation,
 - GitHub integration,
@@ -4758,10 +4793,8 @@ Potential later features:
 - Forgejo/Gitea integration,
 - custom slash snippets,
 - templates,
-- orphaned asset cleanup,
 - optional note metadata/frontmatter,
 - configurable editor preferences,
-- light/dark theme,
 - import helpers,
 - export convenience tools,
 - WebDAV-like access only if it remains non-invasive.
