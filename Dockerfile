@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM golang:1.26.7-alpine AS backend
-ARG VERSION=0.1.0-alpha.1.security.1
+ARG VERSION=0.1.0-alpha.2
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd/ cmd/
@@ -17,7 +17,7 @@ COPY --from=frontend /src/frontend/dist/ web/dist/
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/repoquill ./cmd/repoquill
 
 FROM alpine:3.24
-ARG VERSION=0.1.0-alpha.1.security.1
+ARG VERSION=0.1.0-alpha.2
 ARG VCS_REF=""
 LABEL org.opencontainers.image.title="RepoQuill" \
       org.opencontainers.image.description="Self-hosted Git-backed Markdown notes" \

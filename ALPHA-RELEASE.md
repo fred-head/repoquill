@@ -1,8 +1,7 @@
-# RepoQuill Alpha 2 release preparation
+# RepoQuill 0.1.0-alpha.2
 
-This document is the operator and maintainer checklist for the upcoming Alpha 2
-release. The final immutable version is selected during Milestone 24; until then
-this file deliberately does not claim a placeholder Alpha 2 version.
+This document is the operator and maintainer checklist for the RepoQuill
+0.1.0-alpha.2 release.
 
 Alpha 2 keeps canonical notes as ordinary Markdown and assets in ordinary Git
 repositories while adding single-owner authentication, optional TOTP MFA,
