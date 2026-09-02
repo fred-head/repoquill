@@ -2,6 +2,14 @@
 
 # Project: Git-Backed Markdown Notes
 
+## Local Go cache policy
+
+Local development, tests, `go vet`, race tests, `govulncheck`, and `gosec` must
+share the persistent caches `GOCACHE=/home/fredmin/.cache/go-build` and
+`GOMODCACHE=/home/fredmin/go/pkg/mod`, with temporary Go work files in
+`GOTMPDIR=/home/fredmin/.cache/repoquill/go-tmp`. Do not use the RAM-backed
+`/tmp` filesystem for large build, module, or security-scan caches.
+
 ## 1. Purpose
 
 This project is a self-hosted, browser-based notes application whose canonical data store is a normal Git repository containing plain Markdown files and regular image/assets files.
@@ -166,10 +174,10 @@ Browser / PWA
       |
       | HTTPS
       v
-Reverse Proxy / External Auth
+Reverse Proxy / TLS termination
       |
       v
-Notes Application
+RepoQuill / Built-in Auth
       |
       v
 Local Git Working Trees
@@ -195,8 +203,11 @@ Example:
 ```text
 /data/
 ├── app/
-│   └── metadata.db
-└── repos/
+│   ├── auth.db
+│   ├── auth.key
+│   └── notebooks.json
+├── keys/
+└── notebooks/
     ├── 01ABCDEF...
     ├── 01GHIJKL...
     └── 01MNOPQR...
@@ -228,7 +239,7 @@ Required notebook metadata may include:
 {
   "id": "01ABC...",
   "name": "Private",
-  "localPath": "/data/repos/01ABC...",
+  "localPath": "/data/notebooks/01ABC...",
   "remoteUrl": "git@github.com:user/private-notes.git",
   "branch": "main"
 }
@@ -1237,7 +1248,7 @@ Backend:
 
 1. validate input,
 2. create notebook ID,
-3. clone repository into `/data/repos/<id>`,
+3. clone repository into `/data/notebooks/<id>`,
 4. register metadata,
 5. return notebook,
 6. render repository tree.
@@ -4343,6 +4354,12 @@ baseline, not blindly selecting the numerically newest major version.
 
 ### Phase 1 - Complete inventory and currency review
 
+Status: completed on 2026-08-30. The reviewed baseline, dependency classes,
+license/maintenance findings, official currency sources, reproducibility gaps,
+and controlled Phase 2 decision queue are recorded in
+`docs/dependency-inventory-alpha2.md`. No dependency or toolchain update was
+applied in this inventory phase.
+
 - inventory direct and transitive npm dependencies, Go modules, Docker base
   images, system packages, and pinned GitHub Actions from the final lockfiles,
   image, and SBOM,
@@ -4357,6 +4374,19 @@ baseline, not blindly selecting the numerically newest major version.
   dependencies.
 
 ### Phase 2 - Controlled updates
+
+Status: completed on 2026-09-01. Node.js 24 LTS, compatible dependency updates,
+Vite 8, ESLint 10, Vitest 4, jsdom 30, TypeScript 6, and Milkdown 7.22.1 were
+adopted through isolated green migration blocks. RepoQuill's empty-cursor
+inline-code extension was adapted to Milkdown's non-inclusive mark boundary and
+is guarded by a regression test; reassess and remove that compatibility logic
+only when a future Milkdown command natively provides the same start/type/stop
+behavior. React plugin 6 and TypeScript 7 remain blocked by unresolved official
+peer constraints. Go 1.26 remains an upstream-supported release line and was
+retained to avoid a late Alpha 2 toolchain migration. Floating supported base
+tags remain the fresh-patch input, while the release pipeline now validates and
+promotes one exact immutable candidate digest instead of rebuilding after its
+security gate.
 
 - apply compatible patch and minor updates where their release notes and
   transitive changes are acceptable,
@@ -4377,6 +4407,11 @@ baseline, not blindly selecting the numerically newest major version.
   resolution merely to complete an upgrade.
 
 ### Phase 3 - Full Alpha 2 regression
+
+Status: in progress. The complete local Go and frontend regression, race,
+static-analysis, vulnerability, and production-build gates passed on 2026-09-01.
+The final protected pull-request and exact container-candidate runs remain
+required because this code server does not provide Docker.
 
 Run the complete Milestone 20 pull-request and release checks after the final
 dependency set is selected.
@@ -4416,6 +4451,14 @@ Do not treat successful compilation as sufficient regression coverage.
 
 ### Phase 4 - Final security and container gate
 
+Status: in progress. The manual Alpha 2 security review found no Critical or
+High application vulnerability. Combined conflict drafts were moved from
+persistent `localStorage` to tab-scoped `sessionStorage` with authentication-end
+cleanup. The release workflow now builds one immutable source-SHA manifest,
+scans and smoke-tests both architectures from its exact digest, and promotes
+only that digest. Hosted CodeQL, secret, Trivy, hardened-container, fresh-data,
+upgrade, and rollback evidence remains mandatory before tagging.
+
 - run the complete Milestone 19 authentication/security gate,
 - run the complete Milestone 20 supply-chain/security gate,
 - build the final production image from a clean checkout,
@@ -4439,6 +4482,8 @@ A scanner or advisory-database failure must not be interpreted as a clean scan.
 
 ### Phase 5 - Exact release-candidate artifacts
 
+Status: pending the immutable Alpha 2 tag and successful hosted release gate.
+
 Generate release artifacts from the exact immutable candidate that passed the
 gate.
 
@@ -4457,6 +4502,10 @@ Do not generate security or dependency documentation from a different commit
 than the artifact being released.
 
 ### Phase 6 - Final documentation verification
+
+Status: source documentation reviewed and synchronized on 2026-09-01. The final
+version, digest, release-note, changelog-date, and published-link pass remains
+pending until the immutable release candidate has passed Phase 4.
 
 Because Milestone 23 occurs before the dependency/toolchain review, verify that
 the final dependency updates did not invalidate release documentation.
@@ -4520,7 +4569,7 @@ Alpha 2 is ready when:
 - the final dependency and toolchain baseline has been deliberately reviewed,
   updated where justified, and documented where a maintained older major is
   retained,
-- all ten milestones work on desktop and mobile/PWA layouts where a user
+- all applicable Alpha 2 milestones work on desktop and mobile/PWA layouts where a user
   interface is applicable,
 - destructive, path-sensitive, Markdown-rewriting, Git-history, and conflict
   recovery behavior plus synchronization wording and onboarding failures are
@@ -4532,7 +4581,184 @@ Alpha 2 is ready when:
 
 ---
 
-# 46. Alpha Release Criteria
+# 46. Alpha 3 Roadmap
+
+Alpha 3 should extend deployment flexibility and maintainability without
+weakening RepoQuill's single-owner model, portable Git-backed data model, or
+existing local authentication modes.
+
+The recommended implementation order is:
+
+1. split the oversized frontend application component,
+2. establish expanded version-controlled user documentation,
+3. add direct OIDC authentication,
+4. add local-only notebooks,
+5. add managed SSH key rotation.
+
+OIDC is the highest-priority user-facing Alpha 3 feature. The frontend split is
+listed first only as a risk-reducing prerequisite: it must remain a behavior-
+preserving refactor and must not delay OIDC through an architectural rewrite.
+Documentation may begin in parallel and must be updated as each feature lands.
+
+## Milestone 25 - Behavior-preserving frontend decomposition
+
+Split the oversized `App.tsx` into focused components and hooks while retaining
+the existing React state and API architecture where practical.
+
+Initial extraction candidates include:
+
+- notebook onboarding,
+- Manage Notebooks,
+- conflict resolution,
+- synchronization details,
+- Trash,
+- History,
+- Settings and authentication settings.
+
+Requirements:
+
+- preserve all existing UX, accessibility, responsive behavior, and API calls,
+- make small reviewable extractions rather than one wholesale rewrite,
+- keep shared state ownership explicit and avoid introducing a new global state
+  framework without a demonstrated need,
+- add or retain regression coverage around every extracted workflow,
+- do not combine the refactor with unrelated feature or design changes.
+
+Completion criteria:
+
+- `App.tsx` primarily composes focused application areas instead of containing
+  their complete implementations,
+- extracted areas remain independently understandable and testable,
+- existing frontend, end-to-end, mobile/PWA, authentication, and synchronization
+  behavior remains unchanged.
+
+## Milestone 26 - Expanded user documentation
+
+Keep the README as a compact project introduction and quick-start guide. Build
+expanded documentation for users and self-hosting operators covering:
+
+- installation and upgrades,
+- first-time setup and everyday use,
+- local authentication, MFA, recovery, and disabled-auth mode,
+- notebook setup for GitHub, GitLab, Gitea, Forgejo, and generic Git servers,
+- synchronization states and conflict resolution,
+- backup, restore, and disaster recovery,
+- PWA installation and limitations,
+- reverse proxy and troubleshooting guidance,
+- OIDC after Milestone 27 is implemented.
+
+Prefer a version-controlled `docs/` source in the main repository so changes are
+reviewed, versioned, searchable, and shipped with the matching release. A GitHub
+Wiki may provide an additional presentation layer, but must not become the only
+maintained copy of essential operational or recovery documentation.
+
+Completion criteria:
+
+- a new user can deploy, secure, connect, use, back up, and troubleshoot
+  RepoQuill without reading milestone specifications,
+- documentation distinguishes saved, committed, and remotely synchronized data,
+- security-sensitive guidance matches the exact released behavior,
+- README links clearly to the expanded documentation.
+
+## Milestone 27 - Direct OIDC authentication
+
+Add standards-based OIDC authentication for providers such as Authentik,
+Authelia, Keycloak, and other compatible identity providers.
+
+The IdP authenticates the owner. After a successful callback, RepoQuill creates
+and manages its own normal application session. Do not implement this as classic
+forward-auth in front of every browser or API request.
+
+Requirements:
+
+- retain `local` password authentication and explicit `disabled` mode,
+- use a focused, maintained OIDC library and Authorization Code flow with PKCE,
+- validate issuer, discovery metadata, state, nonce, signature, audience, and
+  redirect URI according to the OIDC specification,
+- explicitly bind access to the configured single owner; successful login at
+  the IdP must not become open registration or multi-user access,
+- keep client secrets and tokens out of frontend storage, URLs, logs, notebook
+  repositories, and diagnostics,
+- issue the same hardened RepoQuill application-session boundary used by local
+  authentication after successful OIDC authentication,
+- make MFA, password recovery, and identity lifecycle the IdP's responsibility
+  in OIDC mode,
+- provide actionable setup and failure diagnostics without leaking secrets,
+- preserve safe browser/PWA session-expiry and logout behavior,
+- document reverse-proxy, TLS, callback URL, and provider configuration.
+
+Do not add account registration, roles, organizations, invitations, or a custom
+OAuth/OIDC implementation.
+
+Completion criteria:
+
+- representative Authentik, Authelia, and Keycloak configurations are tested,
+- an unbound IdP identity cannot become the RepoQuill owner,
+- replay, callback tampering, invalid issuer/audience, expired tokens, and login
+  CSRF are rejected by focused tests,
+- local and disabled modes continue to work unchanged,
+- OIDC sessions work reliably in browser and installed PWA usage.
+
+## Milestone 28 - Local-only Git notebooks
+
+Allow creation of a notebook without a remote service. The notebook must still
+be an ordinary local Git repository, but initially has no `origin` remote.
+
+Requirements:
+
+- initialize a normal repository and branch inside the managed notebook root,
+- keep notes and assets fully portable and visible as regular Git content,
+- retain local commits, History, Trash/Restore, and recovery behavior,
+- describe the notebook as local-only rather than reporting missing remote sync
+  as a failure,
+- hide or adapt remote-only synchronization actions and scheduling clearly,
+- provide a deliberate later workflow for adding and validating a remote,
+- never require provider APIs or silently create a hosted repository,
+- preserve all path-safety, concurrency, and data-safety rules.
+
+Completion criteria:
+
+- a local-only notebook can be created, edited, versioned, restored, restarted,
+  backed up, and removed from RepoQuill safely,
+- absence of `origin` never produces a misleading synchronization error,
+- adding a compatible remote later preserves existing history and never force
+  pushes or discards either side silently.
+
+## Milestone 29 - Managed SSH key rotation
+
+Add a guided, non-destructive rotation workflow for managed notebook SSH keys.
+
+Required sequence:
+
+1. generate a new managed key without modifying the old key,
+2. show the new public key for registration at the Git provider,
+3. test host trust and repository access with the new key,
+4. switch selected notebooks only after a successful test and confirmation,
+5. leave the old key unassigned or assigned to notebooks not yet migrated,
+6. instruct the operator to remove the old public key at the provider,
+7. optionally delete the unassigned local private key through the existing
+   deliberate key-management safeguards.
+
+Requirements:
+
+- never replace key material in place,
+- never make the current key unusable before the replacement is verified,
+- support rotating notebooks independently and show remaining assignments,
+- prevent deletion of keys that are still assigned,
+- avoid logging, exporting, or exposing private key material,
+- preserve explicit SSH host fingerprint trust and repository connection tests,
+- provide recovery guidance when a provider update or test fails midway.
+
+Completion criteria:
+
+- a key can be rotated without notebook downtime or loss of repository access,
+- partial and failed rotations leave the previous working configuration intact,
+- key assignment, cleanup, audit-safe diagnostics, and mobile/PWA workflows are
+  covered by focused tests.
+
+---
+
+# 47. Alpha Release Criteria
 
 Before calling a build "alpha", verify:
 
@@ -4548,17 +4774,18 @@ Before calling a build "alpha", verify:
 - image paste works,
 - Docker volume behavior is documented,
 - Git credentials are not leaked,
-- no note content is stored only in SQLite.
+- no note content is stored only in SQLite,
+- the default local authentication boundary fails closed,
+- session expiry and operator recovery do not discard notebook content,
+- the exact released container digest passed both supported-architecture gates.
 
 ---
 
-# 47. Future Features After Alpha
+# 48. Future Features After Alpha
 
 Potential later features:
 
 - raw Markdown/source mode,
-- configurable sync intervals,
-- manual sync,
 - OIDC authentication,
 - provider-specific repository creation,
 - GitHub integration,
@@ -4566,10 +4793,8 @@ Potential later features:
 - Forgejo/Gitea integration,
 - custom slash snippets,
 - templates,
-- orphaned asset cleanup,
 - optional note metadata/frontmatter,
 - configurable editor preferences,
-- light/dark theme,
 - import helpers,
 - export convenience tools,
 - WebDAV-like access only if it remains non-invasive.
@@ -4578,7 +4803,7 @@ Every future feature must preserve the core portability principle.
 
 ---
 
-# 48. Features Requiring Special Scrutiny
+# 49. Features Requiring Special Scrutiny
 
 Before implementing any of the following, explicitly verify that they do not compromise plain-file portability:
 
@@ -4597,7 +4822,7 @@ Do not let convenient application features quietly turn the repository into an o
 
 ---
 
-# 49. Coding-Agent Rules
+# 50. Coding-Agent Rules
 
 When an AI coding agent works on this project, it MUST:
 
@@ -4623,7 +4848,7 @@ When an AI coding agent works on this project, it MUST:
 
 ---
 
-# 50. Agent Change Checklist
+# 51. Agent Change Checklist
 
 Before finishing a change, verify:
 
@@ -4642,7 +4867,7 @@ If any answer is problematic, redesign before merging.
 
 ---
 
-# 51. Project Philosophy
+# 52. Project Philosophy
 
 The application should stay boring in all the right ways.
 

@@ -16,8 +16,9 @@ a newly disclosed vulnerability:
 - daily Trivy builds of the current source against fresh base images;
 - daily rescans of both the newest immutable Alpha image and the moving Alpha
   channel tag;
-- tag-gated multi-architecture release validation, SBOM generation, and signed
-  provenance attestation.
+- tag-gated construction of one immutable source-SHA candidate, exact-digest
+  multi-architecture validation, SBOM generation, and signed provenance
+  attestation before version/channel promotion.
 
 Scheduled Trivy JSON reports are retained as workflow artifacts for 30 days.
 Missing reports, scanner failures, and advisory-database failures are failures,
@@ -133,6 +134,22 @@ tags and immutable container tags are never moved. The release record identifies
 affected and fixed versions, digest, SBOM/provenance evidence, limitations,
 migration steps, mitigations, and rollback instructions. The moving Alpha tag is
 updated only after the immutable multi-architecture image passes all gates.
+
+The release workflow must not rebuild an image after validation and call the
+new bytes equivalent. It first publishes a source-SHA candidate, resolves its
+manifest digest, pulls each supported architecture from that digest for Trivy
+and runtime/persistence smoke tests, and only then attaches the immutable
+version and moving Alpha aliases to the same manifest. A failed candidate is
+never promoted. A rerun may reuse the same source-SHA candidate only after
+resolving and revalidating its unchanged digest.
+
+Base-image tags and Alpine package resolution intentionally remain fresh inputs
+so supported security fixes can be incorporated by scheduled and release
+builds. Rebuilding an old source commit is therefore not expected to be
+byte-identical. The canonical release identity is the promoted OCI digest with
+its SBOM and provenance; immutable version aliases must continue to resolve to
+that digest. Dependabot reviews Docker tag changes, while daily fresh-image and
+published-image scans detect newly disclosed runtime vulnerabilities.
 
 If persistence, notebook metadata, authentication schemas, sessions, or Git
 credentials are involved, validate the release with both fresh storage and a

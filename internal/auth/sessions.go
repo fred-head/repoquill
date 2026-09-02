@@ -71,6 +71,12 @@ func (s *Sessions) Authenticated(ctx context.Context) bool {
 	return s.manager.GetString(ctx, sessionPrincipalKey) == OwnerPrincipal
 }
 
+// MFAPending reports only whether this short-lived session has already passed
+// the password step. It does not expose or weaken either authentication factor.
+func (s *Sessions) MFAPending(ctx context.Context) bool {
+	return s.manager.GetBool(ctx, sessionMFAPendingKey) && !s.Authenticated(ctx)
+}
+
 func (s *Sessions) Login(ctx context.Context, password string, remember bool, client string) error {
 	if err := s.service.VerifyPassword(ctx, password); err != nil {
 		return err

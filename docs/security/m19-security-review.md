@@ -53,6 +53,9 @@ and [multifactor authentication](https://cheatsheetseries.owasp.org/cheatsheets/
 - The SPA treats `401` as reauthentication, stops normal authenticated work, and
   keeps an unsaved recovery draft tied to notebook, note path, and file version.
   The service worker caches only the application shell, never API/auth/note data.
+- Temporary recovery and guided-conflict drafts are tab-scoped. Conflict drafts
+  that may contain combined note text are never persisted in `localStorage` and
+  are cleared whenever authentication ends.
 - Authentication input sizes, trailing/unknown JSON, path inputs, request
   origins, spoofed proxy headers, log control characters, and concurrency around
   one-use factors have adversarial coverage.
@@ -86,6 +89,9 @@ final Alpha 2 authentication release gate and depends on every earlier job.
 - Browser/PWA behavior cannot compensate for XSS, malicious browser extensions,
   an untrusted device, or a reverse proxy that serves attacker-controlled
   content on the same origin. CSP and dependency scanning are defense in depth.
+- Standard external Markdown images can contact their origin when rendered and
+  disclose the viewer's IP address. RepoQuill suppresses referrers but does not
+  provide an image privacy proxy in Alpha 2.
 
 Any new protected endpoint, authentication mode, credential type, or relaxation
 of these assumptions requires updating the route matrix, threat model, tests,

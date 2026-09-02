@@ -344,6 +344,13 @@ func TestPasswordFirstMFALoginAndRecoveryCode(t *testing.T) {
 	if pendingCookie == nil {
 		t.Fatal("MFA challenge did not issue a confined pending-session cookie")
 	}
+	pendingStatus := httptest.NewRecorder()
+	pendingStatusRequest := httptest.NewRequest(http.MethodGet, "/api/auth/status", nil)
+	pendingStatusRequest.AddCookie(pendingCookie)
+	handler.ServeHTTP(pendingStatus, pendingStatusRequest)
+	if pendingStatus.Code != http.StatusOK || !strings.Contains(pendingStatus.Body.String(), `"mfaRequired":true`) {
+		t.Fatalf("authentication status did not preserve pending MFA: %d %s", pendingStatus.Code, pendingStatus.Body.String())
+	}
 
 	wrongRequest := httptest.NewRequest(http.MethodPost, "/api/auth/login/mfa", strings.NewReader(`{"code":"000000"}`))
 	wrongRequest.AddCookie(pendingCookie)
@@ -744,6 +751,45 @@ func TestInactiveLegacyNotebookCanBeUnregisteredWithoutDeletingFiles(t *testing.
 	}
 	if len(registry.Entries) != 1 || registry.Entries[0].ID != "active" {
 		t.Fatalf("unexpected registry after removal: %#v", registry)
+	}
+}
+
+func TestOnlyActiveNotebookCanBeUnregisteredWithoutDeletingFiles(t *testing.T) {
+	dataRoot := t.TempDir()
+	notebookRoot := filepath.Join(dataRoot, "notebooks", "only")
+	if err := os.MkdirAll(notebookRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(notebookRoot, "Keep.md")
+	if err := os.WriteFile(marker, []byte("# Keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(dataRoot, "app", "notebooks.json")
+	if err := registerActiveNotebook(metadataPath, notebookRecord{ID: "only", Name: "Only", LocalPath: notebookRoot}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadataPath)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	removal := httptest.NewRecorder()
+	handler.ServeHTTP(removal, httptest.NewRequest(http.MethodDelete, "/api/notebooks/only", nil))
+	if removal.Code != http.StatusNoContent {
+		t.Fatalf("only notebook removal failed: %d %s", removal.Code, removal.Body.String())
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("safe removal changed notebook files: %v", err)
+	}
+	registry, err := loadNotebookRegistry(metadataPath)
+	if err != nil || registry.ActiveID != "" || len(registry.Entries) != 0 {
+		t.Fatalf("unexpected empty registry: %#v, %v", registry, err)
+	}
+	tree := httptest.NewRecorder()
+	handler.ServeHTTP(tree, httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil))
+	if tree.Code != http.StatusServiceUnavailable || !strings.Contains(tree.Body.String(), "repository is not configured") {
+		t.Fatalf("removed notebook remained active: %d %s", tree.Code, tree.Body.String())
 	}
 }
 

@@ -2,6 +2,7 @@ export type AuthStatus = {
   mode: 'local' | 'disabled'
   setupRequired: boolean
   authenticated: boolean
+  mfaRequired?: boolean
   csrfToken?: string
 }
 
@@ -23,7 +24,9 @@ export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {})
   const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && csrfToken) headers.set('X-CSRF-Token', csrfToken)
   const response = await fetch(input, { ...init, headers })
-  if (response.status === 401) {
+  const pathname = typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url, window.location.href).pathname
+  const authenticationAttempt = pathname === '/api/auth/login' || pathname === '/api/auth/login/mfa'
+  if (response.status === 401 && !authenticationAttempt) {
     setCSRFToken()
     window.dispatchEvent(new CustomEvent(authRequiredEvent))
   }

@@ -49,6 +49,13 @@ review instead of overwriting the note. It is removed only after a successful
 save or explicit discard. This is crash/reauthentication protection, not an
 offline editing queue or backup.
 
+Guided Git-conflict decisions use the same tab-scoped storage boundary. A
+manually combined result can contain complete note text, so it is never written
+to persistent `localStorage`. It may survive a reload in the same tab, but is
+removed on logout or session expiry and disappears when the browser session
+ends. The Git conflict and both source versions remain the durable recovery
+mechanism.
+
 The service worker caches only the application shell. Authentication and all
 `/api/` responses remain network-only.
 

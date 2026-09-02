@@ -37,6 +37,10 @@ The supplied Compose configuration publishes port 8080 on `127.0.0.1` by default
 - Local password and MFA recovery revoke sessions and change only authentication
   metadata. They never rewrite, encrypt, or delete notebook content.
 - The PWA is online-first. Its service worker caches the application shell, never API responses or note contents.
+- Unsaved reauthentication recovery and in-progress conflict decisions are
+  limited to tab-scoped `sessionStorage`. Conflict decisions are cleared when
+  authentication ends; neither mechanism stores credentials or creates an
+  offline note database.
 
 `REPOQUILL_ALLOW_LOCAL_REMOTES=true` exists only for isolated automated tests. Do not enable it in a deployed instance.
 
@@ -79,6 +83,9 @@ and coordinated-disclosure process is documented in
   the optional technical details when troubleshooting, and keep independent
   backups in addition to the Git remote.
 - Do not mount arbitrary host directories or a Docker socket into the container.
+- Prefer note-owned local assets when opening a notebook from an untrusted
+  source. Ordinary Markdown can contain external image URLs that contact their
+  server when rendered.
 
 ## Reporting a vulnerability
 

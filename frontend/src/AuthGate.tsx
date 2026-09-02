@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { App } from './App'
 import { apiFetch, authStatus, AuthStatusError, listenForAuthEvents, notifyAuthChanged, setCSRFToken, type AuthStatus } from './api'
+import { clearConflictDecisionDrafts } from './app/conflictDraftStorage'
 
 type GateState = 'checking' | 'ready' | 'setup' | 'login' | 'mfa' | 'offline' | 'backend' | 'update'
 
@@ -12,13 +13,19 @@ export function AuthGate() {
   const [busy, setBusy] = useState(false)
   const checking = useRef(false)
 
+  const endBrowserSession = useCallback(() => {
+    setCSRFToken()
+    clearConflictDecisionDrafts(sessionStorage)
+    setState('login')
+  }, [])
+
   const check = useCallback(async () => {
     if (checking.current) return
     checking.current = true
     try {
       const next = await authStatus()
       setStatus(next)
-      setState(next.mode === 'disabled' || next.authenticated ? 'ready' : next.setupRequired ? 'setup' : 'login')
+      setState(next.mode === 'disabled' || next.authenticated ? 'ready' : next.setupRequired ? 'setup' : next.mfaRequired ? 'mfa' : 'login')
       setError(undefined)
       const health = await fetch('/api/health', { cache: 'no-store' })
       const type = health.headers.get('content-type') ?? ''
@@ -37,9 +44,9 @@ export function AuthGate() {
     window.addEventListener('online', retry)
     window.addEventListener('focus', retry)
     document.addEventListener('visibilitychange', retry)
-    const stop = listenForAuthEvents(() => { setCSRFToken(); setState('login') }, retry)
+    const stop = listenForAuthEvents(endBrowserSession, retry)
     return () => { window.removeEventListener('online', retry); window.removeEventListener('focus', retry); document.removeEventListener('visibilitychange', retry); stop() }
-  }, [check])
+  }, [check, endBrowserSession])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -55,8 +62,11 @@ export function AuthGate() {
         : state === 'mfa' ? { code:String(form.get('code') ?? '') }
         : { password, rememberDevice:form.get('rememberDevice') === 'on' }
       const response = await apiFetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) })
-      const result = await response.json() as { error?:string; csrfToken?:string; mfaRequired?:boolean }
-      if (!response.ok) throw new Error(result.error ?? `Authentication failed (${response.status})`)
+      const result = await response.json() as { error?:string; code?:string; csrfToken?:string; mfaRequired?:boolean }
+      if (!response.ok) {
+        if (state === 'mfa' && result.code === 'mfa_challenge_expired') setState('login')
+        throw new Error(result.error ?? `Authentication failed (${response.status})`)
+      }
       if (result.mfaRequired) { setState('mfa'); return }
       setCSRFToken(result.csrfToken)
       notifyAuthChanged()
@@ -65,7 +75,7 @@ export function AuthGate() {
     finally { setBusy(false) }
   }
 
-  if (state === 'ready' && status) return <App authMode={status.mode} runningVersion={version} onLoggedOut={() => { setCSRFToken(); setState('login'); notifyAuthChanged() }} />
+  if (state === 'ready' && status) return <App authMode={status.mode} runningVersion={version} onLoggedOut={() => { endBrowserSession(); notifyAuthChanged() }} />
   if (state === 'checking') return <GateMessage title="Opening RepoQuill…">Checking the secure session.</GateMessage>
   if (state === 'offline') return <GateMessage title="You are offline" action={() => void check()}>RepoQuill is online-first. Reconnect to the server before opening or editing notes.</GateMessage>
   if (state === 'backend') return <GateMessage title="Backend unavailable" action={() => void check()}>{error ?? 'The RepoQuill server could not be reached.'}</GateMessage>

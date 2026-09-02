@@ -150,7 +150,7 @@ func removeLocalNotebook(metadataPath, notebookID string) error {
 	if err != nil {
 		return err
 	}
-	if registry.ActiveID == notebookID {
+	if registry.ActiveID == notebookID && len(registry.Entries) > 1 {
 		return errors.New("active notebook cannot be removed")
 	}
 	for index, entry := range registry.Entries {
@@ -158,6 +158,9 @@ func removeLocalNotebook(metadataPath, notebookID string) error {
 			continue
 		}
 		registry.Entries = append(registry.Entries[:index], registry.Entries[index+1:]...)
+		if registry.ActiveID == notebookID {
+			registry.ActiveID = ""
+		}
 		return writeNotebookRegistry(metadataPath, registry)
 	}
 	return os.ErrNotExist

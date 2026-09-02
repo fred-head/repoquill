@@ -45,11 +45,12 @@ describe('browser authentication lifecycle',()=>{
 
   it('completes password-first MFA without storing either factor',async()=>{
 	let authenticated=false
+	let mfaPending=false
 	vi.spyOn(globalThis,'fetch').mockImplementation(async(input,init)=>{
 	  const url=String(input)
-	  if(url==='/api/auth/status')return Response.json({mode:'local',setupRequired:false,authenticated,csrfToken:authenticated?'csrf':''})
-	  if(url==='/api/auth/login')return Response.json({authenticated:false,mfaRequired:true},{status:202})
-	  if(url==='/api/auth/login/mfa'){authenticated=true;return Response.json({authenticated:true,csrfToken:'csrf'})}
+	  if(url==='/api/auth/status')return Response.json({mode:'local',setupRequired:false,authenticated,mfaRequired:mfaPending,csrfToken:authenticated?'csrf':''})
+	  if(url==='/api/auth/login'){mfaPending=true;return Response.json({authenticated:false,mfaRequired:true},{status:202})}
+	  if(url==='/api/auth/login/mfa'){authenticated=true;mfaPending=false;return Response.json({authenticated:true,csrfToken:'csrf'})}
 	  if(url==='/api/health')return Response.json({status:'ok',version:'dev'})
 	  if(url==='/api/repository/tree')return Response.json({entries:[]})
 	  if(url==='/api/notebook')return Response.json({name:'Notebook',configured:false})
@@ -60,6 +61,9 @@ describe('browser authentication lifecycle',()=>{
 	const view=render(<AuthGate/>)
 	fireEvent.change(await view.findByLabelText('Password'),{target:{value:'a sufficiently long password'}})
 	fireEvent.click(view.getByRole('button',{name:'Sign in'}))
+	await view.findByLabelText('Authentication code')
+	window.dispatchEvent(new Event('focus'))
+	await waitFor(()=>expect(view.getByLabelText('Authentication code')).toBeTruthy())
 	fireEvent.change(await view.findByLabelText('Authentication code'),{target:{value:'123456'}})
 	fireEvent.click(view.getByRole('button',{name:'Verify'}))
 	await waitFor(()=>expect(view.getByText('No notebook yet')).toBeTruthy())
@@ -83,8 +87,12 @@ describe('browser authentication lifecycle',()=>{
     })
     const view=render(<AuthGate/>)
     expect(await view.findByText('No notebook yet')).toBeTruthy()
+    sessionStorage.setItem('repoquill:conflict-decisions:expired','sensitive combined note')
+    sessionStorage.setItem('repoquill.recovery-draft','preserved recovery draft')
     window.dispatchEvent(new CustomEvent('repoquill:auth-required'))
     expect(await view.findByRole('heading',{name:'Welcome back'})).toBeTruthy()
     expect(view.getByLabelText('Password')).toBeTruthy()
+    expect(sessionStorage.getItem('repoquill:conflict-decisions:expired')).toBeNull()
+    expect(sessionStorage.getItem('repoquill.recovery-draft')).toBe('preserved recovery draft')
   })
 })

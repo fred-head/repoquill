@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   replacement, and separate operator MFA reset.
 - Added the Milestone 19 adversarial route/MFA/session test matrix and a current
   OWASP-oriented Alpha 2 authentication review and release gate.
+- Conflict-resolution drafts containing combined note text now stay in
+  tab-scoped `sessionStorage` and are removed when the owner logs out or the
+  authenticated session expires.
+- Alpha publishing now builds one immutable multi-architecture source-SHA
+  candidate, scans and smoke-tests that exact digest on AMD64 and ARM64, and
+  promotes only the verified digest to version and channel tags.
 
 ### Added
 
@@ -39,6 +45,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Milkdown kit/react now use 7.22.1. RepoQuill's empty-cursor inline-code mode
+  preserves its explicit start/type/stop behavior across Milkdown's safer
+  non-inclusive code-mark boundary, with a dedicated regression test.
+- Frontend builds, CI, release jobs, and local-development requirements now use
+  Node.js 24 LTS, with compatible Testing Library, React type, and
+  TypeScript-ESLint and globals patch/minor updates applied reproducibly.
+- The maintained frontend toolchain now uses Vite 8, ESLint 10, Vitest 4,
+  jsdom 30, and the latest TypeScript release officially supported by
+  typescript-eslint.
 - Human-readable synchronization details now distinguish locally saved content
   from remote synchronization, report received changes, and keep note switching
   responsive while Git work continues safely in the background.
@@ -50,6 +65,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Alpha 2 deployment, authentication, onboarding, synchronization, conflict,
   image, upgrade, recovery, and limitation documentation now matches the
   implemented application.
+- Release documentation now distinguishes the pre-release source-SHA candidate
+  from immutable version and moving Alpha aliases and records that the released
+  digest, SBOM, provenance, scan, and runtime evidence refer to one artifact.
 
 ### Fixed
 

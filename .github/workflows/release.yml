@@ -14,7 +14,7 @@ concurrency:
 
 env:
   GO_VERSION: 1.26.x
-  NODE_VERSION: "22"
+  NODE_VERSION: "24"
   IMAGE_NAME: ghcr.io/fred-head/repoquill
 
 jobs:
@@ -91,10 +91,95 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-  validate-image:
-    name: Validate ${{ matrix.platform }}
+  build-candidate:
+    name: Build immutable release candidate
     runs-on: ubuntu-latest
     needs: [verify, secrets]
+    outputs:
+      digest: ${{ steps.candidate.outputs.digest || steps.push.outputs.digest }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve or reserve immutable candidate
+        id: candidate
+        shell: bash
+        run: |
+          ensure_absent() {
+            local reference output
+            reference="$1"
+            if output="$(docker buildx imagetools inspect "${reference}" 2>&1)"; then
+              echo "Immutable image reference already exists: ${reference}" >&2
+              exit 1
+            fi
+            if ! grep --ignore-case --extended-regexp 'not found|manifest unknown|no such manifest' <<<"${output}" >/dev/null; then
+              echo "Could not safely determine whether ${reference} exists:" >&2
+              echo "${output}" >&2
+              exit 1
+            fi
+          }
+
+          ensure_absent "${IMAGE_NAME}:${{ needs.verify.outputs.version }}"
+
+          candidate="${IMAGE_NAME}:${{ needs.verify.outputs.sha_tag }}"
+          if output="$(docker buildx imagetools inspect "${candidate}" 2>&1)"; then
+            digest="$(awk '$1 == "Digest:" { print $2; exit }' <<<"${output}")"
+            if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Could not resolve the existing candidate digest." >&2
+              exit 1
+            fi
+            echo "Reusing immutable candidate ${candidate}@${digest}"
+            echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if ! grep --ignore-case --extended-regexp 'not found|manifest unknown|no such manifest' <<<"${output}" >/dev/null; then
+            echo "Could not safely determine whether ${candidate} exists:" >&2
+            echo "${output}" >&2
+            exit 1
+          fi
+          echo "exists=false" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push immutable multi-architecture candidate
+        id: push
+        if: steps.candidate.outputs.exists != 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.sha_tag }}
+          build-args: |
+            VERSION=${{ needs.verify.outputs.version }}
+            VCS_REF=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+
+  validate-image:
+    name: Validate exact candidate on ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    needs: [verify, build-candidate]
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: true
       matrix:
@@ -110,24 +195,20 @@ jobs:
           persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
-
-      - name: Build architecture image for validation
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          load: true
-          push: false
-          tags: repoquill:validate-${{ matrix.slug }}
-          build-args: |
-            VERSION=${{ needs.verify.outputs.version }}
-            VCS_REF=${{ github.sha }}
-          provenance: false
-          sbom: false
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull exact architecture from candidate digest
+        run: |
+          candidate="${IMAGE_NAME}@${{ needs.build-candidate.outputs.digest }}"
+          docker pull --platform "${{ matrix.platform }}" "${candidate}"
+          docker tag "${candidate}" "repoquill:validate-${{ matrix.slug }}"
 
       - name: Scan architecture image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -145,11 +226,11 @@ jobs:
           "${{ needs.verify.outputs.version }}"
 
   publish:
-    name: Publish multi-architecture image
+    name: Promote verified candidate
     runs-on: ubuntu-latest
-    needs: [verify, secrets, validate-image]
+    needs: [verify, build-candidate, validate-image]
     outputs:
-      digest: ${{ steps.push.outputs.digest }}
+      digest: ${{ needs.build-candidate.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -161,53 +242,44 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
-
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Refuse an existing immutable version
+      - name: Verify candidate digest and reserve immutable version
         shell: bash
         run: |
-          ensure_absent() {
-            local reference output
-            reference="$1"
-            if output="$(docker buildx imagetools inspect "${reference}" 2>&1)"; then
-              echo "Immutable image reference already exists: ${reference}" >&2
-              exit 1
-            fi
-            if ! grep --ignore-case --extended-regexp 'not found|manifest unknown|no such manifest' <<<"${output}" >/dev/null; then
-              echo "Could not safely determine whether ${reference} exists:" >&2
-              echo "${output}" >&2
-              exit 1
-            fi
-          }
-          ensure_absent "${IMAGE_NAME}:${{ needs.verify.outputs.version }}"
-          ensure_absent "${IMAGE_NAME}:${{ needs.verify.outputs.sha_tag }}"
+          candidate="${IMAGE_NAME}:${{ needs.verify.outputs.sha_tag }}"
+          output="$(docker buildx imagetools inspect "${candidate}")"
+          resolved="$(awk '$1 == "Digest:" { print $2; exit }' <<<"${output}")"
+          expected="${{ needs.build-candidate.outputs.digest }}"
+          if [[ "${resolved}" != "${expected}" ]]; then
+            echo "Candidate digest changed: expected ${expected}, found ${resolved}" >&2
+            exit 1
+          fi
 
-      - name: Build and publish manifest
-        id: push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.version }}
-            ${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.sha_tag }}
-          build-args: |
-            VERSION=${{ needs.verify.outputs.version }}
-            VCS_REF=${{ github.sha }}
-          provenance: mode=max
-          sbom: true
+          version="${IMAGE_NAME}:${{ needs.verify.outputs.version }}"
+          if output="$(docker buildx imagetools inspect "${version}" 2>&1)"; then
+            echo "Immutable image reference already exists: ${version}" >&2
+            exit 1
+          fi
+          if ! grep --ignore-case --extended-regexp 'not found|manifest unknown|no such manifest' <<<"${output}" >/dev/null; then
+            echo "Could not safely determine whether ${version} exists:" >&2
+            echo "${output}" >&2
+            exit 1
+          fi
+
+      - name: Attach immutable version to verified digest
+        run: >-
+          docker buildx imagetools create
+          --tag "${IMAGE_NAME}:${{ needs.verify.outputs.version }}"
+          "${IMAGE_NAME}@${{ needs.build-candidate.outputs.digest }}"
 
       - name: Verify immutable aliases and architectures
         shell: bash
@@ -235,10 +307,10 @@ jobs:
           NODE
 
       - name: Create signed GitHub attestation
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ needs.build-candidate.outputs.digest }}
           subject-version: ${{ needs.verify.outputs.version }}
           push-to-registry: true
 
@@ -265,7 +337,7 @@ jobs:
             echo "- Channel: \`${{ needs.verify.outputs.channel }}\`"
             echo "- Git tag: \`${GITHUB_REF_NAME}\`"
             echo "- Architectures: \`linux/amd64\`, \`linux/arm64\`"
-            echo "- Digest: \`${{ steps.push.outputs.digest }}\`"
+            echo "- Digest: \`${{ needs.build-candidate.outputs.digest }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
   release-record:

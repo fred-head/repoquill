@@ -26,11 +26,14 @@ export function loadSyncPreferences(storage: Pick<Storage, 'getItem'>): SyncPref
     return {
       scheduledMinutes: [0, 5, 15, 30, 60].includes(Number(value.scheduledMinutes)) ? value.scheduledMinutes as SyncPreferences['scheduledMinutes'] : defaultSyncPreferences.scheduledMinutes,
       inactivityMinutes: [0, 1, 2, 5, 10].includes(Number(value.inactivityMinutes)) ? value.inactivityMinutes as SyncPreferences['inactivityMinutes'] : defaultSyncPreferences.inactivityMinutes,
-      syncOnNotebookSwitch: typeof value.syncOnNotebookSwitch === 'boolean' ? value.syncOnNotebookSwitch : defaultSyncPreferences.syncOnNotebookSwitch,
-      syncOnClose: typeof value.syncOnClose === 'boolean' ? value.syncOnClose : defaultSyncPreferences.syncOnClose,
-      syncOnStartup: typeof value.syncOnStartup === 'boolean' ? value.syncOnStartup : defaultSyncPreferences.syncOnStartup,
-      syncOnFocus: typeof value.syncOnFocus === 'boolean' ? value.syncOnFocus : defaultSyncPreferences.syncOnFocus,
-      syncBeforeOpeningNote: typeof value.syncBeforeOpeningNote === 'boolean' ? value.syncBeforeOpeningNote : defaultSyncPreferences.syncBeforeOpeningNote,
+      // These safety-oriented triggers are intentionally no longer user-facing.
+      // Normalize older stored choices so every installation receives the same
+      // conflict-avoidance behavior while retaining the two timing controls.
+      syncOnNotebookSwitch: true,
+      syncOnClose: true,
+      syncOnStartup: true,
+      syncOnFocus: true,
+      syncBeforeOpeningNote: true,
     }
   } catch {
     return defaultSyncPreferences

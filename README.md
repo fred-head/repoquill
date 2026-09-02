@@ -171,7 +171,7 @@ in a deployment.
 Requirements:
 
 - Go 1.26+
-- Node.js 20.19+ or 22+
+- Node.js 24 LTS (Node.js 26+ is also supported by the current dependency set)
 - npm
 
 The development launcher prepares disposable local data and starts the Go
@@ -181,7 +181,18 @@ backend and Vite frontend together:
 ./scripts/dev.sh
 ```
 
-Open <http://localhost:5173>. Pass an existing local notebook directory when
+For the default local-auth mode, open a second terminal in the repository and
+create the one-time setup token against the same development database:
+
+```sh
+REPOQUILL_AUTH_METADATA="$PWD/.repoquill-data/app/auth.db" \
+  go run ./cmd/repoquill auth bootstrap-token
+```
+
+Then open <http://localhost:5173> and enter the token. To start disposable local
+development without RepoQuill authentication, use
+`REPOQUILL_AUTH_MODE=disabled ./scripts/dev.sh`; do not copy that choice into an
+Internet-facing deployment. Pass an existing local notebook directory when
 needed:
 
 ```sh
@@ -218,6 +229,12 @@ Uploaded images use relative Markdown references such as:
 The repository can be cloned and edited with VS Code, Obsidian, GitHub, GitLab,
 or another Markdown-capable application. Deleting RepoQuill does not make the
 notes unreadable.
+
+Ordinary Markdown can also reference images on external HTTP(S) servers. Such
+an image is loaded by the browser when the note is shown and can reveal the
+client IP address to that server. RepoQuill suppresses the HTTP referrer but
+does not proxy or cache remote images; use note-owned `.assets` files for
+private notebooks.
 
 Selecting an image provides a non-destructive lightbox for viewing the original
 and optional Small, Medium, Large, or Full inline presentation. Those sizes live
@@ -322,6 +339,9 @@ recovery change authentication metadata only. See the
 - [Security policy](SECURITY.md)
 - [Security maintenance and vulnerability response](SECURITY-MAINTENANCE.md)
 - [Alpha release and recovery guide](ALPHA-RELEASE.md)
+- [Local authentication and recovery](docs/security/local-authentication-setup.md)
+- [Reverse-proxy and TLS security](docs/security/reverse-proxy.md)
+- [Alpha 2 dependency inventory](docs/dependency-inventory-alpha2.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 - [Architecture and project constraints](AGENTS.md)

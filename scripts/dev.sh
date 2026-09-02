@@ -26,8 +26,17 @@ app_directory="${development_data}/app"
 notebooks_directory="${development_data}/notebooks"
 keys_directory="${development_data}/keys"
 known_hosts_file="${keys_directory}/known_hosts"
+go_build_cache="${GOCACHE:-${HOME}/.cache/go-build}"
+go_module_cache="${GOMODCACHE:-${HOME}/go/pkg/mod}"
+go_temp_directory="${GOTMPDIR:-${HOME}/.cache/repoquill/go-tmp}"
 
-mkdir -p -- "${app_directory}" "${notebooks_directory}" "${keys_directory}"
+mkdir -p -- \
+  "${app_directory}" \
+  "${notebooks_directory}" \
+  "${keys_directory}" \
+  "${go_build_cache}" \
+  "${go_module_cache}" \
+  "${go_temp_directory}"
 touch -- "${known_hosts_file}"
 chmod 700 -- "${keys_directory}"
 chmod 600 -- "${known_hosts_file}"
@@ -38,6 +47,12 @@ for command_name in go node npm; do
     exit 1
   fi
 done
+
+node_major="$(node -p "Number(process.versions.node.split('.')[0])")"
+if [[ ! "${node_major}" =~ ^[0-9]+$ ]] || (( node_major < 24 )) || (( node_major == 25 )); then
+  echo "RepoQuill development requires Node.js 24 LTS or Node.js 26+. Found: $(node --version)" >&2
+  exit 1
+fi
 
 if [[ ! -d "${project_root}/frontend/node_modules" ]]; then
   echo "Installing frontend dependencies…"
@@ -67,7 +82,9 @@ echo "Notebook: ${notebook_root}"
   REPOQUILL_SESSION_COOKIE_SECURE="false" \
   REPOQUILL_KEYS_DIR="${keys_directory}" \
   REPOQUILL_SSH_KNOWN_HOSTS="${known_hosts_file}" \
-  GOCACHE="/tmp/repoquill-go-cache" \
+  GOCACHE="${go_build_cache}" \
+  GOMODCACHE="${go_module_cache}" \
+  GOTMPDIR="${go_temp_directory}" \
   go run ./cmd/repoquill
 ) &
 backend_pid="$!"
