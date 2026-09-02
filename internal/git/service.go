@@ -333,6 +333,7 @@ func (s *Service) run(ctx context.Context, operation string, arguments ...string
 func (s *Service) runBytes(ctx context.Context, operation string, arguments ...string) ([]byte, error) {
 	started := time.Now()
 	commandArguments := append([]string{"-c", "core.hooksPath=/dev/null", "-C", s.root}, arguments...)
+	// #nosec G204 -- no shell is used; callers construct a fixed Git subcommand plus separately validated arguments.
 	command := exec.CommandContext(ctx, "git", commandArguments...)
 	command.Env = gitEnvironment(s.sshCommand)
 	output, err := command.CombinedOutput()
@@ -354,6 +355,7 @@ func (s *Service) runBytes(ctx context.Context, operation string, arguments ...s
 func (s *Service) runWithEditor(ctx context.Context, operation string, arguments ...string) (string, error) {
 	started := time.Now()
 	commandArguments := append([]string{"-c", "core.hooksPath=/dev/null", "-C", s.root}, arguments...)
+	// #nosec G204 -- no shell is used; callers construct a fixed Git subcommand plus separately validated arguments.
 	command := exec.CommandContext(ctx, "git", commandArguments...)
 	command.Env = append(gitEnvironment(s.sshCommand), "GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true")
 	output, err := command.CombinedOutput()

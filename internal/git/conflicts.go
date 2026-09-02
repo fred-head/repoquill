@@ -133,6 +133,7 @@ func (s *Service) conflictWorkingDigest(relative string) string {
 	if err != nil {
 		return "invalid"
 	}
+	// #nosec G304 -- confinedConflictPath validates the Git path and rejects escapes from the owned working tree.
 	content, err := os.ReadFile(target)
 	if errors.Is(err, os.ErrNotExist) {
 		return "missing"
@@ -389,6 +390,7 @@ func (s *Service) conflictBranch(ctx context.Context) (string, error) {
 		return branch, nil
 	}
 	for _, name := range []string{"rebase-merge/head-name", "rebase-apply/head-name"} {
+		// #nosec G304 -- name is selected from the fixed internal rebase metadata allowlist above.
 		content, err := os.ReadFile(filepath.Join(s.root, ".git", name))
 		if err != nil {
 			continue
@@ -446,6 +448,7 @@ func (s *Service) writeConflictPath(relative string, content []byte) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G301 -- conflict results are ordinary portable notebook directories inside the confined working tree.
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
@@ -456,10 +459,12 @@ func (s *Service) writeConflictPath(relative string, content []byte) error {
 	name := temporary.Name()
 	defer os.Remove(name)
 	if _, err := temporary.Write(content); err != nil {
+		// #nosec G104 -- preserve the actionable write error; Close is best-effort on this failure path.
 		temporary.Close()
 		return err
 	}
 	if err := temporary.Sync(); err != nil {
+		// #nosec G104 -- preserve the actionable sync error; Close is best-effort on this failure path.
 		temporary.Close()
 		return err
 	}

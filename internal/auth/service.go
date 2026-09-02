@@ -156,6 +156,7 @@ func Open(ctx context.Context, config Config, logger *slog.Logger) (*Service, er
 	if err := os.MkdirAll(filepath.Dir(config.MetadataPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create authentication metadata directory: %w", err)
 	}
+	// #nosec G302 -- 0700 is the restrictive executable mode required for a private directory, not a regular file.
 	if err := os.Chmod(filepath.Dir(config.MetadataPath), 0o700); err != nil {
 		return nil, fmt.Errorf("secure authentication metadata directory: %w", err)
 	}
@@ -353,11 +354,13 @@ func (s *Service) backupDatabase(ctx context.Context) (string, error) {
 		return "", err
 	}
 	backupPath := fmt.Sprintf("%s.backup-%s", databasePath, time.Now().UTC().Format("20060102T150405.000000000Z"))
+	// #nosec G304 -- databasePath is the validated absolute operator configuration and is not request-controlled.
 	input, err := os.Open(databasePath)
 	if err != nil {
 		return "", err
 	}
 	defer input.Close()
+	// #nosec G304 -- backupPath is derived solely from the configured database path and a server timestamp.
 	output, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return "", err

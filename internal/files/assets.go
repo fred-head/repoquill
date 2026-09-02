@@ -56,6 +56,7 @@ func (r *Repository) SaveAsset(noteRelative string, source io.Reader) (Asset, er
 		return Asset{}, err
 	}
 	if !exists {
+		// #nosec G301 -- assets are ordinary portable notebook files; access control is provided by the repository/container boundary.
 		if err := os.Mkdir(assetsDirectory, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
 			return Asset{}, err
 		}
@@ -70,6 +71,7 @@ func (r *Repository) SaveAsset(noteRelative string, source io.Reader) (Asset, er
 	}
 	filename := hex.EncodeToString(identifier) + extension
 	target := filepath.Join(assetsDirectory, filename)
+	// #nosec G302,G304 -- target uses a random filename in a validated note-owned directory; assets intentionally remain portable.
 	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return Asset{}, err
@@ -126,6 +128,7 @@ func (r *Repository) ReadAsset(noteRelative, assetRelative string) (Asset, error
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxAssetSize {
 		return Asset{}, ErrInvalidPath
 	}
+	// #nosec G304 -- target was confined to the validated note-owned asset directory and lstat-checked as a non-symlink regular file.
 	content, err := os.ReadFile(target)
 	if err != nil {
 		return Asset{}, err

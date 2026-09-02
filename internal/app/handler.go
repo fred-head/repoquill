@@ -1032,6 +1032,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 	})
 	mux.HandleFunc("POST /api/repository/assets", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxAssetRequestBodySize)
+		// #nosec G120 -- MaxBytesReader enforces the complete multipart request limit before parsing.
 		if err := r.ParseMultipartForm(maxAssetRequestBodySize); err != nil {
 			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "image upload is too large"})
 			return
@@ -1191,6 +1192,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
+		// #nosec G705 -- conflictContentType permits images or application/octet-stream; global nosniff prevents HTML execution.
 		_, _ = w.Write(content)
 	})
 	mux.HandleFunc("POST /api/repository/git/conflicts/resolve", func(w http.ResponseWriter, r *http.Request) {

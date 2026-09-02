@@ -124,6 +124,7 @@ func (r *Repository) ReadMarkdown(relative string) (Markdown, error) {
 	if err != nil {
 		return Markdown{}, err
 	}
+	// #nosec G304 -- resolveMarkdown rejects traversal, symlinks, non-regular files, and paths outside the repository root.
 	content, err := os.ReadFile(resolved)
 	if err != nil {
 		return Markdown{}, err
@@ -145,6 +146,7 @@ func (r *Repository) writeMarkdown(relative, content, expectedVersion string) (M
 	if len(content) > maxMarkdownSize {
 		return Markdown{}, ErrFileTooLarge
 	}
+	// #nosec G304 -- resolveMarkdown rejects traversal, symlinks, non-regular files, and paths outside the repository root.
 	current, err := os.ReadFile(resolved)
 	if err != nil {
 		return Markdown{}, err

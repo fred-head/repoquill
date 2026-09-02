@@ -167,6 +167,25 @@ func TestParameterUpgradeNeverLowersAnExistingCost(t *testing.T) {
 	}
 }
 
+func TestOversizedStoredCredentialMaterialIsRejectedBeforeConversion(t *testing.T) {
+	ctx := context.Background()
+	service := openTestService(t, Config{Mode: ModeLocal, MetadataPath: testDatabasePath(t)})
+	defer service.Close()
+	token, err := service.CreateBootstrapToken(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CompleteSetup(ctx, token.Value, "credential length test password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.ExecContext(ctx, `UPDATE auth_password_credentials SET salt = zeroblob(65)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.loadPasswordCredential(ctx); err == nil || err.Error() != "stored password parameters are invalid" {
+		t.Fatalf("oversized credential material was accepted: %v", err)
+	}
+}
+
 func TestOnlyOneConcurrentSetupCanComplete(t *testing.T) {
 	ctx := context.Background()
 	service := openTestService(t, Config{Mode: ModeLocal, MetadataPath: testDatabasePath(t)})

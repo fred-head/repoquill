@@ -354,11 +354,27 @@ func (s *Service) loadPasswordCredential(ctx context.Context) (passwordCredentia
 	if memoryKiB < 0 || iterations < 0 || parallelism < 0 || memoryKiB > int64(^uint32(0)) || iterations > int64(^uint32(0)) || parallelism > int64(^uint8(0)) {
 		return passwordCredential{}, errors.New("stored password parameters are invalid")
 	}
+	saltLength, err := boundedCredentialLength(credential.Salt, 16, 64)
+	if err != nil {
+		return passwordCredential{}, err
+	}
+	keyLength, err := boundedCredentialLength(credential.Hash, 32, 64)
+	if err != nil {
+		return passwordCredential{}, err
+	}
 	credential.Parameters = PasswordParameters{
 		MemoryKiB: uint32(memoryKiB), Iterations: uint32(iterations), Parallelism: uint8(parallelism),
-		SaltLength: uint32(len(credential.Salt)), KeyLength: uint32(len(credential.Hash)),
+		SaltLength: saltLength, KeyLength: keyLength,
 	}
 	return credential, nil
+}
+
+func boundedCredentialLength(value []byte, minimum, maximum int) (uint32, error) {
+	if len(value) < minimum || len(value) > maximum {
+		return 0, errors.New("stored password parameters are invalid")
+	}
+	// #nosec G115 -- the explicit maximum above is 64, well inside uint32.
+	return uint32(len(value)), nil
 }
 
 func (s *Service) upgradePasswordCredential(ctx context.Context, password string, previous passwordCredential) error {
@@ -395,7 +411,7 @@ func credentialNeedsUpgrade(credential passwordCredential) bool {
 
 func validStoredParameters(credential passwordCredential) bool {
 	return credential.AlgorithmVersion == argon2.Version && validParameters(credential.Parameters) &&
-		uint32(len(credential.Salt)) == credential.Parameters.SaltLength && uint32(len(credential.Hash)) == credential.Parameters.KeyLength
+		len(credential.Salt) == int(credential.Parameters.SaltLength) && len(credential.Hash) == int(credential.Parameters.KeyLength)
 }
 
 func validParameters(parameters PasswordParameters) bool {
