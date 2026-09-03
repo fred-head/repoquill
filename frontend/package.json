@@ -1,7 +1,7 @@
 {
   "name": "repoquill-frontend",
   "private": true,
-  "version": "0.1.0-alpha.2.security.1",
+  "version": "0.1.0-alpha.2.security.2",
   "license": "Apache-2.0",
   "description": "Browser frontend for RepoQuill Git-backed Markdown notes",
   "homepage": "https://github.com/fred-head/repoquill#readme",
