@@ -4590,10 +4590,13 @@ existing local authentication modes.
 The recommended implementation order is:
 
 1. split the oversized frontend application component,
-2. establish expanded version-controlled user documentation,
-3. add direct OIDC authentication,
-4. add local-only notebooks,
-5. add managed SSH key rotation.
+2. expose the running version clearly in the UI,
+3. establish expanded version-controlled user documentation,
+4. add direct OIDC authentication,
+5. add local-only notebooks,
+6. add managed SSH key rotation,
+7. design and, only after the portability and recovery gates pass, implement
+   optional encrypted notes and folders.
 
 OIDC is the highest-priority user-facing Alpha 3 feature. The frontend split is
 listed first only as a risk-reducing prerequisite: it must remain a behavior-
@@ -4755,6 +4758,88 @@ Completion criteria:
 - partial and failed rotations leave the previous working configuration intact,
 - key assignment, cleanup, audit-safe diagnostics, and mobile/PWA workflows are
   covered by focused tests.
+
+## Milestone 30 - Visible application version
+
+Show the exact running RepoQuill version in a discoverable, unobtrusive place in
+the application UI, such as an About area in Settings and a compact application
+footer or equivalent mobile-safe location.
+
+Requirements:
+
+- use the backend-provided build version as the single source of truth,
+- display the immutable release version, including alpha and maintenance
+  suffixes, without inventing a separate frontend version,
+- show `dev` clearly for unversioned local development builds,
+- keep the version accessible on desktop and mobile/PWA without competing with
+  note content or document save/synchronization state,
+- provide a copyable version value for support and diagnostics,
+- do not expose commit, host, path, or other deployment details unless they are
+  deliberately added to a separate sanitized diagnostics view.
+
+Completion criteria:
+
+- the owner can identify the exact running release from the UI,
+- container build metadata, backend API, UI, changelog, and Git tag agree for a
+  release,
+- version rendering and the `dev` fallback have focused tests.
+
+## Milestone 31 - Optional encrypted notes and folders
+
+Investigate and add deliberate opt-in encryption for selected notes and folders.
+This milestone requires an explicit design and threat-model review before code
+is implemented because opaque ciphertext changes RepoQuill's ordinary-Markdown
+portability guarantee.
+
+Design gates:
+
+- define whether encryption protects Git remotes and backups, the server's disk,
+  or also a compromised running RepoQuill server; do not claim protections the
+  chosen design cannot provide,
+- select a documented, interoperable encrypted file format that can be decrypted
+  with maintained tools outside RepoQuill; recovery must never require the
+  RepoQuill application itself,
+- document which metadata remains visible, including filenames, folder layout,
+  file sizes, modification patterns, Git history, and asset relationships,
+- define password/key creation, unlocking, rotation, backup, export, and loss
+  recovery before encrypted content can be created,
+- decide how encrypted images/assets, search, History, Trash, conflict
+  resolution, PWA behavior, autosave, and Git synchronization work without
+  leaking plaintext,
+- obtain an explicit product decision for the limited portability exception:
+  encrypted content remains ordinary repository files but is not directly
+  readable as plain Markdown until decrypted with compatible external tooling.
+
+Security requirements:
+
+- use a focused, maintained cryptographic library and established authenticated
+  encryption; never design custom cryptography or silently downgrade encryption,
+- never commit plaintext copies, keys, passwords, recovery material, editor
+  caches, previews, search indexes, temporary files, or logs to the notebook,
+- keep encrypted and unencrypted content clearly distinguishable and require
+  deliberate confirmation when changing protection state,
+- fail closed on corrupt data, missing keys, authentication failure, interrupted
+  writes, and unsupported format versions while preserving the original bytes,
+- use atomic writes and retain a documented external recovery/decryption path,
+- prevent sensitive plaintext from entering browser-persistent storage or the
+  service-worker cache,
+- cover key handling, path confinement, tampering, rollback, mixed encrypted and
+  plain folders, backups, conflicts, and recovery with adversarial tests and an
+  independent security review.
+
+Completion criteria:
+
+- selected notes and complete folder trees can be encrypted, unlocked, edited,
+  synchronized, backed up, restored, and deliberately decrypted without data
+  loss,
+- an external documented tool can recover the Markdown and assets without
+  RepoQuill,
+- losing the encryption secret is clearly explained as unrecoverable and cannot
+  silently damage unencrypted notebooks,
+- encrypted content never appears in plaintext in Git, application metadata,
+  logs, caches, recovery artifacts, or unencrypted assets,
+- the feature does not ship until its threat model, format, recovery procedure,
+  migration behavior, and security review are complete.
 
 ---
 
