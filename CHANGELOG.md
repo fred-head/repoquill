@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2.security.3] - 2026-09-03
+
+### Fixed
+
+- Restored the connection-test and final-review content in notebook onboarding
+  steps 4 and 5 by removing structural CSS selectors that accidentally hid the
+  active step.
+- Made wizard-step rendering explicit in React and added a CSS-aware regression
+  test for the complete connection and review transition.
+
 ## [0.1.0-alpha.2.security.2] - 2026-09-03
 
 ### Fixed

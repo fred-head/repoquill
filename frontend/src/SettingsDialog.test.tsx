@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SettingsDialog } from './App'
 import { setCSRFToken } from './api'
+import './styles.css'
 
 afterEach(() => {
   cleanup()
@@ -151,6 +152,28 @@ describe('Settings asset cleanup', () => {
     await waitFor(() => expect(onNotebookAdded).toHaveBeenCalledTimes(1))
     expect(onClose).toHaveBeenCalledTimes(1)
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ name: 'Private', repositoryUrl: 'git@example.test:user/notes.git', branch: 'main', authType: 'existing-server-ssh', keyId: '' })
+  })
+
+  it('keeps the active connection-test and review steps visible', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({ state: 'success', message: 'Connection successful' }))
+    const view = render(<SettingsDialog mode="onboarding" autoLockMinutes={0} onAutoLockMinutes={vi.fn()} onClose={vi.fn()} />)
+
+    beginOnboarding(view)
+    fireEvent.click(view.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(view.getByRole('radio', { name: /Existing server SSH configuration/ }))
+    fireEvent.click(view.getByRole('button', { name: 'Continue' }))
+
+    const connectionStep = view.getByText('Check the connection').closest('.space-y-3') as HTMLElement
+    expect(window.getComputedStyle(connectionStep).display).not.toBe('none')
+    expect(view.queryByLabelText('Notebook name')).toBeNull()
+
+    fireEvent.click(view.getByRole('button', { name: 'Test connection' }))
+    await waitFor(() => expect(view.getByText('Connection successful')).toBeTruthy())
+    fireEvent.click(view.getByRole('button', { name: 'Continue' }))
+
+    const reviewStep = view.getByText('Review notebook connection').closest('.rounded-md') as HTMLElement
+    expect(window.getComputedStyle(reviewStep).display).not.toBe('none')
+    expect(view.getByRole('button', { name: 'Connect notebook' })).toBeTruthy()
   })
 
   it('generates and exposes only a managed public key before connection testing', async () => {
