@@ -1,22 +1,5 @@
 @import "tailwindcss";
 
-/* Keep completed wizard values mounted so failures can be repaired without
-   losing an entered address or a generated managed key. */
-.notebook-wizard[data-step="2"] > fieldset,
-.notebook-wizard[data-step="2"] > fieldset + div,
-.notebook-wizard[data-step="2"] > fieldset + div + div,
-.notebook-wizard[data-step="3"] > label,
-.notebook-wizard[data-step="3"] > fieldset + div + div,
-.notebook-wizard[data-step="4"] > label,
-.notebook-wizard[data-step="4"] > fieldset,
-.notebook-wizard[data-step="4"] > fieldset + div,
-.notebook-wizard[data-step="5"] > label,
-.notebook-wizard[data-step="5"] > fieldset,
-.notebook-wizard[data-step="5"] > fieldset + div,
-.notebook-wizard[data-step="5"] > fieldset + div + div {
-  display: none;
-}
-
 /* Present one global notebook-navigation control without duplicating the active tree root. */
 header button[aria-haspopup="menu"] {
   position: relative;
