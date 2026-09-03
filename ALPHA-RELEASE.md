@@ -1,7 +1,7 @@
-# RepoQuill 0.1.0-alpha.2
+# RepoQuill 0.1.0-alpha.2.security.1
 
 This document is the operator and maintainer checklist for the RepoQuill
-0.1.0-alpha.2 release.
+0.1.0-alpha.2.security.1 release.
 
 Alpha 2 keeps canonical notes as ordinary Markdown and assets in ordinary Git
 repositories while adding single-owner authentication, optional TOTP MFA,
