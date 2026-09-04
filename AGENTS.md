@@ -4595,7 +4595,9 @@ The recommended implementation order is:
 4. add direct OIDC authentication,
 5. add local-only notebooks,
 6. add managed SSH key rotation,
-7. design and, only after the portability and recovery gates pass, implement
+7. add an optional document outline for long notes,
+8. improve code blocks with language selection, syntax highlighting, and copy,
+9. design and, only after the portability and recovery gates pass, implement
    optional encrypted notes and folders.
 
 OIDC is the highest-priority user-facing Alpha 3 feature. The frontend split is
@@ -4840,6 +4842,102 @@ Completion criteria:
   logs, caches, recovery artifacts, or unencrypted assets,
 - the feature does not ship until its threat model, format, recovery procedure,
   migration behavior, and security review are complete.
+
+## Milestone 32 - Document outline / table of contents
+
+Add an optional, contextual document outline generated from the headings of the
+currently open note. Treat this as navigation UI rather than persisted note
+content.
+
+Desktop interaction:
+
+- add a clear Outline / Table of contents button to the note editor toolbar,
+- open a collapsible panel on the right side of the editor,
+- keep the panel visually subordinate to the note and allow it to be closed at
+  any time,
+- remember the local open/closed preference without writing UI state into the
+  notebook repository.
+
+Mobile/PWA interaction:
+
+- use the same toolbar action,
+- open the outline as a touch-friendly drawer or sheet instead of permanently
+  reducing the editor width,
+- close the drawer after the user chooses a heading and move focus safely back
+  to the note.
+
+Requirements:
+
+- derive the hierarchy from ordinary Markdown Heading 1-6 nodes in the active
+  Milkdown/ProseMirror document,
+- update the outline while headings are added, renamed, removed, or reordered,
+- clicking an entry scrolls to the exact heading without inserting generated
+  anchors, `[TOC]` syntax, IDs, frontmatter, or other proprietary Markdown,
+- handle duplicate heading text by document position rather than assuming that
+  heading labels are unique,
+- show the current document section while scrolling where this can be done
+  reliably without disrupting editing,
+- preserve indentation and heading-level relationships while remaining readable
+  when levels are skipped,
+- provide a compact empty state when the note contains no headings,
+- work in both Edit and Read only modes,
+- expose semantic navigation, keyboard operation, visible focus, accessible
+  labels, and adequate touch targets,
+- avoid expensive full-document reparsing on every keystroke and test behavior
+  with long notes.
+
+Completion criteria:
+
+- the outline opens from the editor toolbar only when a note is active,
+- desktop uses the collapsible right-side panel and mobile/PWA uses a drawer or
+  equivalent narrow-layout presentation,
+- heading selection navigates accurately for nested and duplicate headings,
+- live editing updates the hierarchy without changing serialized Markdown,
+- opening, closing, navigation, empty state, accessibility, Read only behavior,
+  and responsive presentation have focused tests.
+
+## Milestone 33 - Code block language and copy UX
+
+Improve fenced code blocks while keeping standard Markdown as the canonical
+representation.
+
+Requirements:
+
+- show a compact `Copy` action on code blocks in both Edit and Read only modes,
+- copy only the literal code content without fence markers, language metadata,
+  line numbers, or formatting,
+- provide readable success and failure feedback that does not rely on color and
+  does not trigger browser modal dialogs,
+- expose a contextual language selector when a code block is selected in Edit
+  mode,
+- offer `Plain text` plus a focused initial set of common languages such as
+  Shell/Bash, PowerShell, Python, JavaScript, TypeScript, JSON, YAML, Markdown,
+  HTML, CSS, SQL, Go, and Dockerfile,
+- serialize the selected language through the ordinary fenced-code info string,
+  for example ` ```python ` or ` ```bash `,
+- preserve valid unknown language identifiers already present in imported
+  Markdown even when RepoQuill cannot highlight them,
+- apply syntax highlighting as presentation only; it must never rewrite code,
+  execute code, fetch language definitions from untrusted locations, or persist
+  generated HTML into Markdown,
+- use a maintained highlighting library with an explicitly controlled language
+  set, safe token rendering, acceptable bundle size, and compatible licensing,
+- keep unrecognized or malformed language metadata readable as unhighlighted
+  plain code,
+- make Copy and language selection keyboard-accessible and touch-friendly
+  without obscuring code on narrow/mobile layouts,
+- retain the existing Enter behavior for writing and leaving code blocks.
+
+Completion criteria:
+
+- newly selected languages round-trip through portable fenced Markdown,
+- imported recognized and unknown language tags survive load/edit/save without
+  silent loss,
+- highlighting never changes copied or serialized code content,
+- Copy works reliably in browser and installed PWA contexts with accessible
+  feedback and a safe failure state,
+- plain, highlighted, long, horizontally scrolling, duplicate, Read only, and
+  mobile code blocks have focused tests.
 
 ---
 
