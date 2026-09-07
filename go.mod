@@ -1,11 +1,11 @@
 module github.com/fred-head/repoquill
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/alexedwards/scs/v2 v2.9.0
 	github.com/pquerna/otp v1.5.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/term v0.45.0
 	modernc.org/sqlite v1.57.0
 )
