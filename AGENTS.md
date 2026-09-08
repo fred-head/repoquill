@@ -4597,7 +4597,8 @@ The recommended implementation order is:
 6. add managed SSH key rotation,
 7. add an optional document outline for long notes,
 8. improve code blocks with language selection, syntax highlighting, and copy,
-9. design and, only after the portability and recovery gates pass, implement
+9. add a collapsible notebook sidebar for focused and narrow desktop layouts,
+10. design and, only after the portability and recovery gates pass, implement
    optional encrypted notes and folders.
 
 OIDC is the highest-priority user-facing Alpha 3 feature. The frontend split is
@@ -4938,6 +4939,40 @@ Completion criteria:
   feedback and a safe failure state,
 - plain, highlighted, long, horizontally scrolling, duplicate, Read only, and
   mobile code blocks have focused tests.
+
+## Milestone 34 - Collapsible notebook sidebar
+
+Allow users to hide the left notebook and file-tree sidebar when they need more
+horizontal space, especially on portrait-oriented or otherwise narrow desktop
+monitors.
+
+Requirements:
+
+- provide a clear, keyboard-accessible control that collapses the complete
+  notebook/file-tree sidebar without closing the active note,
+- keep a compact and discoverable control available to restore the sidebar,
+- preserve the active notebook, selected note, open note tabs, unsaved editor
+  state, and expanded folder state while the sidebar is hidden,
+- remember the user's local collapsed/expanded preference without storing UI
+  state in a notebook repository,
+- let the editor and its toolbars use the released horizontal space without
+  introducing fixed-width gaps or horizontal page scrolling,
+- retain the existing mobile drawer behavior instead of treating a hidden
+  desktop sidebar as a replacement for mobile navigation,
+- use accessible labels, visible focus, suitable touch targets, and state
+  semantics such as `aria-expanded`,
+- avoid hiding save, synchronization, authentication, or conflict status along
+  with the navigation.
+
+Completion criteria:
+
+- the sidebar can be collapsed and restored without navigating away from or
+  reloading the active note,
+- editor width responds correctly on landscape, portrait, and narrow desktop
+  layouts,
+- the preference survives a browser reload on the same client,
+- desktop keyboard interaction and the existing mobile/PWA drawer behavior have
+  focused tests.
 
 ---
 
