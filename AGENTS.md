@@ -5180,6 +5180,93 @@ Completion criteria:
 - conversion, selection replacement, undo/redo, autosave serialization,
   mobile/PWA access, and ambiguous clipboard inputs have focused tests.
 
+## Milestone 39 - Unambiguous internal-note link trigger
+
+Prevent ordinary square brackets and Markdown task-list syntax from opening or
+leaving behind the internal-note suggestion menu.
+
+Current behavior and cause:
+
+- the internal-note trigger currently accepts either `[[` or a single `[`,
+  because Milkdown may normalize two typed opening brackets before the existing
+  document listener observes them,
+- this also treats ordinary bracketed text and task-list input such as
+  `- [ ]` or `- [x]` as possible note-link queries,
+- the suggestion menu has no independent outside-click, blur, or timeout
+  cleanup, so a task-list transformation can leave `No matching notes` visible
+  after the original trigger context is gone.
+
+Required behavior:
+
+- activate internal-note suggestions only after an intentional `[[` sequence,
+  detected before editor input normalization loses that distinction,
+- never open the note suggestions for a single bracket, ordinary bracketed
+  prose, Markdown links, or unchecked and checked task-list syntax,
+- keep the existing portable result: selecting a note must still serialize to
+  an ordinary relative Markdown link rather than proprietary wiki-link syntax,
+- close the menu when the trigger becomes invalid, including after `]`, Escape,
+  focus loss, an outside interaction, selection movement, block conversion,
+  note change, and Read only transition,
+- keep keyboard navigation, touch selection, missing-note behavior, editor
+  focus, and autosave behavior intact,
+- use one implementation in browser and standalone PWA layouts.
+
+Completion criteria:
+
+- typing `[[` opens note suggestions and selecting a result produces the same
+  portable relative Markdown link as today,
+- typing `[ordinary text]`, `- [ ] Task`, and `- [x] Task` never opens or leaves
+  behind the note-suggestion menu,
+- empty results cannot remain visible after their trigger context disappears,
+- trigger, dismissal, keyboard, pointer/touch, task-list, Read only, and note-
+  switching behavior have focused regression tests.
+
+## Milestone 40 - Transient received-changes notification
+
+Keep users informed when synchronization receives external notebook changes
+without leaving a permanent informational banner above the editor.
+
+Current behavior and cause:
+
+- successful synchronization stores received-change metadata in one
+  `receivedChanges` state value,
+- that same value controls both the persistent top-level notification and the
+  useful `Recently received changes` list in synchronization details,
+- the banner has a manual dismissal action but no automatic lifetime, and
+  dismissing it also discards the detail list for the current session.
+
+Required behavior:
+
+- separate received-change history from the transient banner's visibility,
+- automatically hide the informational banner after a short, documented
+  interval such as 10-15 seconds while retaining the changes in synchronization
+  details,
+- restart the visibility interval when a later synchronization receives a new
+  batch of external changes,
+- pause or defer automatic dismissal while the banner or one of its controls is
+  hovered, keyboard-focused, or actively touched,
+- keep manual dismissal available and make it hide only the banner,
+- opening a changed note from the banner must remain available and may dismiss
+  the banner without removing the retained detail history,
+- clear retained history at the appropriate notebook boundary so changes from
+  one notebook are never shown for another,
+- never auto-dismiss conflicts, failures, recovery drafts, destructive-action
+  confirmations, or any state that requires a user decision,
+- retain accessible status text and avoid communicating receipt or dismissal
+  through animation or color alone.
+
+Completion criteria:
+
+- a successful sync with external changes shows a concise notification and it
+  disappears automatically without a refresh or manual close,
+- the same received changes remain available under synchronization details
+  after automatic or manual banner dismissal,
+- a newer received-change batch replaces or clearly updates the previous
+  transient notification and receives a fresh display interval,
+- timer cleanup, hover/focus/touch pausing, manual dismissal, changed-note
+  opening, notebook switching, and non-dismissible error/conflict states have
+  focused browser and PWA regression tests.
+
 ---
 
 # 47. Alpha Release Criteria
