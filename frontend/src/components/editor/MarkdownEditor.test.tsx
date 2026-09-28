@@ -18,6 +18,12 @@ beforeEach(() => {
   Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0)
 })
 
+async function typeInternalNoteTrigger(editor: HTMLElement, query = '') {
+  // user-event uses doubled opening brackets to represent one literal `[`
+  await userEvent.type(editor, '[[', { skipClick: true })
+  await userEvent.type(editor, `[[${query}`, { skipClick: true })
+}
+
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
@@ -445,12 +451,133 @@ describe('MarkdownEditor read-only mode', () => {
       return element!
     })
     editor.focus()
+    await userEvent.type(editor, '[[', { skipClick:true })
+    expect(view.queryByRole('listbox', { name:'Internal note suggestions' })).toBeNull()
     await userEvent.type(editor, '[[tar', { skipClick:true })
     const suggestions = await view.findByRole('listbox', { name:'Internal note suggestions' })
     expect(suggestions.textContent).toContain('Target')
     fireEvent.keyDown(editor, { key:'Enter' })
     await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('[Target](Target.md)'))
     expect(view.queryByRole('listbox', { name:'Internal note suggestions' })).toBeNull()
+  })
+
+  it('never treats ordinary brackets, Markdown links, or task syntax as note-link triggers', async () => {
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="bracket-prose" notePath="Current.md" markdown="" readOnly={false} onChange={onChange} notePaths={['Current.md','Target.md']} />)
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    editor.focus()
+
+    await userEvent.type(editor, '[[ordinary text]', { skipClick: true })
+    expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull()
+    await userEvent.type(editor, '{enter}[[label](https://example.com)', { skipClick: true })
+    expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull()
+    await userEvent.type(editor, '{enter}- [[ ] Unchecked{enter}- [[x] Checked', { skipClick: true })
+    expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull()
+    await waitFor(() => {
+      const saved = String(onChange.mock.calls.at(-1)?.[0] ?? '')
+      expect(saved).toContain('ordinary text')
+      expect(saved).toContain('label')
+      expect(saved).toContain('Unchecked')
+      expect(saved).toContain('Checked')
+    })
+  })
+
+  it('dismisses empty note suggestions when their trigger or selection context becomes invalid', async () => {
+    const view = render(<MarkdownEditor documentKey="link-dismiss" notePath="Current.md" markdown="" readOnly={false} onChange={vi.fn()} notePaths={['Current.md']} />)
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    editor.focus()
+
+    await typeInternalNoteTrigger(editor, 'missing')
+    expect((await view.findByRole('listbox', { name: 'Internal note suggestions' })).textContent).toContain('No matching notes')
+    await userEvent.type(editor, ']', { skipClick: true })
+    await waitFor(() => expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull())
+
+    await userEvent.type(editor, '{enter}', { skipClick: true })
+    await typeInternalNoteTrigger(editor, 'again')
+    await view.findByRole('listbox', { name: 'Internal note suggestions' })
+    fireEvent.keyDown(editor, { key: 'ArrowLeft' })
+    expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull()
+
+    await userEvent.type(editor, '{enter}', { skipClick: true })
+    await typeInternalNoteTrigger(editor)
+    await view.findByRole('listbox', { name: 'Internal note suggestions' })
+    fireEvent.change(view.getByLabelText('Block type'), { target: { value: 'heading-2' } })
+    await waitFor(() => expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull())
+  })
+
+  it('dismisses note suggestions on Escape, outside interaction, focus loss, note change, and Read only', async () => {
+    const properties = { notePath: 'Current.md', markdown: '', onChange: vi.fn(), notePaths: ['Current.md','Target.md'] }
+    const view = render(<MarkdownEditor documentKey="link-boundaries" readOnly={false} {...properties} />)
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    editor.focus()
+
+    await typeInternalNoteTrigger(editor)
+    await view.findByRole('listbox', { name: 'Internal note suggestions' })
+    fireEvent.keyDown(editor, { key: 'Escape' })
+    expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull()
+
+    await userEvent.type(editor, '{enter}', { skipClick: true })
+    await typeInternalNoteTrigger(editor)
+    await view.findByRole('listbox', { name: 'Internal note suggestions' })
+    fireEvent.pointerDown(document.body)
+    expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull()
+
+    editor.focus()
+    await userEvent.type(editor, '{enter}', { skipClick: true })
+    await typeInternalNoteTrigger(editor)
+    await view.findByRole('listbox', { name: 'Internal note suggestions' })
+    view.getByRole('button', { name: 'Bold' }).focus()
+    await waitFor(() => expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull())
+
+    editor.focus()
+    await userEvent.type(editor, '{enter}', { skipClick: true })
+    await typeInternalNoteTrigger(editor)
+    await view.findByRole('listbox', { name: 'Internal note suggestions' })
+    view.rerender(<MarkdownEditor documentKey="other-note" readOnly={false} {...properties} notePath="Other.md" />)
+    expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull()
+
+    view.unmount()
+    const readOnlyView = render(<MarkdownEditor documentKey="read-only-transition" readOnly={false} {...properties} />)
+    const readOnlyEditor = await waitFor(() => {
+      const element = readOnlyView.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    readOnlyEditor.focus()
+    await typeInternalNoteTrigger(readOnlyEditor)
+    await readOnlyView.findByRole('listbox', { name: 'Internal note suggestions' })
+    readOnlyView.rerender(<MarkdownEditor documentKey="read-only-transition" readOnly {...properties} />)
+    expect(readOnlyView.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull()
+  })
+
+  it('keeps touch selection portable and returns focus to the editor', async () => {
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="link-touch" notePath="Folder/Current.md" markdown="" readOnly={false} onChange={onChange} notePaths={['Folder/Current.md','Folder/Target.md']} />)
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    editor.focus()
+    await typeInternalNoteTrigger(editor, 'tar')
+    const option = await view.findByRole('option', { name: /Target/ })
+    fireEvent.pointerDown(option, { pointerType: 'touch' })
+    fireEvent.click(option)
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('[Target](Target.md)'))
+    expect(view.queryByRole('listbox', { name: 'Internal note suggestions' })).toBeNull()
+    expect(document.activeElement).toBe(editor)
   })
 
   it('uses Enter for a paragraph and Shift+Enter for a hard line break', async () => {
