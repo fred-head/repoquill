@@ -101,6 +101,7 @@ describe('App auto-lock integration', () => {
 
     fireEvent.click(await view.findByRole('button', { name: 'Note' }))
     const formatting = await view.findByRole('toolbar', { name: 'Editor formatting' })
+    await waitFor(() => expect(view.container.querySelector('.ProseMirror')).toBeTruthy())
     const toolbars = formatting.closest<HTMLElement>('[aria-label="Editor toolbars"]')
     const noteScroller = formatting.closest<HTMLElement>('main')
     await waitFor(() => expect(noteScroller?.style.getPropertyValue('--editor-toolbar-top')).toBe('123px'))
