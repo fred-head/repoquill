@@ -87,6 +87,28 @@ describe('App auto-lock integration', () => {
     expect(view.container.textContent).toContain('Auto-lock note')
   })
 
+  it('uses one bounded PWA scroll area and measures the sticky toolbar offset from the visible header stack', async () => {
+    const view = render(<App />)
+    const headerStack = await waitFor(() => {
+      const element = view.container.querySelector<HTMLElement>('.repoquill-note-header-stack')
+      expect(element).toBeTruthy()
+      return element!
+    })
+    vi.spyOn(headerStack, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, top: 0, left: 0, right: 320, bottom: 123, width: 320, height: 123, toJSON: () => ({}),
+    })
+    fireEvent(window, new Event('resize'))
+
+    fireEvent.click(await view.findByRole('button', { name: 'Note' }))
+    const formatting = await view.findByRole('toolbar', { name: 'Editor formatting' })
+    const toolbars = formatting.closest<HTMLElement>('[aria-label="Editor toolbars"]')
+    const noteScroller = formatting.closest<HTMLElement>('main')
+    await waitFor(() => expect(noteScroller?.style.getPropertyValue('--editor-toolbar-top')).toBe('123px'))
+    expect(view.container.firstElementChild?.classList.contains('repoquill-app-shell')).toBe(true)
+    expect(noteScroller?.classList.contains('repoquill-note-scroll')).toBe(true)
+    expect(toolbars?.dataset.sticky).toBe('true')
+  })
+
   it('opens primary notebook navigation, onboarding, and switches without stale tree state', async () => {
     const view = render(<App />)
     await waitFor(() => expect((view.container.querySelector('[aria-haspopup="menu"]') as HTMLElement).textContent).toContain('Notebooks'))

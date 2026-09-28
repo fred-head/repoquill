@@ -38,6 +38,21 @@ describe('MarkdownEditor read-only mode', () => {
     expect(view.getByRole('button', { name: 'Bold' }).hasAttribute('disabled')).toBe(true)
   })
 
+  it('keeps primary and contextual controls in one opt-in sticky toolbar stack', async () => {
+    const markdown = '| A | B |\n| --- | --- |\n| 1 | 2 |'
+    const view = render(<MarkdownEditor documentKey="sticky-toolbar" notePath="Note.md" markdown={markdown} readOnly={false} onChange={vi.fn()} stickyToolbar />)
+
+    const toolbars = view.container.querySelector<HTMLElement>('[aria-label="Editor toolbars"]')
+    expect(toolbars?.dataset.sticky).toBe('true')
+    expect(toolbars?.classList.contains('repoquill-editor-toolbars')).toBe(true)
+    expect(toolbars?.contains(view.getByRole('toolbar', { name: 'Editor formatting' }))).toBe(true)
+    expect(toolbars?.contains(await view.findByRole('toolbar', { name: 'Table editing' }))).toBe(true)
+
+    view.unmount()
+    const inline = render(<MarkdownEditor documentKey="inline-toolbar" notePath="Note.md" markdown="Text" readOnly={false} onChange={vi.fn()} />)
+    expect(inline.container.querySelector<HTMLElement>('[aria-label="Editor toolbars"]')?.dataset.sticky).toBe('false')
+  })
+
   it('applies a heading and inserts the selected portable GFM table size', async () => {
     const onChange = vi.fn()
     const view = render(<MarkdownEditor documentKey="toolbar" notePath="Note.md" markdown="Text" readOnly={false} onChange={onChange} />)

@@ -194,6 +194,8 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   const autoLockExpire = useRef<() => void>(() => undefined)
   const autoLockController = useRef<AutoLockController | null>(null)
   const activeNotebookIDRef = useRef(activeNotebookID)
+  const noteHeaderStack = useRef<HTMLDivElement>(null)
+  const [noteHeaderHeight, setNoteHeaderHeight] = useState(0)
 
   activeNotebookIDRef.current = activeNotebookID
   const preserveRecoveryDraft = useCallback(() => {
@@ -383,6 +385,25 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     document.documentElement.style.colorScheme = theme
     localStorage.setItem(themeStorageKey, theme)
   }, [theme])
+
+  useEffect(() => {
+    const element = noteHeaderStack.current
+    if (!element) return
+    const updateHeight = () => {
+      const nextHeight = Math.ceil(element.getBoundingClientRect().height)
+      if (nextHeight > 0) setNoteHeaderHeight((current) => current === nextHeight ? current : nextHeight)
+    }
+    updateHeight()
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(updateHeight)
+    observer?.observe(element)
+    window.addEventListener('resize', updateHeight)
+    window.visualViewport?.addEventListener('resize', updateHeight)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', updateHeight)
+      window.visualViewport?.removeEventListener('resize', updateHeight)
+    }
+  }, [])
 
   useEffect(() => {
     saveAutoLockPreference(localStorage, autoLockMinutes)
@@ -1174,7 +1195,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100 lg:h-screen lg:flex-row lg:overflow-hidden">
+    <div className="repoquill-app-shell flex min-h-0 flex-col bg-zinc-950 text-zinc-100 lg:flex-row">
       {mobileNavigationOpen && <button type="button" aria-label="Close notebook navigation" className="fixed inset-0 z-30 bg-black/65 lg:hidden" onClick={() => setMobileNavigationOpen(false)} />}
       <aside aria-label="Notebook navigation" className={`fixed inset-y-0 left-0 z-40 flex w-[min(20rem,calc(100vw-3rem))] shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 shadow-2xl transition-transform duration-200 lg:static lg:z-auto lg:w-80 lg:translate-x-0 lg:bg-zinc-900/60 lg:shadow-none ${mobileNavigationOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <header className="relative border-b border-zinc-800 px-5 py-5"><div className="flex items-center justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-xs font-semibold uppercase tracking-[0.22em] text-amber-400">RepoQuill</p><button type="button" aria-haspopup="menu" aria-expanded={notebookSwitcherOpen} onClick={() => setNotebookSwitcherOpen((open) => !open)} className="mt-1 flex min-h-9 max-w-full items-center gap-2 rounded-md pr-2 text-left text-lg font-semibold outline-none hover:text-amber-200 focus-visible:ring-2 focus-visible:ring-amber-500"><span className="truncate">Notebooks</span><span aria-hidden="true" className="text-sm text-zinc-500">▾</span></button></div><div className="flex items-center gap-2"><button type="button" onClick={() => setSettingsOpen(true)} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Settings" title="Settings"><SettingsIcon /></button>{authMode === 'local' && <button type="button" onClick={() => void logout()} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Sign out" title="Sign out"><LogoutIcon /></button>}<button type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button><StatusDot health={health} /></div></div>{notebookSwitcherOpen && <><button type="button" aria-label="Close notebook switcher" className="fixed inset-0 z-20 cursor-default" onClick={() => setNotebookSwitcherOpen(false)} /><div role="menu" aria-label="Notebooks" className="absolute top-[4.8rem] right-3 left-3 z-30 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl">{notebooks.map((notebook) => <button key={notebook.id} type="button" role="menuitemradio" aria-checked={notebook.id === activeNotebookID} onClick={() => void switchNotebook(notebook)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-zinc-200 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"><span className="w-4 text-amber-400" aria-hidden="true">{notebook.id === activeNotebookID ? '✓' : ''}</span><span className="truncate">{notebook.name}</span></button>)}<div className="my-1 border-t border-zinc-700" /><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setAddNotebookOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-amber-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">+ Add Notebook</button><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setManageNotebooksOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Manage Notebooks</button></div></>}</header>
@@ -1210,8 +1231,8 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         </div>
       </aside>
 
-      <main className="flex min-h-screen min-w-0 flex-1 flex-col overflow-y-auto lg:min-h-[60vh]" style={{ '--editor-toolbar-top': tabs.length > 0 ? '99px' : '55px' } as CSSProperties}>
-        <div className="sticky top-0 z-10 bg-zinc-950/90 backdrop-blur">
+      <main className="repoquill-note-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto" style={{ '--editor-toolbar-top': `${noteHeaderHeight || (tabs.length > 0 ? 99 : 55)}px` } as CSSProperties}>
+        <div ref={noteHeaderStack} className="repoquill-note-header-stack sticky top-0 z-10 bg-zinc-950/90 backdrop-blur">
         <header className="flex items-center justify-between gap-2 border-b border-zinc-800 px-3 py-3 sm:gap-4 sm:px-8">
           <div className="flex min-w-0 items-center gap-2"><button type="button" aria-label="Open notebook navigation" aria-expanded={mobileNavigationOpen} onClick={() => setMobileNavigationOpen(true)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 lg:hidden">☰</button><p className="min-w-0 truncate text-sm text-zinc-400">{selectedPath ?? 'Select a Markdown file'}</p></div>
           <div className="flex shrink-0 items-center gap-2">{selectedPath && <><button type="button" onClick={() => void toggleReadOnly()} className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${readOnly ? 'border-amber-500 bg-amber-400/15 text-amber-200' : 'border-zinc-700 text-zinc-200 hover:bg-zinc-800'}`} aria-pressed={readOnly}>{readOnly ? '🔒 Read only' : '✎ Edit'}</button><button type="button" disabled={readOnly || saveStatus === 'saved' || saveStatus === 'saving'} onClick={() => void saveDraft()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">Save</button><button type="button" onClick={() => void openVersionHistory()} aria-label="Version history" title="Version history" className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"><span aria-hidden="true">↶</span><span className="ml-1 hidden sm:inline">History</span></button></>}<button type="button" disabled={notebookConfigured === false || gitSyncing || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict'} onClick={() => void syncRepository()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">{gitSyncing ? 'Syncing…' : 'Sync'}</button></div>
@@ -1227,7 +1248,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
           {noteLoading && <p className="text-sm text-zinc-400">Loading note…</p>}
           {noteError && <ErrorMessage>{noteError}</ErrorMessage>}
 		  {saveError && <ErrorMessage>{saveStatus === 'conflict' ? 'This note changed elsewhere. Your version is still preserved in this editor and has not overwritten the other version. Review both versions before choosing the result.' : `This note could not be saved on the RepoQuill server. Your current editor content is still visible. Try saving again before leaving the note. Details: ${saveError}`}</ErrorMessage>}
-          {!noteLoading && note && <Suspense fallback={<p className="text-sm text-zinc-400">Loading editor…</p>}><MarkdownEditor key={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} documentKey={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} notePath={note.path} markdown={note.content} readOnly={readOnly} onChange={updateDraft} notePaths={markdownPaths(entries)} onOpenNoteLink={openInternalNoteLink} /></Suspense>}
+          {!noteLoading && note && <Suspense fallback={<p className="text-sm text-zinc-400">Loading editor…</p>}><MarkdownEditor key={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} documentKey={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} notePath={note.path} markdown={note.content} readOnly={readOnly} onChange={updateDraft} notePaths={markdownPaths(entries)} onOpenNoteLink={openInternalNoteLink} stickyToolbar /></Suspense>}
         </article>
 		{selectedPath && note && <DocumentStatusBar status={saveStatus} gitStatus={gitStatus} gitSyncing={gitSyncing} markdown={note.content} onOpenSyncDetails={() => setSyncDetailsOpen(true)} />}
       </main>

@@ -25,6 +25,7 @@ type MarkdownEditorProps = {
   onChange: (markdown: string) => void
   notePaths?: string[]
   onOpenNoteLink?: (path: string, disposition: 'current' | 'new') => void
+  stickyToolbar?: boolean
 }
 
 export function MarkdownEditor(props: MarkdownEditorProps) {
@@ -148,7 +149,7 @@ function portableRelativeNoteHref(notePath: string, targetPath: string): string 
   return parts.join('/') || encodeURIComponent(target[target.length - 1])
 }
 
-function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, notePaths = [], onOpenNoteLink }: MarkdownEditorProps) {
+function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, notePaths = [], onOpenNoteLink, stickyToolbar = false }: MarkdownEditorProps) {
   const input = useRef<HTMLInputElement>(null)
   const replacementInput = useRef<HTMLInputElement>(null)
   const editorContainer = useRef<HTMLDivElement>(null)
@@ -829,7 +830,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
 
   return (
     <div>
-      <div aria-label="Editor toolbars" className="mb-3 space-y-1.5">
+      <div aria-label="Editor toolbars" data-sticky={stickyToolbar ? 'true' : 'false'} className="repoquill-editor-toolbars mb-3 space-y-1.5">
       <div role="toolbar" aria-label="Editor formatting" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
         <ToolbarButton label="Undo" disabled={readOnly} onClick={() => callCommand(undoCommand)}>↶</ToolbarButton>
         <ToolbarButton label="Redo" disabled={readOnly} onClick={() => callCommand(redoCommand)}>↷</ToolbarButton>
