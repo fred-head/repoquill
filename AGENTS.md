@@ -5124,6 +5124,62 @@ Completion criteria:
 - scrolling, formatting, editor focus, and touch interaction continue working
   without document jumps or hidden controls.
 
+## Milestone 38 - Markdown-aware paste UX
+
+Make pasted Markdown optionally become the corresponding rendered editor
+structure instead of always inserting its syntax as ordinary text.
+
+Current behavior and cause:
+
+- Milkdown's CommonMark and GFM parsers are used when a note document is
+  loaded, but RepoQuill does not currently pass pasted plain text through that
+  Markdown parser,
+- ProseMirror therefore preserves plain clipboard text literally; input rules
+  that react while typing do not retrospectively parse a pasted block,
+- clipboard HTML may retain schema-supported rich structure through
+  ProseMirror's normal paste path, while the existing upload plugin separately
+  handles pasted image files,
+- raw Markdown copied from a source editor normally arrives as `text/plain`
+  and is consequently shown as literal `#`, `-`, backtick, and table syntax.
+
+Required behavior:
+
+- support an explicit, discoverable **Paste as Markdown** path on desktop and
+  mobile/PWA,
+- parse `text/markdown` clipboard content as Markdown when the browser provides
+  that unambiguous media type,
+- preserve ordinary paste and paste-as-plain-text behavior so text containing
+  incidental Markdown characters is not reformatted unexpectedly,
+- only consider conservative smart detection for `text/plain` after ambiguous
+  examples such as shell commands, source code, and prose punctuation are
+  covered by tests; an explicit choice is preferable to destructive guessing,
+- support portable CommonMark/GFM structures already understood by the editor,
+  including headings, emphasis, lists, task lists, blockquotes, fenced code,
+  links, tables, and horizontal rules,
+- insert the parsed result at the current selection as one undoable editor
+  operation and keep the existing autosave/status behavior,
+- retain the current clipboard screenshot/image upload workflow and never
+  download or upload arbitrary URLs merely because pasted Markdown references
+  an image,
+- keep HTML handling schema-constrained and do not introduce unsafe raw-HTML
+  insertion or `dangerouslySetInnerHTML`,
+- keep Read only mode non-mutating and provide touch-accessible behavior that
+  does not depend only on a desktop keyboard shortcut,
+- define clear behavior for invalid or unsupported Markdown: preserve the
+  original clipboard text and explain any explicit conversion failure without
+  losing clipboard content.
+
+Completion criteria:
+
+- pasted explicit Markdown can become the expected Milkdown document nodes
+  without requiring the user to retype it,
+- normal plain-text, rich HTML, image, code, and Read only paste paths retain
+  their intended behavior,
+- relative links and image references remain portable Markdown and no external
+  asset is fetched implicitly,
+- conversion, selection replacement, undo/redo, autosave serialization,
+  mobile/PWA access, and ambiguous clipboard inputs have focused tests.
+
 ---
 
 # 47. Alpha Release Criteria
