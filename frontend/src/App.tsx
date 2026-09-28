@@ -47,6 +47,7 @@ const themeStorageKey = 'repoquill.theme'
 const installPromptDismissedStorageKey = 'repoquill.install-prompt-dismissed'
 const noteSwitchSyncFreshnessMs = 45_000
 const recoveryDraftStorageKey = 'repoquill.recovery-draft'
+const receivedChangesNoticeDurationMs = 12_000
 
 function loadRecoveryDraft(): RecoveryDraft | undefined {
   try {
@@ -154,6 +155,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
 	const [lastSyncError, setLastSyncError] = useState<string>()
 	const [nextScheduledSyncAt, setNextScheduledSyncAt] = useState<string>()
 	const [receivedChanges, setReceivedChanges] = useState<ReceivedChange[]>([])
+	const [receivedChangesNoticeVisible, setReceivedChangesNoticeVisible] = useState(false)
   const [historyPath, setHistoryPath] = useState<string>()
   const [editorRevision, setEditorRevision] = useState(0)
   const [trashOpen, setTrashOpen] = useState(false)
@@ -517,7 +519,10 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
 
           lastSuccessfulSync.current = result.lastSyncedAt ? Date.parse(result.lastSyncedAt) || Date.now() : Date.now()
 			setLastSuccessfulSyncAt(result.lastSyncedAt ?? new Date().toISOString())
-			if (result.receivedChanges?.length) setReceivedChanges(result.receivedChanges)
+			if (result.receivedChanges?.length) {
+				setReceivedChanges(result.receivedChanges)
+				setReceivedChangesNoticeVisible(true)
+			}
           lastSyncedGeneration.current = syncedGeneration
           await loadTree()
 
@@ -666,6 +671,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     setSaveStatus('saved')
     setExpandedFolders(new Set())
 		setReceivedChanges([])
+		setReceivedChangesNoticeVisible(false)
 		setLastSyncError(undefined)
     setHistoryPath(undefined)
     await loadTree()
@@ -690,6 +696,8 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     setNotebookName('Notebooks')
     setTreeError(undefined)
     setGitStatus({ state: 'invalid', message: 'Add a notebook to enable synchronization.' })
+		setReceivedChanges([])
+		setReceivedChangesNoticeVisible(false)
   }
 
   async function switchNotebook(notebook: NotebookInfo) {
@@ -715,6 +723,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       setNotebookName(notebook.name)
       setActiveNotebookID(notebook.id)
 		setReceivedChanges([])
+		setReceivedChangesNoticeVisible(false)
 		setLastSyncError(undefined)
     setHistoryPath(undefined)
       if (syncPreferences.syncOnNotebookSwitch) await syncRepository()
@@ -1242,7 +1251,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         {(!browserOnline || health === 'offline') && <div role="status" className="border-b border-amber-800/70 bg-amber-950/40 px-4 py-2 text-sm text-amber-100 sm:px-8"><strong>Offline.</strong> RepoQuill is online-first; viewing may continue, but editing and synchronization require the server connection.</div>}
         {recoveryDraft && <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-800/70 bg-amber-950/30 px-4 py-2 text-xs text-amber-100 sm:px-8"><span>An unsaved recovery draft for <strong>{recoveryDraft.path}</strong> was preserved after authentication ended.</span><span className="flex gap-2"><button type="button" onClick={()=>void restoreRecoveryDraft()} className="min-h-9 rounded border border-amber-700 px-3 hover:bg-amber-900/40">Review draft</button><button type="button" onClick={discardRecoveryDraft} className="min-h-9 rounded px-3 text-zinc-400 hover:bg-zinc-800">Discard</button></span></div>}
         {installPrompt && !installPromptDismissed && <div className="flex items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-300 sm:px-8"><span>Install RepoQuill for a standalone app experience.</span><div className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => void installApplication()} className="min-h-9 rounded-md border border-zinc-600 px-3 font-medium hover:bg-zinc-800">Install app</button><button type="button" onClick={dismissInstallPrompt} aria-label="Dismiss install suggestion" title="Dismiss" className="flex min-h-9 min-w-9 items-center justify-center rounded-md text-lg text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200">×</button></div></div>}
-		{receivedChanges.length > 0 && <ReceivedChangesNotice changes={receivedChanges} onOpen={(path) => void openNote(path, 'new')} onDismiss={() => setReceivedChanges([])} />}
+		{receivedChangesNoticeVisible && receivedChanges.length > 0 && <ReceivedChangesNotice changes={receivedChanges} onOpen={(path) => { setReceivedChangesNoticeVisible(false); void openNote(path, 'new') }} onDismiss={() => setReceivedChangesNoticeVisible(false)} />}
         <article className={`mx-auto w-full max-w-4xl flex-1 px-5 sm:px-8 ${selectedPath ? 'pt-2 pb-8 sm:pt-2 sm:pb-12' : 'py-8 sm:py-12'}`}>
           {!selectedPath && <EmptyState notebookConfigured={notebookConfigured !== false} onAddNotebook={() => setAddNotebookOpen(true)} />}
           {noteLoading && <p className="text-sm text-zinc-400">Loading note…</p>}
@@ -1939,10 +1948,32 @@ function synchronizationPresentation(status: GitStatus, syncing: boolean): SyncP
 	}
 }
 
-function ReceivedChangesNotice({ changes, onOpen, onDismiss }: { changes:ReceivedChange[]; onOpen:(path:string)=>void; onDismiss:()=>void }) {
+export function ReceivedChangesNotice({ changes, onOpen, onDismiss }: { changes:ReceivedChange[]; onOpen:(path:string)=>void; onDismiss:()=>void }) {
+	const [hovered,setHovered] = useState(false)
+	const [focused,setFocused] = useState(false)
+	const [pointerActive,setPointerActive] = useState(false)
+	const dismissRef = useRef(onDismiss)
+	useEffect(() => {
+		dismissRef.current = onDismiss
+	}, [onDismiss])
+	useEffect(() => {
+		if (hovered || focused || pointerActive) return
+		const timer = globalThis.setTimeout(() => dismissRef.current(), receivedChangesNoticeDurationMs)
+		return () => globalThis.clearTimeout(timer)
+	}, [changes,focused,hovered,pointerActive])
+	useEffect(() => {
+		if (!pointerActive) return
+		const release = () => setPointerActive(false)
+		globalThis.addEventListener('pointerup',release)
+		globalThis.addEventListener('pointercancel',release)
+		return () => {
+			globalThis.removeEventListener('pointerup',release)
+			globalThis.removeEventListener('pointercancel',release)
+		}
+	}, [pointerActive])
 	const counts = changes.reduce<Record<string, number>>((result, change) => ({ ...result, [change.kind]: (result[change.kind] ?? 0) + 1 }), {})
 	const summary = (['added', 'updated', 'moved', 'deleted'] as const).filter((kind) => counts[kind]).map((kind) => `${counts[kind]} ${kind}`).join(', ')
-	return <section role="status" aria-label="New notebook changes received" className="border-b border-sky-900/60 bg-sky-950/20 px-4 py-2 text-xs text-zinc-200 sm:px-8"><div className="flex items-center justify-between gap-3"><span><strong>New changes were received.</strong> {summary}.</span><button type="button" onClick={onDismiss} aria-label="Dismiss received changes" className="min-h-9 min-w-9 rounded text-zinc-500 hover:bg-zinc-800">×</button></div><ul className="mt-1 flex flex-wrap gap-1.5">{changes.slice(0, 6).map((change) => <li key={`${change.kind}:${change.fromPath ?? ''}:${change.path}`}>{change.kind !== 'deleted' && change.path.toLowerCase().endsWith('.md') ? <button type="button" onClick={() => onOpen(change.path)} title="Open in a note tab" className="min-h-8 rounded border border-zinc-700 px-2 text-zinc-300 hover:bg-zinc-800">{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</button> : <span className="inline-flex min-h-8 items-center rounded border border-zinc-800 px-2 text-zinc-500">{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</span>}</li>)}</ul></section>
+	return <section role="status" aria-label="New notebook changes received" onPointerEnter={(event)=>{if(event.pointerType==='mouse')setHovered(true)}} onPointerLeave={(event)=>{if(event.pointerType==='mouse')setHovered(false)}} onFocusCapture={()=>setFocused(true)} onBlurCapture={(event)=>{const next=event.relatedTarget;setFocused(next instanceof Node&&event.currentTarget.contains(next))}} onPointerDown={()=>setPointerActive(true)} onPointerUp={()=>setPointerActive(false)} onPointerCancel={()=>setPointerActive(false)} className="border-b border-sky-900/60 bg-sky-950/20 px-4 py-2 text-xs text-zinc-200 sm:px-8"><div className="flex items-center justify-between gap-3"><span><strong>New changes were received.</strong> {summary}.</span><button type="button" onClick={onDismiss} aria-label="Dismiss received changes" className="min-h-9 min-w-9 rounded text-zinc-500 hover:bg-zinc-800">×</button></div><ul className="mt-1 flex flex-wrap gap-1.5">{changes.slice(0, 6).map((change) => <li key={`${change.kind}:${change.fromPath ?? ''}:${change.path}`}>{change.kind !== 'deleted' && change.path.toLowerCase().endsWith('.md') ? <button type="button" onClick={() => onOpen(change.path)} title="Open in a note tab" className="min-h-8 rounded border border-zinc-700 px-2 text-zinc-300 hover:bg-zinc-800">{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</button> : <span className="inline-flex min-h-8 items-center rounded border border-zinc-800 px-2 text-zinc-500">{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</span>}</li>)}</ul></section>
 }
 
 function SynchronizationDetailsPanel({ saveStatus, gitStatus, syncing, browserOnline, lastSuccessfulSyncAt, lastSyncAttemptAt, lastSyncError, nextScheduledSyncAt, receivedChanges, onSync, onReviewConflicts, conflictLoading, conflictError, onOpenNote, onOpenSettings, onCheckConnection, onClose }: { saveStatus:SaveStatus; gitStatus:GitStatus; syncing:boolean; browserOnline:boolean; lastSuccessfulSyncAt?:string; lastSyncAttemptAt?:string; lastSyncError?:string; nextScheduledSyncAt?:string; receivedChanges:ReceivedChange[]; onSync:()=>void; onReviewConflicts:()=>void; conflictLoading:boolean; conflictError?:string; onOpenNote:(path:string)=>void; onOpenSettings:()=>void; onCheckConnection:()=>void; onClose:()=>void }) {

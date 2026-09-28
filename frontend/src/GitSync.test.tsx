@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { App, DocumentStatusBar } from './App'
+import { App, DocumentStatusBar, ReceivedChangesNotice } from './App'
 
 class ResizeObserverStub { observe() {} unobserve() {} disconnect() {} }
 vi.stubGlobal('ResizeObserver', ResizeObserverStub)
 vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
 
 beforeEach(() => localStorage.clear())
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('Git synchronization UI', () => {
   it('keeps local save and Git synchronization states distinct', () => {
@@ -125,5 +125,48 @@ describe('Git synchronization UI', () => {
     expect(await view.findByRole('status', { name: 'New notebook changes received' })).toBeTruthy()
     expect(view.getByText('Current note')).toBeTruthy()
     expect(view.getByRole('button', { name: 'External.md' })).toBeTruthy()
+
+    fireEvent.click(view.getByRole('button', { name: 'Dismiss received changes' }))
+    expect(view.queryByRole('status', { name: 'New notebook changes received' })).toBeNull()
+    fireEvent.click(view.getByLabelText('Synchronization: Everything is up to date. Open details'))
+    expect(view.getByRole('dialog', { name: 'Synchronization' })).toBeTruthy()
+    expect(view.getByText('Recently received changes')).toBeTruthy()
+    expect(view.getByRole('button', { name: 'Open in tab' })).toBeTruthy()
+  })
+
+  it('automatically dismisses a received-changes banner and resets for a newer batch', async () => {
+    vi.useFakeTimers()
+    const onDismiss = vi.fn()
+    const first = [{ kind: 'added' as const, path: 'First.md' }]
+    const second = [{ kind: 'updated' as const, path: 'Second.md' }]
+    const view = render(<ReceivedChangesNotice changes={first} onOpen={vi.fn()} onDismiss={onDismiss} />)
+
+    await act(async () => { vi.advanceTimersByTime(10_000) })
+    expect(onDismiss).not.toHaveBeenCalled()
+    view.rerender(<ReceivedChangesNotice changes={second} onOpen={vi.fn()} onDismiss={onDismiss} />)
+    await act(async () => { vi.advanceTimersByTime(11_999) })
+    expect(onDismiss).not.toHaveBeenCalled()
+    await act(async () => { vi.advanceTimersByTime(1) })
+    expect(onDismiss).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['hover', 'focus', 'pointer'] as const)('defers automatic dismissal during active %s interaction', async (interaction) => {
+    vi.useFakeTimers()
+    const onDismiss = vi.fn()
+    const view = render(<ReceivedChangesNotice changes={[{ kind: 'added', path: 'External.md' }]} onOpen={vi.fn()} onDismiss={onDismiss} />)
+    const notice = view.getByRole('status', { name: 'New notebook changes received' })
+    const dismiss = view.getByRole('button', { name: 'Dismiss received changes' })
+
+    if (interaction === 'hover') fireEvent.pointerEnter(notice, { pointerType: 'mouse' })
+    else if (interaction === 'focus') fireEvent.focus(dismiss)
+    else fireEvent.pointerDown(notice)
+    await act(async () => { vi.advanceTimersByTime(20_000) })
+    expect(onDismiss).not.toHaveBeenCalled()
+
+    if (interaction === 'hover') fireEvent.pointerLeave(notice, { pointerType: 'mouse' })
+    else if (interaction === 'focus') fireEvent.blur(dismiss, { relatedTarget: null })
+    else fireEvent.pointerUp(notice)
+    await act(async () => { vi.advanceTimersByTime(12_000) })
+    expect(onDismiss).toHaveBeenCalledTimes(1)
   })
 })
