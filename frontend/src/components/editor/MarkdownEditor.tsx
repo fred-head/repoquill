@@ -7,7 +7,7 @@ import { upload, uploadConfig, type Uploader } from '@milkdown/kit/plugin/upload
 import { createCodeBlockCommand, insertHrCommand, liftListItemCommand, linkSchema, toggleEmphasisCommand, toggleInlineCodeCommand, toggleLinkCommand, toggleStrongCommand, turnIntoTextCommand, updateLinkCommand, wrapInBlockquoteCommand, wrapInBulletListCommand, wrapInHeadingCommand, wrapInOrderedListCommand } from '@milkdown/kit/preset/commonmark'
 import { addColAfterCommand, addColBeforeCommand, addRowAfterCommand, addRowBeforeCommand, gfm, insertTableCommand, toggleStrikethroughCommand } from '@milkdown/kit/preset/gfm'
 import { commonmark } from '@milkdown/kit/preset/commonmark'
-import type { Node } from '@milkdown/kit/prose/model'
+import type { Node, ResolvedPos } from '@milkdown/kit/prose/model'
 import { NodeSelection, TextSelection } from '@milkdown/kit/prose/state'
 import type { Command, EditorState } from '@milkdown/kit/prose/state'
 import type { EditorView } from '@milkdown/kit/prose/view'
@@ -45,7 +45,9 @@ type ImagePresentationState = { contextKey: string; values: Record<string, Image
 type ToolbarState = { block: string; strong: boolean; emphasis: boolean; strike: boolean; code: boolean; link: boolean; bullet: boolean; ordered: boolean; task: boolean; quote: boolean; table: boolean }
 type TableSize = { rows: number; columns: number }
 type SlashState = { from: number; to: number; query: string; left: number; top: number }
-type NoteLinkTriggerState = { from:number; to:number; query:string; left:number; top:number }
+type NoteLinkTriggerState = { from:number; to:number; query:string; left:number; top:number; documentKey:string }
+type NoteLinkTriggerIntent = { from:number; blockContext:string }
+type NoteLinkOpening = { from:number; nextPosition:number; blockContext:string }
 type SlashCommandID = 'paragraph' | 'heading-1' | 'heading-2' | 'heading-3' | 'heading-4' | 'heading-5' | 'heading-6' | 'bullet-list' | 'numbered-list' | 'task-list' | 'blockquote' | 'code-block' | 'inline-code' | 'link' | 'image' | 'table' | 'horizontal-rule'
 type SlashCommand = { id: SlashCommandID; label: string; description: string; keywords: string }
 type LinkDraft = { from: number; to: number; selectedText: string; existingHref?: string }
@@ -83,6 +85,15 @@ function filteredSlashCommands(query: string): SlashCommand[] {
 function filteredNotePaths(query:string, notePaths:string[], currentPath:string):string[] {
   const normalized = query.trim().toLowerCase()
   return notePaths.filter((path) => path !== currentPath && (!normalized || path.toLowerCase().includes(normalized))).slice(0,100)
+}
+
+function noteLinkBlockContext(position: ResolvedPos): string {
+  const context: string[] = []
+  for (let depth = 0; depth <= position.depth; depth += 1) {
+    const node = position.node(depth)
+    context.push(`${node.type.name}:${JSON.stringify(node.attrs)}`)
+  }
+  return context.join('/')
 }
 
 function imageAssetPath(source: string, notePath: string): string | undefined {
@@ -176,6 +187,9 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const notePathsRef = useRef(notePaths)
   const openNoteLinkRef = useRef(onOpenNoteLink)
   const noteLinkTriggerRef = useRef<NoteLinkTriggerState | undefined>(undefined)
+  const noteLinkTriggerIntentRef = useRef<NoteLinkTriggerIntent | undefined>(undefined)
+  const noteLinkOpeningRef = useRef<NoteLinkOpening | undefined>(undefined)
+  const noteLinkOpeningKeyDownRef = useRef(false)
   const noteLinkTriggerIndexRef = useRef(0)
   // Compatibility layer for RepoQuill's empty-cursor inline-code workflow.
   // Milkdown 7.22 intentionally makes the mark non-inclusive, so ProseMirror
@@ -188,6 +202,37 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const imageContextKey = `${documentKey}\u0000${notePath}`
   const activeViewedImage = viewedImage?.contextKey === imageContextKey ? viewedImage : undefined
   const activeImagePresentations = imagePresentations?.contextKey === imageContextKey ? imagePresentations.values : emptyImagePresentations
+
+  useEffect(() => {
+    const reset = globalThis.setTimeout(() => {
+      noteLinkTriggerIntentRef.current = undefined
+      noteLinkOpeningRef.current = undefined
+      noteLinkOpeningKeyDownRef.current = false
+      noteLinkTriggerRef.current = undefined
+      noteLinkTriggerIndexRef.current = 0
+      setNoteLinkTrigger(undefined)
+      setNoteLinkTriggerIndex(0)
+    }, 0)
+    return () => globalThis.clearTimeout(reset)
+  }, [documentKey, readOnly])
+
+  useEffect(() => {
+    const closeOnOutsideInteraction = (event: PointerEvent) => {
+      if (!noteLinkTriggerRef.current && !noteLinkOpeningRef.current) return
+      const target = event.target
+      if (!(target instanceof Element)) return
+      if (editorContainer.current?.contains(target) || target.closest('[data-repoquill-note-link-menu]')) return
+      noteLinkTriggerIntentRef.current = undefined
+      noteLinkOpeningRef.current = undefined
+      noteLinkOpeningKeyDownRef.current = false
+      noteLinkTriggerRef.current = undefined
+      noteLinkTriggerIndexRef.current = 0
+      setNoteLinkTrigger(undefined)
+      setNoteLinkTriggerIndex(0)
+    }
+    document.addEventListener('pointerdown', closeOnOutsideInteraction)
+    return () => document.removeEventListener('pointerdown', closeOnOutsideInteraction)
+  }, [])
 
   const loadImagePresentations = useCallback(async () => {
     if (presentationRequestRef.current === imageContextKey) return
@@ -330,6 +375,26 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     setSelectedLink({ href, targetPath, exists: Boolean(targetPath && notePathsRef.current.includes(targetPath)) })
   }
 
+  const recordRawNoteLinkOpening = useCallback((view: EditorView) => {
+    if (!view.state.selection.empty) {
+      noteLinkOpeningRef.current = undefined
+      return
+    }
+    const { $from } = view.state.selection
+    if (!$from.parent.isTextblock || $from.parent.type.name === 'code_block') {
+      noteLinkOpeningRef.current = undefined
+      return
+    }
+    const blockContext = noteLinkBlockContext($from)
+    const pending = noteLinkOpeningRef.current
+    if (pending && pending.nextPosition === $from.pos && pending.blockContext === blockContext) {
+      noteLinkTriggerIntentRef.current = { from: pending.from, blockContext }
+      noteLinkOpeningRef.current = undefined
+      return
+    }
+    noteLinkOpeningRef.current = { from: $from.pos, nextPosition: $from.pos + 1, blockContext }
+  }, [])
+
   const { get } = useEditor(
     (root) =>
       Editor.make()
@@ -393,6 +458,9 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
                   return true
                 }
               }
+              if (activeNoteLink && ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
+                closeNoteLinkTrigger()
+              }
               if (active && event.key === 'Escape') {
                 event.preventDefault()
                 closeSlashMenu()
@@ -427,6 +495,15 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
             },
             handleDOMEvents: {
               ...previous.handleDOMEvents,
+              blur: (view, event) => {
+                const handled = previous.handleDOMEvents?.blur?.(view, event) ?? false
+                globalThis.setTimeout(() => {
+                  const activeElement = document.activeElement
+                  if (activeElement instanceof Element && activeElement.closest('[data-repoquill-note-link-menu]')) return
+                  closeNoteLinkTrigger()
+                }, 0)
+                return handled
+              },
               click: (view, event) => {
                 const anchor = (event.target as HTMLElement | null)?.closest<HTMLAnchorElement>('a[href]')
                 if (!anchor) return previous.handleDOMEvents?.click?.(view, event) ?? false
@@ -490,6 +567,43 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     [documentKey],
   )
 
+  useEffect(() => {
+    const container = editorContainer.current
+    if (!container || readOnly) return
+    const recordOpening = () => {
+      get()?.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        recordRawNoteLinkOpening(view)
+      })
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === '[') {
+        noteLinkOpeningKeyDownRef.current = true
+        recordOpening()
+      } else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
+        noteLinkOpeningRef.current = undefined
+        noteLinkOpeningKeyDownRef.current = false
+      } else if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.length === 1) {
+        noteLinkOpeningRef.current = undefined
+      }
+    }
+    const handleBeforeInput = (event: InputEvent) => {
+      if (event.data === '[') {
+        if (!noteLinkOpeningKeyDownRef.current) recordOpening()
+        noteLinkOpeningKeyDownRef.current = false
+      } else if (event.data) {
+        noteLinkOpeningKeyDownRef.current = false
+        noteLinkOpeningRef.current = undefined
+      }
+    }
+    container.addEventListener('keydown', handleKeyDown, true)
+    container.addEventListener('beforeinput', handleBeforeInput, true)
+    return () => {
+      container.removeEventListener('keydown', handleKeyDown, true)
+      container.removeEventListener('beforeinput', handleBeforeInput, true)
+    }
+  }, [get, readOnly, recordRawNoteLinkOpening])
+
   function callCommand<T>(command: { key: unknown }, payload?: T) {
     if (readOnly) return
     get()?.action((ctx) => {
@@ -506,6 +620,9 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   }
 
   function closeNoteLinkTrigger() {
+    noteLinkTriggerIntentRef.current = undefined
+    noteLinkOpeningRef.current = undefined
+    noteLinkOpeningKeyDownRef.current = false
     noteLinkTriggerRef.current = undefined
     noteLinkTriggerIndexRef.current = 0
     setNoteLinkTrigger(undefined)
@@ -514,27 +631,29 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
 
   function updateNoteLinkTrigger(view:EditorView) {
     if (readOnly || !view.state.selection.empty) {
-      if (noteLinkTriggerRef.current) closeNoteLinkTrigger()
+      if (noteLinkTriggerRef.current || noteLinkTriggerIntentRef.current) closeNoteLinkTrigger()
       return
     }
     const { $from } = view.state.selection
     if (!$from.parent.isTextblock || $from.parent.type.name === 'code_block') {
-      if (noteLinkTriggerRef.current) closeNoteLinkTrigger()
+      if (noteLinkTriggerRef.current || noteLinkTriggerIntentRef.current) closeNoteLinkTrigger()
       return
     }
     const beforeCursor = $from.parent.textBetween(0, $from.parentOffset, undefined, '\ufffc')
-    // Milkdown's input rules can normalize the two typed opening brackets to
-    // one before this listener observes the document. Supporting either form
-    // keeps the note suggestion usable without persisting wiki-link syntax.
     const match = beforeCursor.match(/\[\[?([^\]\n]*)$/)
+    const intent = noteLinkTriggerIntentRef.current
     if (!match) {
-      if (noteLinkTriggerRef.current) closeNoteLinkTrigger()
+      if (noteLinkTriggerRef.current || intent) closeNoteLinkTrigger()
       return
     }
     const query = match[1]
     const from = $from.pos - match[0].length
+    if (!intent || intent.from !== from || intent.blockContext !== noteLinkBlockContext($from)) {
+      if (noteLinkTriggerRef.current || intent) closeNoteLinkTrigger()
+      return
+    }
     const coordinates = view.coordsAtPos($from.pos)
-    const next = { from, to:$from.pos, query, left:Math.max(8,Math.min(coordinates.left,window.innerWidth-320)), top:Math.max(8,Math.min(coordinates.bottom+6,window.innerHeight-320)) }
+    const next = { from, to:$from.pos, query, left:Math.max(8,Math.min(coordinates.left,window.innerWidth-320)), top:Math.max(8,Math.min(coordinates.bottom+6,window.innerHeight-320)), documentKey }
     noteLinkTriggerRef.current = next
     noteLinkTriggerIndexRef.current = 0
     setNoteLinkTrigger(next)
@@ -909,6 +1028,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       <div
         ref={editorContainer}
         onPointerDownCapture={(event) => {
+          if (noteLinkTriggerRef.current || noteLinkOpeningRef.current) closeNoteLinkTrigger()
           const target = event.target as HTMLElement
           if (selectImageFromPointer(target)) return
           if (target.closest('table')) {
@@ -928,7 +1048,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       </div>
 
       {slashState && !readOnly && <SlashCommandMenu commands={filteredSlashCommands(slashState.query)} selectedIndex={slashIndex} left={slashState.left} top={slashState.top} onSelect={executeSlashCommand} />}
-      {noteLinkTrigger && !readOnly && <NoteLinkTriggerMenu paths={filteredNotePaths(noteLinkTrigger.query,notePaths,notePath)} selectedIndex={noteLinkTriggerIndex} left={noteLinkTrigger.left} top={noteLinkTrigger.top} onSelect={insertTriggeredNoteLink} />}
+      {noteLinkTrigger?.documentKey === documentKey && !readOnly && <NoteLinkTriggerMenu paths={filteredNotePaths(noteLinkTrigger.query,notePaths,notePath)} selectedIndex={noteLinkTriggerIndex} left={noteLinkTrigger.left} top={noteLinkTrigger.top} onSelect={insertTriggeredNoteLink} />}
 
       {tablePickerOpen && !readOnly && <TablePicker size={tableSize} onPreview={setTableSize} onSelect={insertTable} onClose={() => setTablePickerOpen(false)} />}
       {linkPicker && !readOnly && <LinkPicker notePath={notePath} notePaths={notePaths} draft={linkPicker} onApply={applyLink} onClose={() => setLinkPicker(undefined)} />}
@@ -995,7 +1115,7 @@ function SlashCommandMenu({ commands, selectedIndex, left, top, onSelect }: { co
 }
 
 function NoteLinkTriggerMenu({ paths, selectedIndex, left, top, onSelect }: { paths:string[]; selectedIndex:number; left:number; top:number; onSelect:(path:string)=>void }) {
-  return <div role="listbox" aria-label="Internal note suggestions" className="fixed z-50 max-h-72 w-80 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl" style={{ left,top }}>{paths.length ? paths.map((path,index) => <button key={path} type="button" role="option" aria-selected={index===selectedIndex} onMouseDown={(event)=>event.preventDefault()} onClick={()=>onSelect(path)} className={`block min-h-12 w-full rounded-lg px-3 py-2 text-left ${index===selectedIndex?'bg-amber-400/15 text-amber-100':'text-zinc-200 hover:bg-zinc-800'}`}><span className="block truncate text-sm font-medium">{path.split('/').pop()?.replace(/\.md$/i,'')}</span><span className="block truncate text-xs text-zinc-500">{path}</span></button>) : <p className="px-3 py-4 text-sm text-zinc-500">No matching notes</p>}</div>
+  return <div data-repoquill-note-link-menu role="listbox" aria-label="Internal note suggestions" className="fixed z-50 max-h-72 w-80 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl" style={{ left,top }}>{paths.length ? paths.map((path,index) => <button key={path} type="button" role="option" aria-selected={index===selectedIndex} onMouseDown={(event)=>event.preventDefault()} onClick={()=>onSelect(path)} className={`block min-h-12 w-full rounded-lg px-3 py-2 text-left ${index===selectedIndex?'bg-amber-400/15 text-amber-100':'text-zinc-200 hover:bg-zinc-800'}`}><span className="block truncate text-sm font-medium">{path.split('/').pop()?.replace(/\.md$/i,'')}</span><span className="block truncate text-xs text-zinc-500">{path}</span></button>) : <p className="px-3 py-4 text-sm text-zinc-500">No matching notes</p>}</div>
 }
 
 function LinkPicker({ notePath, notePaths, draft, onApply, onClose }: { notePath:string; notePaths:string[]; draft:LinkDraft; onApply:(href:string,label?:string)=>void; onClose:()=>void }) {
