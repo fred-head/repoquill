@@ -4597,8 +4597,11 @@ The recommended implementation order is:
 6. add managed SSH key rotation,
 7. add an optional document outline for long notes,
 8. improve code blocks with language selection, syntax highlighting, and copy,
-9. add a collapsible notebook sidebar for focused and narrow desktop layouts,
-10. design and, only after the portability and recovery gates pass, implement
+9. refresh safely opened notes after receiving external synchronized changes,
+10. correct document statistics so they reflect visible note content,
+11. keep the editor formatting toolbar visible while scrolling in the PWA,
+12. add a collapsible notebook sidebar for focused and narrow desktop layouts,
+13. design and, only after the portability and recovery gates pass, implement
    optional encrypted notes and folders.
 
 OIDC is the highest-priority user-facing Alpha 3 feature. The frontend split is
@@ -4973,6 +4976,153 @@ Completion criteria:
 - the preference survives a browser reload on the same client,
 - desktop keyboard interaction and the existing mobile/PWA drawer behavior have
   focused tests.
+
+## Milestone 35 - Accurate document statistics
+
+Correct the editor status-bar statistics so they describe the content a user
+can actually read instead of counting the raw serialized Markdown source.
+
+Current defect:
+
+- `documentStats` operates directly on Markdown source text,
+- serialized hard-break syntax such as `<br />` contributes several characters
+  and the false word `br`,
+- an empty new paragraph can therefore increase the word count,
+- image alt text, generated asset names, and relative asset paths are counted
+  even though the image is a single non-text document node.
+
+Required behavior:
+
+- derive statistics from parsed Markdown/editor document semantics rather than
+  applying a word expression to the complete Markdown source,
+- count visible prose, headings, list text, quotations, link labels, inline
+  code, and code-block contents while excluding their Markdown delimiters,
+- exclude link destinations and Markdown metadata from word and character
+  counts,
+- count every image node as zero words and zero characters regardless of its
+  alt text, title, source filename, generated asset filename, or path,
+- treat soft breaks, hard breaks, empty paragraphs, and line-ending encodings as
+  zero words and zero characters; they may affect only the line count,
+- count user-perceived Unicode characters consistently where browser support
+  permits, rather than inflating composed characters or emoji sequences,
+- define line count from logical document lines/blocks consistently in Edit and
+  Read only modes without changing serialized Markdown,
+- update statistics live without adding noticeable work to normal typing,
+- keep the status-bar labels and responsive layout unchanged.
+
+Completion criteria:
+
+- Enter and Shift+Enter never create phantom words or characters,
+- a blank line changes only the documented line statistic,
+- inserting, replacing, resizing, or changing metadata for an image does not
+  change word or character counts,
+- Markdown syntax and asset/link destinations do not inflate visible-text
+  statistics,
+- prose, Unicode text, headings, lists, links, inline/code blocks, line endings,
+  empty paragraphs, hard breaks, and images have focused unit tests,
+- Edit and Read only modes report identical statistics for the same note.
+
+## Milestone 36 - Refresh opened notes after external synchronization
+
+Refresh the editor after a successful synchronization receives an external
+change to the note currently being viewed, without weakening draft or conflict
+protection.
+
+Current defect:
+
+- Git synchronization updates the notebook working tree and reloads the file
+  tree but does not reload the active note,
+- `receivedChanges` informs the user about the remote update while the editor
+  continues showing its pre-sync `FileResponse`, content, and version,
+- the note becomes current only after a full browser reload or after navigating
+  away and opening it again,
+- the existing synchronization UI test explicitly preserves this stale-view
+  behavior and must be replaced with the intended safe-refresh behavior.
+
+Required behavior:
+
+- after a successful, conflict-free synchronization, inspect received `added`,
+  `updated`, `moved`, and `deleted` changes against the active note,
+- when the active note was updated externally and has no unsaved local editor
+  changes, fetch its current server representation and atomically replace the
+  displayed content, version, active draft baseline, and editor document,
+- force Milkdown to consume the refreshed document without requiring browser
+  reload, tab switching, or note switching,
+- refresh identically after manual, scheduled, inactivity, startup, focus, and
+  safe note-switch synchronization triggers,
+- never replace editor content when typing or another unsaved local change
+  occurred while synchronization was running,
+- revalidate the active notebook, selected path, note version, and local-change
+  generation before applying an asynchronous reload so a late response cannot
+  replace a newly selected note,
+- preserve the current optimistic version/conflict workflow whenever local and
+  external edits overlap; never silently prefer the remote copy,
+- handle external rename/move by updating the relevant open tab and selected
+  path where the received-change metadata proves the identity safely,
+- handle external deletion with a clear non-destructive state that preserves
+  any local draft and lets the user deliberately close or recover it,
+- keep unrelated open tabs available; inactive tabs must load the latest server
+  content when activated,
+- retain the received-changes notice as useful history, but do not require it as
+  the mechanism for refreshing a safely reloadable active note.
+
+Completion criteria:
+
+- an externally modified active note updates immediately after successful sync,
+- the refreshed version becomes the new save baseline and subsequent edits do
+  not cause a false conflict,
+- external changes to inactive tabs appear when those tabs are activated,
+- edits made before or during synchronization are never discarded,
+- update, rename/move, deletion, unrelated-note changes, multi-tab behavior,
+  Read only mode, and every automatic sync trigger have focused tests,
+- delayed fetch and note-switch race tests prove that stale asynchronous
+  responses cannot replace the wrong editor document.
+
+## Milestone 37 - Sticky editor toolbar in mobile/PWA layouts
+
+Keep the Milkdown formatting toolbar available while scrolling through a long
+note, including in the installed standalone PWA and narrow mobile layouts.
+
+Current defect:
+
+- the note-level Edit/Read only, Save, History, and Sync header is sticky,
+- the Milkdown formatting and contextual toolbars remain ordinary content
+  inside the note article and scroll out of view,
+- `--editor-toolbar-top` is calculated from the app-header/tab layout but is not
+  currently applied to the editor-toolbar container.
+
+Required behavior:
+
+- make the primary editor formatting toolbar sticky below the app header and
+  optional note-tab row while a note is open,
+- calculate the offset from the actual visible header/tab layout so the toolbar
+  never hides underneath or overlaps those controls,
+- keep contextual table, image, and internal-link toolbars directly below the
+  primary formatting toolbar when their respective content is selected,
+- allow toolbar actions to remain horizontally scrollable on narrow screens
+  without causing the complete page or editor to scroll sideways,
+- preserve the current document scroll position, editor selection, focus, and
+  software-keyboard interaction when using a toolbar action,
+- account for installed-PWA safe areas and changing mobile visual viewport
+  height without adding permanent empty space,
+- avoid covering the selected text, document heading, slash-command menu,
+  dialog, or contextual controls with stacked sticky elements,
+- show the toolbar only where document editing context is meaningful and retain
+  all existing Read only disabling rules,
+- use the same behavior in browser and standalone display modes rather than
+  maintaining a PWA-specific duplicate toolbar.
+
+Completion criteria:
+
+- the formatting toolbar remains visible after scrolling to the bottom of a
+  long note in the installed PWA,
+- layouts with and without note tabs use the correct sticky offset,
+- contextual table and image toolbars remain reachable and do not overlap the
+  primary toolbar,
+- portrait phone, landscape phone, narrow desktop, standalone PWA, browser,
+  and opened software-keyboard layouts have focused responsive tests,
+- scrolling, formatting, editor focus, and touch interaction continue working
+  without document jumps or hidden controls.
 
 ---
 
