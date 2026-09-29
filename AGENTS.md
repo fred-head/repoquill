@@ -5303,8 +5303,9 @@ Required behavior:
 - update the list item's `checked` attribute through one normal undoable
   ProseMirror transaction so existing autosave and document status behavior
   continue to apply,
-- serialize only standard `- [ ]` and `- [x]` GFM Markdown; do not add custom
-  syntax, application metadata, or backend state,
+- serialize only standard GFM task markers (`[ ]` and `[x]`) with an ordinary
+  Markdown bullet marker; do not add custom syntax, application metadata, or
+  backend state,
 - show checked state clearly in Read only mode while preventing every mutation
   path there,
 - preserve cursor placement, text selection, nested task lists, mixed ordinary
@@ -5318,8 +5319,8 @@ Required behavior:
 
 Completion criteria:
 
-- clicking or tapping an unchecked task changes its Markdown to `- [x]`, and
-  toggling it again restores `- [ ]`,
+- clicking or tapping an unchecked task changes its GFM marker to `[x]`, and
+  toggling it again restores `[ ]`,
 - Space and Enter operate a focused task checkbox without moving or corrupting
   the note text,
 - each toggle participates in Undo/Redo and the normal autosave state flow,
@@ -5330,6 +5331,13 @@ Completion criteria:
 - checked, unchecked, nested, mixed-list, reload, selection, Undo/Redo,
   autosave, desktop, mobile/PWA, and assistive-technology semantics have focused
   regression tests.
+
+Status: completed on 2026-09-29. RepoQuill now renders GFM task items with a
+real accessible checkbox control, toggles their standard Markdown state through
+undoable editor transactions, retains state after serialization and reload, and
+keeps normal and Read only list behavior intact. Focused regression coverage
+includes pointer and keyboard activation, text-click isolation, Undo/Redo,
+nested and mixed lists, reload, and non-mutating Read only behavior.
 
 ---
 

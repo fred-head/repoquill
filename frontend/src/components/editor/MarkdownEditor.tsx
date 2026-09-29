@@ -4,7 +4,7 @@ import { commandsCtx, defaultValueCtx, Editor, editorViewCtx, editorViewOptionsC
 import { history, redoCommand, undoCommand } from '@milkdown/kit/plugin/history'
 import { listener, listenerCtx } from '@milkdown/kit/plugin/listener'
 import { upload, uploadConfig, type Uploader } from '@milkdown/kit/plugin/upload'
-import { createCodeBlockCommand, insertHrCommand, liftListItemCommand, linkSchema, toggleEmphasisCommand, toggleInlineCodeCommand, toggleLinkCommand, toggleStrongCommand, turnIntoTextCommand, updateLinkCommand, wrapInBlockquoteCommand, wrapInBulletListCommand, wrapInHeadingCommand, wrapInOrderedListCommand } from '@milkdown/kit/preset/commonmark'
+import { createCodeBlockCommand, insertHrCommand, liftListItemCommand, linkSchema, listItemSchema, toggleEmphasisCommand, toggleInlineCodeCommand, toggleLinkCommand, toggleStrongCommand, turnIntoTextCommand, updateLinkCommand, wrapInBlockquoteCommand, wrapInBulletListCommand, wrapInHeadingCommand, wrapInOrderedListCommand } from '@milkdown/kit/preset/commonmark'
 import { addColAfterCommand, addColBeforeCommand, addRowAfterCommand, addRowBeforeCommand, gfm, insertTableCommand, toggleStrikethroughCommand } from '@milkdown/kit/preset/gfm'
 import { commonmark } from '@milkdown/kit/preset/commonmark'
 import { Slice, type Node, type ResolvedPos } from '@milkdown/kit/prose/model'
@@ -13,6 +13,7 @@ import type { Command, EditorState } from '@milkdown/kit/prose/state'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { exitCode, lift, newlineInCode } from '@milkdown/kit/prose/commands'
 import { deleteColumn, deleteRow, deleteTable } from '@milkdown/kit/prose/tables'
+import { $view } from '@milkdown/kit/utils'
 import { Milkdown, MilkdownProvider, useEditor } from '@milkdown/react'
 import { isEditorEditable } from '../../app/autoLock'
 import { apiFetch } from '../../api'
@@ -194,6 +195,71 @@ function insertParsedMarkdown(view: EditorView, parse: (markdown: string) => Nod
     return 'This Markdown could not be converted. The original text is still available and has not been lost.'
   }
 }
+
+const interactiveListItemView = $view(listItemSchema.node, () => (initialNode, editorView, getPos) => {
+  const dom = document.createElement('li')
+  dom.className = 'repoquill-list-item'
+
+  const checkbox = document.createElement('button')
+  checkbox.type = 'button'
+  checkbox.setAttribute('role', 'checkbox')
+  checkbox.setAttribute('contenteditable', 'false')
+  checkbox.className = 'repoquill-task-checkbox'
+
+  const contentDOM = document.createElement('div')
+  contentDOM.className = 'repoquill-list-item-content'
+  dom.append(checkbox, contentDOM)
+
+  let currentNode = initialNode
+  const render = (node: Node) => {
+    const isTask = typeof node.attrs.checked === 'boolean'
+    const checked = node.attrs.checked === true
+    checkbox.hidden = !isTask
+    checkbox.disabled = !editorView.editable
+    checkbox.setAttribute('aria-checked', String(checked))
+    checkbox.setAttribute('aria-disabled', String(!editorView.editable))
+    checkbox.setAttribute('aria-label', node.textContent.trim() ? `Task: ${node.textContent.trim().slice(0, 120)}` : 'Task item')
+    checkbox.title = checked ? 'Mark task incomplete' : 'Mark task complete'
+    checkbox.textContent = checked ? '☑' : '☐'
+    checkbox.classList.toggle('is-checked', checked)
+    if (isTask) {
+      dom.setAttribute('data-item-type', 'task')
+      dom.setAttribute('data-checked', String(checked))
+    } else {
+      dom.removeAttribute('data-item-type')
+      dom.removeAttribute('data-checked')
+    }
+  }
+
+  const toggle = (event: MouseEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!editorView.editable) return
+    const position = getPos()
+    if (typeof position !== 'number') return
+    const node = editorView.state.doc.nodeAt(position)
+    if (!node || node.type !== currentNode.type || typeof node.attrs.checked !== 'boolean') return
+    editorView.dispatch(editorView.state.tr.setNodeAttribute(position, 'checked', !node.attrs.checked).scrollIntoView())
+  }
+  checkbox.addEventListener('click', toggle)
+  render(initialNode)
+
+  return {
+    dom,
+    contentDOM,
+    update: (node) => {
+      if (node.type !== initialNode.type) return false
+      currentNode = node
+      render(node)
+      return true
+    },
+    stopEvent: (event) => event.target instanceof HTMLElement && checkbox.contains(event.target),
+    ignoreMutation: (mutation) => mutation.type !== 'selection' && !contentDOM.contains(mutation.target),
+    selectNode: () => dom.classList.add('ProseMirror-selectednode'),
+    deselectNode: () => dom.classList.remove('ProseMirror-selectednode'),
+    destroy: () => checkbox.removeEventListener('click', toggle),
+  }
+})
 
 function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, notePaths = [], onOpenNoteLink, stickyToolbar = false }: MarkdownEditorProps) {
   const input = useRef<HTMLInputElement>(null)
@@ -625,6 +691,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         .use(history)
         .use(listener)
         .use(upload)
+        .use(interactiveListItemView)
         .use(imageInlineComponent),
     [documentKey],
   )

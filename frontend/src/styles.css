@@ -106,9 +106,14 @@ body { margin: 0; min-width: 320px; }
 .repoquill-editor p { margin: 0.35rem 0; }
 .repoquill-editor ul { margin: 0.75rem 0; list-style: disc; padding-left: 1.75rem; }
 .repoquill-editor ol { margin: 0.75rem 0; list-style: decimal; padding-left: 1.75rem; }
-.repoquill-editor li[data-item-type="task"] { position: relative; list-style: none; }
-.repoquill-editor li[data-item-type="task"]::before { position: absolute; left: -1.4rem; content: "☐"; color: #a1a1aa; }
-.repoquill-editor li[data-item-type="task"][data-checked="true"]::before { content: "☑"; color: #34d399; }
+.repoquill-editor .repoquill-list-item { position: relative; }
+.repoquill-editor li[data-item-type="task"] { list-style: none; }
+.repoquill-editor .repoquill-task-checkbox { position: absolute; top: -0.1rem; left: -2.55rem; display: flex; width: 2.5rem; height: 2.5rem; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 0.5rem; background: transparent; color: #a1a1aa; font-size: 1.2rem; line-height: 1; cursor: pointer; }
+.repoquill-editor .repoquill-task-checkbox:hover:not(:disabled) { border-color: #52525b; background: #27272a; color: #fafafa; }
+.repoquill-editor .repoquill-task-checkbox:focus-visible { border-color: #f59e0b; outline: 2px solid #f59e0b; outline-offset: 1px; }
+.repoquill-editor .repoquill-task-checkbox.is-checked { color: #34d399; }
+.repoquill-editor .repoquill-task-checkbox:disabled { cursor: default; opacity: 0.75; }
+.repoquill-editor .repoquill-list-item-content > :first-child { margin-top: 0; }
 .repoquill-editor blockquote { margin: 1rem 0; border-left: 3px solid #f59e0b; padding-left: 1rem; color: #a1a1aa; }
 .repoquill-editor code { border-radius: 0.3rem; background: #27272a; padding: 0.15rem 0.35rem; color: #fde68a; font-family: ui-monospace, monospace; font-size: 0.9em; }
 .repoquill-editor pre { margin: 1rem 0; overflow-x: auto; border: 1px solid #3f3f46; border-radius: 0.65rem; background: #18181b; padding: 1rem; line-height: 1.45; overflow-wrap: normal; word-break: normal; }

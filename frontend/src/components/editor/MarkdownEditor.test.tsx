@@ -834,4 +834,96 @@ describe('MarkdownEditor read-only mode', () => {
     expect(view.getByRole('button', { name: 'Paste as Markdown' }).hasAttribute('disabled')).toBe(true)
     expect(view.queryByRole('dialog', { name: 'Paste as Markdown' })).toBeNull()
   })
+
+  it('toggles GFM tasks with accessible controls and serializes portable Markdown', async () => {
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="interactive-tasks" notePath="Tasks.md" markdown={'- [ ] First task\n- [x] Finished task\n- Ordinary item'} readOnly={false} onChange={onChange} />)
+    const checkboxes = await view.findAllByRole('checkbox')
+
+    expect(checkboxes).toHaveLength(2)
+    expect(checkboxes[0].getAttribute('aria-checked')).toBe('false')
+    expect(checkboxes[1].getAttribute('aria-checked')).toBe('true')
+    expect(checkboxes[0].getAttribute('aria-label')).toContain('First task')
+    expect(view.container.querySelectorAll('.repoquill-list-item')).toHaveLength(3)
+
+    fireEvent.click(view.getByText('First task'))
+    expect(checkboxes[0].getAttribute('aria-checked')).toBe('false')
+
+    fireEvent.click(checkboxes[0])
+    await waitFor(() => expect(checkboxes[0].getAttribute('aria-checked')).toBe('true'))
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toMatch(/[*+-] \[x\] First task/))
+
+    fireEvent.click(checkboxes[1])
+    await waitFor(() => expect(checkboxes[1].getAttribute('aria-checked')).toBe('false'))
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toMatch(/[*+-] \[ \] Finished task/))
+  })
+
+  it('operates a focused task with Enter and Space and supports Undo and Redo', async () => {
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="keyboard-tasks" notePath="Tasks.md" markdown="- [ ] Keyboard task" readOnly={false} onChange={onChange} />)
+    const checkbox = await view.findByRole('checkbox', { name: 'Task: Keyboard task' })
+
+    checkbox.focus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(checkbox.getAttribute('aria-checked')).toBe('true'))
+    expect(document.activeElement).toBe(checkbox)
+
+    await userEvent.keyboard(' ')
+    await waitFor(() => expect(checkbox.getAttribute('aria-checked')).toBe('false'))
+    expect(document.activeElement).toBe(checkbox)
+
+    fireEvent.click(checkbox)
+    await waitFor(() => expect(checkbox.getAttribute('aria-checked')).toBe('true'))
+    fireEvent.click(view.getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(checkbox.getAttribute('aria-checked')).toBe('false'))
+    fireEvent.click(view.getByRole('button', { name: 'Redo' }))
+    await waitFor(() => expect(checkbox.getAttribute('aria-checked')).toBe('true'))
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toMatch(/[*+-] \[x\] Keyboard task/))
+  })
+
+  it('keeps the checked state when serialized Markdown is loaded again', async () => {
+    const onChange = vi.fn()
+    const firstView = render(<MarkdownEditor documentKey="task-before-reload" notePath="Tasks.md" markdown="- [ ] Persistent task" readOnly={false} onChange={onChange} />)
+    const checkbox = await firstView.findByRole('checkbox', { name: 'Task: Persistent task' })
+
+    fireEvent.click(checkbox)
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toMatch(/[*+-] \[x\] Persistent task/))
+    const savedMarkdown = String(onChange.mock.calls.at(-1)?.[0] ?? '')
+    firstView.unmount()
+
+    const reloadedView = render(<MarkdownEditor documentKey="task-after-reload" notePath="Tasks.md" markdown={savedMarkdown} readOnly={false} onChange={vi.fn()} />)
+    expect((await reloadedView.findByRole('checkbox', { name: 'Task: Persistent task' })).getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('keeps nested and ordinary lists intact while task controls remain independently operable', async () => {
+    const onChange = vi.fn()
+    const markdown = '- Ordinary\n  - [ ] Nested task\n  - Nested ordinary\n- [x] Top task\n\n1. Numbered'
+    const view = render(<MarkdownEditor documentKey="mixed-tasks" notePath="Tasks.md" markdown={markdown} readOnly={false} onChange={onChange} />)
+    const checkboxes = await view.findAllByRole('checkbox')
+
+    expect(checkboxes).toHaveLength(2)
+    expect(view.container.querySelectorAll('ul li')).toHaveLength(4)
+    expect(view.container.querySelectorAll('ol li')).toHaveLength(1)
+    fireEvent.click(checkboxes[0])
+    await waitFor(() => {
+      const saved = String(onChange.mock.calls.at(-1)?.[0] ?? '')
+      expect(saved).toMatch(/[*+-] \[x\] Nested task/)
+      expect(saved).toMatch(/[*+-] Ordinary/)
+      expect(saved).toContain('1. Numbered')
+    })
+  })
+
+  it('shows task state but cannot change it in Read only mode', async () => {
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="read-only-tasks" notePath="Tasks.md" markdown={'- [ ] Open task\n- [x] Done task'} readOnly onChange={onChange} />)
+    const checkboxes = await view.findAllByRole('checkbox')
+
+    expect(checkboxes).toHaveLength(2)
+    expect(checkboxes.every((checkbox) => checkbox.hasAttribute('disabled'))).toBe(true)
+    expect(checkboxes[0].getAttribute('aria-checked')).toBe('false')
+    expect(checkboxes[1].getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(checkboxes[0])
+    expect(checkboxes[0].getAttribute('aria-checked')).toBe('false')
+    expect(onChange).not.toHaveBeenCalled()
+  })
 })
