@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added an explicit, mobile-friendly Paste as Markdown workflow and automatic
   handling for unambiguous `text/markdown` clipboard content while preserving
   ordinary text, rich HTML, and pasted-image behavior.
+- Added accessible GFM task controls that toggle `[ ]` and `[x]` with mouse,
+  touch, or keyboard input while participating in Undo/Redo and autosave.
 
 ### Security
 
