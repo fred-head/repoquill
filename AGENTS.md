@@ -4601,7 +4601,9 @@ The recommended implementation order is:
 10. correct document statistics so they reflect visible note content,
 11. keep the editor formatting toolbar visible while scrolling in the PWA,
 12. add a collapsible notebook sidebar for focused and narrow desktop layouts,
-13. design and, only after the portability and recovery gates pass, implement
+13. make GFM task-list checkboxes directly operable with pointer, touch, and
+   keyboard input,
+14. design and, only after the portability and recovery gates pass, implement
    optional encrypted notes and folders.
 
 OIDC is the highest-priority user-facing Alpha 3 feature. The frontend split is
@@ -5272,6 +5274,62 @@ Completion criteria:
 - timer cleanup, hover/focus/touch pausing, manual dismissal, changed-note
   opening, notebook switching, and non-dismissible error/conflict states have
   focused browser and PWA regression tests.
+
+## Milestone 41 - Interactive and accessible task-list checkboxes
+
+Fix task-list items so users can mark them complete directly inside the note
+editor while retaining ordinary portable GFM Markdown.
+
+Current behavior and cause:
+
+- Milkdown's GFM schema already parses `- [ ]` and `- [x]` into a `checked`
+  list-item attribute and serializes that attribute back to Markdown correctly,
+- RepoQuill currently draws the visible checkbox only with a CSS `::before`
+  pseudo-element,
+- that pseudo-element is not a focusable or actionable control and no editor
+  pointer, touch, or keyboard handler changes the `checked` attribute,
+- the existing Task list toolbar action changes between a normal list item and
+  a task item; it does not mark an existing task complete.
+
+Required behavior:
+
+- provide a real, clearly discoverable task-checkbox control for every GFM task
+  item in Edit mode,
+- toggle unchecked and checked state with mouse, touch, Space, and Enter,
+- expose appropriate checkbox semantics and state to assistive technology and
+  retain a visible focus indicator,
+- use a touch-friendly target without making clicks on the task text itself
+  toggle the checkbox unexpectedly,
+- update the list item's `checked` attribute through one normal undoable
+  ProseMirror transaction so existing autosave and document status behavior
+  continue to apply,
+- serialize only standard `- [ ]` and `- [x]` GFM Markdown; do not add custom
+  syntax, application metadata, or backend state,
+- show checked state clearly in Read only mode while preventing every mutation
+  path there,
+- preserve cursor placement, text selection, nested task lists, mixed ordinary
+  and task lists, list indentation, toolbar actions, and slash commands,
+- preserve existing task state across save, reload, external editors, Git
+  synchronization, history, and conflict resolution,
+- evaluate Milkdown's list-item block component where useful, but do not adopt
+  it blindly if it changes ordinary-list behavior or fails RepoQuill's keyboard,
+  accessibility, mobile, or Read only requirements,
+- use the same implementation in browser and installed PWA layouts.
+
+Completion criteria:
+
+- clicking or tapping an unchecked task changes its Markdown to `- [x]`, and
+  toggling it again restores `- [ ]`,
+- Space and Enter operate a focused task checkbox without moving or corrupting
+  the note text,
+- each toggle participates in Undo/Redo and the normal autosave state flow,
+- regular bullet and numbered lists remain unchanged and their markers do not
+  become interactive task controls,
+- Read only mode cannot change task state through pointer, touch, or keyboard
+  input,
+- checked, unchecked, nested, mixed-list, reload, selection, Undo/Redo,
+  autosave, desktop, mobile/PWA, and assistive-technology semantics have focused
+  regression tests.
 
 ---
 
