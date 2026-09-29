@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { imageInlineComponent, inlineImageConfig } from '@milkdown/kit/component/image-inline'
-import { commandsCtx, defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, rootCtx, schemaCtx } from '@milkdown/kit/core'
+import { commandsCtx, defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, parserCtx, rootCtx, schemaCtx } from '@milkdown/kit/core'
 import { history, redoCommand, undoCommand } from '@milkdown/kit/plugin/history'
 import { listener, listenerCtx } from '@milkdown/kit/plugin/listener'
 import { upload, uploadConfig, type Uploader } from '@milkdown/kit/plugin/upload'
 import { createCodeBlockCommand, insertHrCommand, liftListItemCommand, linkSchema, toggleEmphasisCommand, toggleInlineCodeCommand, toggleLinkCommand, toggleStrongCommand, turnIntoTextCommand, updateLinkCommand, wrapInBlockquoteCommand, wrapInBulletListCommand, wrapInHeadingCommand, wrapInOrderedListCommand } from '@milkdown/kit/preset/commonmark'
 import { addColAfterCommand, addColBeforeCommand, addRowAfterCommand, addRowBeforeCommand, gfm, insertTableCommand, toggleStrikethroughCommand } from '@milkdown/kit/preset/gfm'
 import { commonmark } from '@milkdown/kit/preset/commonmark'
-import type { Node, ResolvedPos } from '@milkdown/kit/prose/model'
+import { Slice, type Node, type ResolvedPos } from '@milkdown/kit/prose/model'
 import { NodeSelection, TextSelection } from '@milkdown/kit/prose/state'
 import type { Command, EditorState } from '@milkdown/kit/prose/state'
 import type { EditorView } from '@milkdown/kit/prose/view'
@@ -52,6 +52,7 @@ type SlashCommandID = 'paragraph' | 'heading-1' | 'heading-2' | 'heading-3' | 'h
 type SlashCommand = { id: SlashCommandID; label: string; description: string; keywords: string }
 type LinkDraft = { from: number; to: number; selectedText: string; existingHref?: string }
 type SelectedLink = { href: string; targetPath?: string; exists: boolean }
+type MarkdownPasteDraft = { text: string; error?: string; clipboardHint?: string }
 const emptyToolbarState: ToolbarState = { block: 'paragraph', strong: false, emphasis: false, strike: false, code: false, link: false, bullet: false, ordered: false, task: false, quote: false, table: false }
 const imagePresentationSizes: ImagePresentationSize[] = ['small', 'medium', 'large', 'full']
 const emptyImagePresentations: Record<string, ImagePresentationSize> = {}
@@ -160,6 +161,40 @@ function portableRelativeNoteHref(notePath: string, targetPath: string): string 
   return parts.join('/') || encodeURIComponent(target[target.length - 1])
 }
 
+function markdownConversionError(document: Node): string | undefined {
+  let error: string | undefined
+  document.descendants((node) => {
+    if (error) return false
+    if (node.type.name === 'html') {
+      error = 'Raw HTML is not inserted as rendered content. This keeps pasted notes safe and portable.'
+      return false
+    }
+    if (node.type.name === 'image') {
+      const source = String(node.attrs.src ?? '').trim()
+      if (!source || source.startsWith('/') || source.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(source)) {
+        error = 'External or absolute image references are not rendered from pasted Markdown. Use a relative notebook asset path or upload the image instead.'
+        return false
+      }
+    }
+    return true
+  })
+  return error
+}
+
+function insertParsedMarkdown(view: EditorView, parse: (markdown: string) => Node, markdown: string): string | undefined {
+  if (!markdown.trim()) return 'Paste or enter some Markdown first.'
+  try {
+    const document = parse(markdown)
+    const validationError = markdownConversionError(document)
+    if (validationError) return validationError
+    view.dispatch(view.state.tr.replaceSelection(Slice.maxOpen(document.content)).scrollIntoView())
+    view.focus()
+    return undefined
+  } catch {
+    return 'This Markdown could not be converted. The original text is still available and has not been lost.'
+  }
+}
+
 function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, notePaths = [], onOpenNoteLink, stickyToolbar = false }: MarkdownEditorProps) {
   const input = useRef<HTMLInputElement>(null)
   const replacementInput = useRef<HTMLInputElement>(null)
@@ -180,6 +215,8 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const [linkPicker, setLinkPicker] = useState<LinkDraft>()
   const [selectedLink, setSelectedLink] = useState<SelectedLink>()
   const [linkError, setLinkError] = useState<string>()
+  const [markdownPaste, setMarkdownPaste] = useState<MarkdownPasteDraft>()
+  const [pasteNotice, setPasteNotice] = useState<string>()
   const [noteLinkTrigger, setNoteLinkTrigger] = useState<NoteLinkTriggerState>()
   const [noteLinkTriggerIndex, setNoteLinkTriggerIndex] = useState(0)
   const slashStateRef = useRef<SlashState | undefined>(undefined)
@@ -202,6 +239,12 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const imageContextKey = `${documentKey}\u0000${notePath}`
   const activeViewedImage = viewedImage?.contextKey === imageContextKey ? viewedImage : undefined
   const activeImagePresentations = imagePresentations?.contextKey === imageContextKey ? imagePresentations.values : emptyImagePresentations
+
+  useEffect(() => {
+    if (!pasteNotice) return
+    const timeout = globalThis.setTimeout(() => setPasteNotice(undefined), 10_000)
+    return () => globalThis.clearTimeout(timeout)
+  }, [pasteNotice])
 
   useEffect(() => {
     const reset = globalThis.setTimeout(() => {
@@ -419,6 +462,25 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
               }
               return previous.handleTextInput?.(view, from, to, text, defaultHandler) ?? false
             },
+            handlePaste: (view, event, slice) => {
+              const clipboard = event.clipboardData
+              const types = Array.from(clipboard?.types ?? [])
+              if (readOnly || !clipboard || clipboard.files.length > 0 || view.state.selection.$from.parent.type.spec.code || !types.includes('text/markdown')) {
+                return previous.handlePaste?.(view, event, slice) ?? false
+              }
+              const source = clipboard.getData('text/markdown')
+              if (!source) return previous.handlePaste?.(view, event, slice) ?? false
+              event.preventDefault()
+              const error = insertParsedMarkdown(view, ctx.get(parserCtx), source)
+              if (error) {
+                view.dispatch(view.state.tr.insertText(source).scrollIntoView())
+                view.focus()
+                setPasteNotice(`${error} The original clipboard text was pasted unchanged.`)
+              } else {
+                setPasteNotice(undefined)
+              }
+              return true
+            },
             handleKeyDown: (view, event) => {
               const { $from } = view.state.selection
               if (event.key === 'Enter' && view.state.selection.empty && $from.parent.type.name === 'code_block' && $from.parentOffset === $from.parent.content.size && $from.parent.textContent.endsWith('\n\n')) {
@@ -610,6 +672,43 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       ctx.get(commandsCtx).call(command.key as never, payload as never)
       setToolbarState(toolbarStateFromEditor(ctx.get(editorViewCtx).state))
     })
+  }
+
+  async function openMarkdownPaste() {
+    if (readOnly) return
+    setMarkdownPaste({ text: '', clipboardHint: 'Paste Markdown into this field, then insert it.' })
+    if (!navigator.clipboard?.readText) return
+    try {
+      const text = await navigator.clipboard.readText()
+      setMarkdownPaste((current) => current && current.text === ''
+        ? { ...current, text, clipboardHint: text ? 'Markdown was read from the clipboard.' : 'The clipboard contains no text. Paste Markdown into this field.' }
+        : current)
+    } catch {
+      setMarkdownPaste((current) => current && current.text === ''
+        ? { ...current, clipboardHint: 'Direct clipboard access is unavailable here. Paste Markdown into this field instead.' }
+        : current)
+    }
+  }
+
+  function applyMarkdownPaste(asPlainText = false) {
+    if (readOnly || !markdownPaste) return
+    let error = 'The editor is not ready yet. Your Markdown remains in this dialog.'
+    get()?.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      if (asPlainText) {
+        view.dispatch(view.state.tr.insertText(markdownPaste.text).scrollIntoView())
+        view.focus()
+        error = ''
+        return
+      }
+      error = insertParsedMarkdown(view, ctx.get(parserCtx), markdownPaste.text) ?? ''
+    })
+    if (error) {
+      setMarkdownPaste((current) => current ? { ...current, error } : current)
+      return
+    }
+    setMarkdownPaste(undefined)
+    setPasteNotice(undefined)
   }
 
   function closeSlashMenu() {
@@ -972,6 +1071,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         <ToolbarButton label="Code block" active={toolbarState.block === 'code-block'} disabled={readOnly} onClick={() => callCommand(toolbarState.block === 'code-block' ? turnIntoTextCommand : createCodeBlockCommand)}>{'{ }'}</ToolbarButton>
         <ToolbarDivider />
         <ToolbarButton label="Link" active={toolbarState.link} disabled={readOnly} onClick={editLink}>🔗</ToolbarButton>
+        <ToolbarButton label="Paste as Markdown" disabled={readOnly} onClick={() => { void openMarkdownPaste() }}>Paste Markdown</ToolbarButton>
         <ToolbarButton label="Insert image" disabled={readOnly || uploadState === 'uploading'} onClick={() => input.current?.click()}>{uploadState === 'uploading' ? '…' : 'Image'}</ToolbarButton>
         <input ref={input} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="sr-only" onChange={(event) => { void insertSelectedImages(event.target.files) }} />
         <ToolbarButton label="Insert table" disabled={readOnly} onClick={() => setTablePickerOpen(true)}>Table</ToolbarButton>
@@ -1025,6 +1125,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       {uploadError && <p className="mb-4 rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{uploadError}</p>}
       {presentationError?.contextKey === imageContextKey && <p role="alert" className="mb-4 rounded-lg border border-amber-900/70 bg-amber-950/30 p-3 text-sm text-amber-100">Image layout settings are unavailable. The note and image are unchanged. {presentationError.message}</p>}
       {linkError && <p role="alert" className="mb-4 rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{linkError}</p>}
+      {pasteNotice && <div role="status" className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-amber-900/70 bg-amber-950/30 p-3 text-sm text-amber-100"><span>{pasteNotice}</span><button type="button" onClick={() => setPasteNotice(undefined)} className="shrink-0 rounded px-2 py-1 text-xs text-amber-100 hover:bg-amber-900/50" aria-label="Dismiss paste message">Dismiss</button></div>}
       <div
         ref={editorContainer}
         onPointerDownCapture={(event) => {
@@ -1052,6 +1153,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
 
       {tablePickerOpen && !readOnly && <TablePicker size={tableSize} onPreview={setTableSize} onSelect={insertTable} onClose={() => setTablePickerOpen(false)} />}
       {linkPicker && !readOnly && <LinkPicker notePath={notePath} notePaths={notePaths} draft={linkPicker} onApply={applyLink} onClose={() => setLinkPicker(undefined)} />}
+      {markdownPaste && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setMarkdownPaste(undefined) }}><form onSubmit={(event) => { event.preventDefault(); applyMarkdownPaste() }} role="dialog" aria-modal="true" aria-labelledby="markdown-paste-title" className="w-full max-w-2xl rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="markdown-paste-title" className="text-lg font-semibold text-zinc-100">Paste as Markdown</h2><p className="mt-1 text-sm text-zinc-400">Headings, lists, tasks, quotes, code, links, tables, and dividers become editable note content.</p><label className="mt-4 block text-sm text-zinc-300">Markdown<textarea autoFocus rows={12} value={markdownPaste.text} onChange={(event) => setMarkdownPaste({ text: event.target.value, clipboardHint: markdownPaste.clipboardHint })} className="mt-2 w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder="# Heading&#10;&#10;- First item&#10;- Second item" /></label><p className="mt-2 text-xs text-zinc-500">{markdownPaste.clipboardHint} External image URLs and raw HTML are kept from becoming active content.</p>{markdownPaste.error && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{markdownPaste.error}</p>}<div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setMarkdownPaste(undefined)} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => applyMarkdownPaste(true)} disabled={!markdownPaste.text} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40">Insert as plain text</button><button type="submit" disabled={!markdownPaste.text} className="min-h-10 rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">Insert Markdown</button></div></form></div>}
       {editingAlt !== undefined && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingAlt(undefined) }}><form onSubmit={(event) => { event.preventDefault(); saveImageMetadata() }} role="dialog" aria-modal="true" aria-labelledby="image-metadata-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="image-metadata-title" className="text-lg font-semibold text-zinc-100">Edit image</h2><label className="mt-4 block text-sm text-zinc-300">Alt text<input autoFocus value={editingAlt} onChange={(event) => setEditingAlt(event.target.value)} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-amber-500" placeholder="Leave empty for a decorative image" /></label><p className="mt-2 text-xs text-zinc-500">Describe meaningful content briefly, or leave this empty for a decorative image.</p><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setEditingAlt(undefined)} className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="submit" className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">Save</button></div></form></div>}
       {activeViewedImage && <ImageViewer image={activeViewedImage} onClose={closeImageViewer} />}
     </div>

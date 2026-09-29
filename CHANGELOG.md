@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added an explicit, mobile-friendly Paste as Markdown workflow and automatic
+  handling for unambiguous `text/markdown` clipboard content while preserving
+  ordinary text, rich HTML, and pasted-image behavior.
+
+### Security
+
+- Markdown paste conversion rejects raw HTML and active external or absolute
+  image references, retaining the original clipboard text instead of fetching
+  untrusted assets.
+
 ## [0.1.0-alpha.2.security.3] - 2026-09-03
 
 ### Fixed

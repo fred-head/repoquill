@@ -12,6 +12,7 @@ class ResizeObserverStub {
 }
 
 vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+vi.stubGlobal('ClipboardEvent', window.Event)
 
 beforeEach(() => {
   Range.prototype.getClientRects = () => [] as unknown as DOMRectList
@@ -649,5 +650,188 @@ describe('MarkdownEditor read-only mode', () => {
     await userEvent.type(editor, ' continues', { skipClick: true })
 
     await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '').trimEnd()).toBe('`command` continues'))
+  })
+
+  it('pastes explicit CommonMark and GFM as one undoable editor operation', async () => {
+    const markdown = [
+      '# Pasted heading',
+      '',
+      '**Bold** and *italic* with [a link](Guide.md).',
+      '',
+      '- First item',
+      '- [x] Finished task',
+      '',
+      '> Quoted text',
+      '',
+      '```sh',
+      'echo hello',
+      '```',
+      '',
+      '| Name | Value |',
+      '| --- | --- |',
+      '| A | B |',
+      '',
+      '---',
+    ].join('\n')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { readText: vi.fn().mockResolvedValue(markdown) } })
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="markdown-paste" notePath="Note.md" markdown="Replace me" readOnly={false} onChange={onChange} />)
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    editor.focus()
+    await userEvent.keyboard('{Control>}a{/Control}')
+
+    fireEvent.click(view.getByRole('button', { name: 'Paste as Markdown' }))
+    const dialog = await view.findByRole('dialog', { name: 'Paste as Markdown' })
+    await waitFor(() => expect((view.getByRole('textbox', { name: 'Markdown' }) as HTMLTextAreaElement).value).toBe(markdown))
+    fireEvent.click(view.getByRole('button', { name: 'Insert Markdown' }))
+
+    await waitFor(() => expect(view.queryByRole('dialog', { name: 'Paste as Markdown' })).toBeNull())
+    expect(dialog.isConnected).toBe(false)
+    expect(view.container.querySelector('.ProseMirror h1')?.textContent).toBe('Pasted heading')
+    expect(view.container.querySelector('.ProseMirror strong')?.textContent).toBe('Bold')
+    expect(view.container.querySelector('.ProseMirror em')?.textContent).toBe('italic')
+    expect(view.container.querySelector('.ProseMirror blockquote')?.textContent).toContain('Quoted text')
+    expect(view.container.querySelector('.ProseMirror pre')?.textContent).toContain('echo hello')
+    expect(view.container.querySelector('.ProseMirror table')).toBeTruthy()
+    expect(view.container.querySelector('.ProseMirror hr')).toBeTruthy()
+    expect(view.container.querySelector('.ProseMirror')?.textContent).not.toContain('Replace me')
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('# Pasted heading'))
+
+    fireEvent.click(view.getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(view.container.querySelector('.ProseMirror')?.textContent).toContain('Replace me'))
+    expect(view.container.querySelector('.ProseMirror h1')).toBeNull()
+    fireEvent.click(view.getByRole('button', { name: 'Redo' }))
+    await waitFor(() => expect(view.container.querySelector('.ProseMirror h1')?.textContent).toBe('Pasted heading'))
+  })
+
+  it('parses the unambiguous text/markdown clipboard media type directly', async () => {
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="typed-markdown-paste" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    editor.focus()
+    fireEvent.paste(editor, {
+      clipboardData: {
+        files: [],
+        types: ['text/markdown', 'text/plain'],
+        getData: (type: string) => type === 'text/markdown' ? '## Clipboard heading\n\n- One\n- Two' : 'plain fallback',
+      },
+    })
+
+    await waitFor(() => expect(view.container.querySelector('.ProseMirror h2')?.textContent).toBe('Clipboard heading'))
+    expect(view.container.querySelectorAll('.ProseMirror li')).toHaveLength(2)
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('## Clipboard heading'))
+  })
+
+  it('leaves ordinary plain-text paste literal even when it resembles Markdown', async () => {
+    const onChange = vi.fn()
+    const source = '# Not a converted heading\n- still plain clipboard text'
+    const view = render(<MarkdownEditor documentKey="plain-paste" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    editor.focus()
+    fireEvent.paste(editor, {
+      clipboardData: {
+        files: [],
+        types: ['text/plain'],
+        getData: (type: string) => type === 'text/plain' ? source : '',
+      },
+    })
+
+    await waitFor(() => expect(view.container.querySelector('.ProseMirror')?.textContent).toContain('# Not a converted heading'))
+    expect(view.container.querySelector('.ProseMirror h1')).toBeNull()
+    expect(view.container.querySelector('.ProseMirror li')).toBeNull()
+  })
+
+  it('keeps text/markdown literal while pasting inside a code block', async () => {
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="code-markdown-paste" notePath="Note.md" markdown={'```sh\necho before\n```'} readOnly={false} onChange={onChange} />)
+    const code = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror code') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    fireEvent.click(code)
+    fireEvent.paste(code, {
+      clipboardData: {
+        files: [],
+        types: ['text/markdown', 'text/plain'],
+        getData: (type: string) => type === 'text/markdown' ? '# Must stay code' : '# Must stay code',
+      },
+    })
+
+    await waitFor(() => expect(view.container.querySelector('.ProseMirror code')?.textContent).toContain('# Must stay code'))
+    expect(view.container.querySelector('.ProseMirror h1')).toBeNull()
+    expect(view.queryByRole('status')).toBeNull()
+  })
+
+  it('keeps relative Markdown image references portable without uploading them', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { readText: vi.fn().mockResolvedValue('![Diagram](<Note.assets/diagram.png>)') } })
+    const onChange = vi.fn()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const view = render(<MarkdownEditor documentKey="relative-image-paste" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
+
+    fireEvent.click(view.getByRole('button', { name: 'Paste as Markdown' }))
+    await waitFor(() => expect((view.getByRole('textbox', { name: 'Markdown' }) as HTMLTextAreaElement).value).toContain('diagram.png'))
+    fireEvent.click(view.getByRole('button', { name: 'Insert Markdown' }))
+
+    await waitFor(() => expect(view.container.querySelector('.ProseMirror img')).toBeTruthy())
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('Note.assets/diagram.png'))
+    expect(fetchSpy.mock.calls.some(([, options]) => options && (options as RequestInit).method === 'POST')).toBe(false)
+  })
+
+  it('keeps unsafe Markdown source available instead of activating HTML or external images', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { readText: vi.fn().mockResolvedValue('<img src="https://example.test/tracker.png">') } })
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="unsafe-markdown-paste" notePath="Note.md" markdown="Safe note" readOnly={false} onChange={onChange} />)
+
+    fireEvent.click(view.getByRole('button', { name: 'Paste as Markdown' }))
+    await waitFor(() => expect((view.getByRole('textbox', { name: 'Markdown' }) as HTMLTextAreaElement).value).toContain('tracker.png'))
+    fireEvent.click(view.getByRole('button', { name: 'Insert Markdown' }))
+
+    expect((await view.findByRole('alert')).textContent).toContain('Raw HTML is not inserted')
+    expect((view.getByRole('textbox', { name: 'Markdown' }) as HTMLTextAreaElement).value).toContain('tracker.png')
+    expect(view.container.querySelector('.ProseMirror img')).toBeNull()
+    expect(view.container.querySelector('.ProseMirror')?.textContent).toContain('Safe note')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('falls back to literal source for unsafe text/markdown image references', async () => {
+    const onChange = vi.fn()
+    const source = '![Tracker](https://example.test/tracker.png)'
+    const view = render(<MarkdownEditor documentKey="external-image-paste" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    fireEvent.paste(editor, {
+      clipboardData: {
+        files: [],
+        types: ['text/markdown'],
+        getData: () => source,
+      },
+    })
+
+    expect((await view.findByRole('status')).textContent).toContain('original clipboard text was pasted unchanged')
+    expect(view.container.querySelector('.ProseMirror img')).toBeNull()
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('Tracker'))
+  })
+
+  it('keeps Paste as Markdown non-mutating in Read only mode', async () => {
+    const view = render(<MarkdownEditor documentKey="markdown-paste-read-only" notePath="Note.md" markdown="# Existing" readOnly onChange={vi.fn()} />)
+    await waitFor(() => expect(view.container.querySelector('.ProseMirror h1')?.textContent).toBe('Existing'))
+    expect(view.getByRole('button', { name: 'Paste as Markdown' }).hasAttribute('disabled')).toBe(true)
+    expect(view.queryByRole('dialog', { name: 'Paste as Markdown' })).toBeNull()
   })
 })

@@ -5180,6 +5180,12 @@ Completion criteria:
 - conversion, selection replacement, undo/redo, autosave serialization,
   mobile/PWA access, and ambiguous clipboard inputs have focused tests.
 
+Status: completed on 2026-09-29. RepoQuill now provides an explicit
+touch-accessible Paste as Markdown dialog, handles unambiguous `text/markdown`
+clipboard data, preserves ordinary paste paths, inserts conversions as one
+undoable transaction, and refuses active raw HTML or external image references
+without discarding their source text.
+
 ## Milestone 39 - Unambiguous internal-note link trigger
 
 Prevent ordinary square brackets and Markdown task-list syntax from opening or
