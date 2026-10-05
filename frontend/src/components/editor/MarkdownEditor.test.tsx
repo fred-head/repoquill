@@ -670,6 +670,99 @@ describe('MarkdownEditor read-only mode', () => {
     })
   })
 
+  it('highlights only the explicitly registered languages and keeps unknown fence tags during edits', async () => {
+    const markdown = [
+      '```typescript',
+      'const markup = "<img src=x onerror=alert(1) />"',
+      'const greeting: string = "hello"',
+      '```',
+      '',
+      '```future-language-v2',
+      'render()',
+      '```',
+    ].join('\n')
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="code-highlight" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} />)
+
+    const codeBlocks = await waitFor(() => {
+      const elements = Array.from(view.container.querySelectorAll<HTMLElement>('.repoquill-code-block-content'))
+      expect(elements).toHaveLength(2)
+      expect(view.container.querySelector('.repoquill-code-block-content .hljs-keyword')).toBeTruthy()
+      return elements
+    })
+    expect(view.container.querySelector('[data-language="future-language-v2"]')?.textContent).toContain('Unrecognized language')
+    expect(codeBlocks[1].querySelector('.hljs-keyword')).toBeNull()
+    expect(view.container.querySelector('img')).toBeNull()
+
+    const unknownChange = vi.fn()
+    const unknownView = render(<MarkdownEditor documentKey="unknown-code-edit" notePath="Note.md" markdown={'```future-language-v2\nrender()\n```'} readOnly={false} onChange={unknownChange} />)
+    const unknownEditor = await waitFor(() => {
+      const element = unknownView.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    unknownEditor.focus()
+    await userEvent.type(unknownEditor, 'x', { skipClick: true })
+    await waitFor(() => {
+      const saved = String(unknownChange.mock.calls.at(-1)?.[0] ?? '')
+      expect(saved).toContain('```future-language-v2')
+      expect(saved).toContain('render()')
+      expect(saved).toMatch(/(?:xrender|render\(\)x)/)
+    })
+  })
+
+  it('offers a contextual language selector and serializes its portable fence tag', async () => {
+    const onChange = vi.fn()
+    const view = render(<MarkdownEditor documentKey="code-language" notePath="Note.md" markdown={'```\nconsole.log("hello")\n```'} readOnly={false} onChange={onChange} />)
+    await waitFor(() => {
+      const element = view.container.querySelector<HTMLElement>('.repoquill-code-block-content')
+      expect(element).toBeTruthy()
+    })
+
+    const selector = await view.findByRole('combobox', { name: 'Code block language' }) as HTMLSelectElement
+    expect(view.getByRole('toolbar', { name: 'Code block options' })).toBeTruthy()
+    fireEvent.change(selector, { target: { value: 'typescript' } })
+
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('```typescript'))
+    expect((view.container.querySelector('.repoquill-code-block-language') as HTMLElement).textContent).toBe('TypeScript')
+    fireEvent.change(view.getByRole('combobox', { name: 'Code block language' }), { target: { value: '' } })
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toMatch(/```\nconsole\.log\("hello"\)/))
+  })
+
+  it('copies literal fenced-code contents in Edit and Read only without changing the note', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+
+    for (const readOnly of [false, true]) {
+      writeText.mockClear()
+      const onChange = vi.fn()
+      const view = render(<MarkdownEditor documentKey={`copy-code-${readOnly}`} notePath="Note.md" markdown={'```bash\nprintf "hello"\n```'} readOnly={readOnly} onChange={onChange} />)
+      const copy = await view.findByRole('button', { name: 'Copy code block' })
+      const code = view.container.querySelector('.repoquill-code-block-content') as HTMLElement
+      const expectedCode = code.textContent
+      const changesBeforeCopy = onChange.mock.calls.length
+      expect(expectedCode).toBe('printf "hello"')
+
+      copy.focus()
+      await userEvent.keyboard('{Enter}')
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(expectedCode))
+      await waitFor(() => expect(view.container.querySelector('.repoquill-code-block-copy-status')?.textContent).toBe('Code copied.'))
+      expect(onChange).toHaveBeenCalledTimes(changesBeforeCopy)
+      view.unmount()
+    }
+  })
+
+  it('shows readable copy failure feedback without opening a browser dialog', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('permission denied'))
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const alert = vi.spyOn(window, 'alert')
+    const view = render(<MarkdownEditor documentKey="copy-code-failure" notePath="Note.md" markdown={'```json\n{"ok":true}\n```'} readOnly onChange={vi.fn()} />)
+
+    fireEvent.click(await view.findByRole('button', { name: 'Copy code block' }))
+    await waitFor(() => expect(view.container.querySelector('.repoquill-code-block-copy-status')?.textContent).toBe('Copy failed. Select and copy the code manually.'))
+    expect(alert).not.toHaveBeenCalled()
+  })
+
   it('starts and stops inline-code typing at an empty cursor', async () => {
     const onChange = vi.fn()
     const view = render(<MarkdownEditor documentKey="inline-code" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)

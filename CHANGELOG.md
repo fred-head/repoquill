@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added portable fenced-code language selection, controlled syntax highlighting,
+  and accessible copy actions in Edit and Read only modes.
 - Added a keyboard accessible desktop sidebar toggle that remembers its local
   browser preference while keeping the mobile navigation drawer available.
 

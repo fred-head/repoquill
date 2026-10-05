@@ -118,6 +118,21 @@ body { margin: 0; min-width: 320px; }
 .repoquill-editor code { border-radius: 0.3rem; background: #27272a; padding: 0.15rem 0.35rem; color: #fde68a; font-family: ui-monospace, monospace; font-size: 0.9em; }
 .repoquill-editor pre { margin: 1rem 0; overflow-x: auto; border: 1px solid #3f3f46; border-radius: 0.65rem; background: #18181b; padding: 1rem; line-height: 1.45; overflow-wrap: normal; word-break: normal; }
 .repoquill-editor pre code { display: block; background: transparent; padding: 0; color: #e4e4e7; line-height: 1.35; }
+.repoquill-editor .repoquill-code-block { margin: 1rem 0; overflow: hidden; border: 1px solid #3f3f46; border-radius: 0.65rem; background: #18181b; }
+.repoquill-editor .repoquill-code-block-header { display: flex; min-height: 2.75rem; flex-wrap: wrap; align-items: center; gap: 0.5rem; border-bottom: 1px solid #3f3f46; padding: 0.25rem 0.5rem; }
+.repoquill-editor .repoquill-code-block-language { min-width: 0; overflow-wrap: anywhere; color: #a1a1aa; font-family: ui-monospace, monospace; font-size: 0.75rem; }
+.repoquill-editor .repoquill-code-block-copy { min-height: 2.5rem; border: 1px solid #52525b; border-radius: 0.35rem; padding: 0.35rem 0.7rem; color: #e4e4e7; font-size: 0.75rem; font-weight: 600; }
+.repoquill-editor .repoquill-code-block-copy:hover { background: #27272a; }
+.repoquill-editor .repoquill-code-block-copy:focus-visible { outline: 2px solid #f59e0b; outline-offset: 2px; }
+.repoquill-editor .repoquill-code-block-copy-status { min-width: 0; color: #d4d4d8; font-size: 0.75rem; }
+.repoquill-editor .repoquill-code-block-pre { max-width: 100%; margin: 0; overflow: auto; border: 0; border-radius: 0; background: transparent; padding: 0.8rem 1rem 1rem; }
+.repoquill-editor .repoquill-code-block-content { display: block; min-width: max-content; background: transparent; padding: 0; color: #e4e4e7; font-family: ui-monospace, monospace; font-size: 0.9em; line-height: 1.45; white-space: pre; }
+.repoquill-editor .hljs-comment, .repoquill-editor .hljs-quote { color: #a1a1aa; font-style: italic; }
+.repoquill-editor .hljs-keyword, .repoquill-editor .hljs-selector-tag, .repoquill-editor .hljs-literal, .repoquill-editor .hljs-built_in { color: #fbbf24; }
+.repoquill-editor .hljs-string, .repoquill-editor .hljs-attr, .repoquill-editor .hljs-template-tag { color: #86efac; }
+.repoquill-editor .hljs-number, .repoquill-editor .hljs-symbol, .repoquill-editor .hljs-bullet { color: #c4b5fd; }
+.repoquill-editor .hljs-title, .repoquill-editor .hljs-section, .repoquill-editor .hljs-name, .repoquill-editor .hljs-function { color: #7dd3fc; }
+.repoquill-editor .hljs-variable, .repoquill-editor .hljs-params, .repoquill-editor .hljs-property { color: #fda4af; }
 .repoquill-editor a { color: #fbbf24; text-decoration: underline; text-underline-offset: 3px; }
 .repoquill-editor hr { margin: 2rem 0; border-color: #3f3f46; }
 .repoquill-editor strong { font-weight: 700; color: #fafafa; }
@@ -147,6 +162,19 @@ milkdown-image-inline { display: inline-block; max-width: 100%; vertical-align: 
 .theme-light .repoquill-editor code { background: #e4e4e7; color: #92400e; }
 .theme-light .repoquill-editor pre { border-color: #d4d4d8; background: #f4f4f5; }
 .theme-light .repoquill-editor pre code { background: transparent; color: #27272a; }
+.theme-light .repoquill-editor .repoquill-code-block { border-color: #d4d4d8; background: #f4f4f5; }
+.theme-light .repoquill-editor .repoquill-code-block-header { border-color: #d4d4d8; }
+.theme-light .repoquill-editor .repoquill-code-block-language { color: #52525b; }
+.theme-light .repoquill-editor .repoquill-code-block-copy { border-color: #a1a1aa; color: #27272a; }
+.theme-light .repoquill-editor .repoquill-code-block-copy:hover { background: #e4e4e7; }
+.theme-light .repoquill-editor .repoquill-code-block-copy-status { color: #3f3f46; }
+.theme-light .repoquill-editor .repoquill-code-block-content { color: #27272a; }
+.theme-light .repoquill-editor .hljs-comment, .theme-light .repoquill-editor .hljs-quote { color: #71717a; }
+.theme-light .repoquill-editor .hljs-keyword, .theme-light .repoquill-editor .hljs-selector-tag, .theme-light .repoquill-editor .hljs-literal, .theme-light .repoquill-editor .hljs-built_in { color: #a16207; }
+.theme-light .repoquill-editor .hljs-string, .theme-light .repoquill-editor .hljs-attr, .theme-light .repoquill-editor .hljs-template-tag { color: #15803d; }
+.theme-light .repoquill-editor .hljs-number, .theme-light .repoquill-editor .hljs-symbol, .theme-light .repoquill-editor .hljs-bullet { color: #6d28d9; }
+.theme-light .repoquill-editor .hljs-title, .theme-light .repoquill-editor .hljs-section, .theme-light .repoquill-editor .hljs-name, .theme-light .repoquill-editor .hljs-function { color: #0369a1; }
+.theme-light .repoquill-editor .hljs-variable, .theme-light .repoquill-editor .hljs-params, .theme-light .repoquill-editor .hljs-property { color: #be123c; }
 .theme-light .repoquill-editor a { color: #b45309; }
 .theme-light .repoquill-editor hr { border-color: #d4d4d8; }
 .theme-light .repoquill-editor th, .theme-light .repoquill-editor td { border-color: #d4d4d8; }
