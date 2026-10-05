@@ -344,24 +344,16 @@ recovery change authentication metadata only. See the
 - [Alpha 2 dependency inventory](docs/dependency-inventory-alpha2.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
-- [Architecture and project constraints](AGENTS.md)
+- [Architecture and code map](docs/architecture.md)
+- [Development and testing](docs/development/testing.md)
 
 ## Checks
 
-```sh
-go test ./...
-go vet ./...
-cd frontend
-npm ci
-npm run lint
-npm test
-npm run build
-npm audit
-```
-
-CI additionally performs race detection, vulnerability and secret scanning,
-container hardening checks, persistence smoke tests, and separate AMD64/ARM64
-release validation.
+CI runs repository-wide checks and security/container gates on pull requests.
+For local work, use the smallest validation that covers the change; see the
+[development and testing guide](docs/development/testing.md). Release
+candidates have additional exact-artifact checks in the
+[alpha release guide](ALPHA-RELEASE.md).
 
 ## License
 
