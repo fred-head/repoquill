@@ -16,6 +16,7 @@ import { deleteColumn, deleteRow, deleteTable } from '@milkdown/kit/prose/tables
 import { $view } from '@milkdown/kit/utils'
 import { Milkdown, MilkdownProvider, useEditor } from '@milkdown/react'
 import { isEditorEditable } from '../../app/autoLock'
+import { documentStats, type DocumentStats } from '../../app/documentStats'
 import { apiFetch } from '../../api'
 
 type MarkdownEditorProps = {
@@ -27,6 +28,7 @@ type MarkdownEditorProps = {
   notePaths?: string[]
   onOpenNoteLink?: (path: string, disposition: 'current' | 'new') => void
   stickyToolbar?: boolean
+  onStats?: (stats: DocumentStats) => void
 }
 
 export function MarkdownEditor(props: MarkdownEditorProps) {
@@ -261,7 +263,7 @@ const interactiveListItemView = $view(listItemSchema.node, () => (initialNode, e
   }
 })
 
-function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, notePaths = [], onOpenNoteLink, stickyToolbar = false }: MarkdownEditorProps) {
+function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, notePaths = [], onOpenNoteLink, stickyToolbar = false, onStats }: MarkdownEditorProps) {
   const input = useRef<HTMLInputElement>(null)
   const replacementInput = useRef<HTMLInputElement>(null)
   const editorContainer = useRef<HTMLDivElement>(null)
@@ -669,6 +671,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
           ctx.get(listenerCtx).updated((ctx) => {
             const view = ctx.get(editorViewCtx)
             if (view?.state) {
+              onStats?.(documentStats(view.state.doc))
               setToolbarState(toolbarStateFromEditor(view.state))
               updateSelectedLink(view.state)
               updateSlashMenu(view)
@@ -678,6 +681,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
           ctx.get(listenerCtx).mounted((ctx) => {
             const view = ctx.get(editorViewCtx)
             if (view?.state) {
+              onStats?.(documentStats(view.state.doc))
               setToolbarState(toolbarStateFromEditor(view.state))
               updateSelectedLink(view.state)
               updateNoteLinkTrigger(view)

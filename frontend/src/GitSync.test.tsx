@@ -18,7 +18,7 @@ afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('Git synchronization UI', () => {
   it('keeps local save and Git synchronization states distinct', () => {
-    const view = render(<DocumentStatusBar status="saved" gitStatus={{ state: 'sync_failed', message: 'Remote unavailable' }} gitSyncing={false} markdown="hello world" />)
+    const view = render(<DocumentStatusBar status="saved" gitStatus={{ state: 'sync_failed', message: 'Remote unavailable' }} gitSyncing={false} stats={{ words: 2, characters: 11, lines: 1 }} />)
     expect(view.getByText('Saved on this server')).toBeTruthy()
     const synchronization = view.getByLabelText('Synchronization: Synchronization could not finish. Open details')
     expect(synchronization).toBeTruthy()
@@ -45,7 +45,7 @@ describe('Git synchronization UI', () => {
   })
 
   it('keeps conflicts visible as a critical textual state', () => {
-    const view = render(<DocumentStatusBar status="saved" gitStatus={{ state: 'conflict', conflictFiles: ['Note.md'] }} gitSyncing={false} markdown="note" />)
+    const view = render(<DocumentStatusBar status="saved" gitStatus={{ state: 'conflict', conflictFiles: ['Note.md'] }} gitSyncing={false} stats={{ words: 1, characters: 4, lines: 1 }} />)
     const synchronization = view.getByLabelText('Synchronization: Your decision is required. Open details')
     expect(synchronization).toBeTruthy()
     expect(synchronization.getAttribute('title')).toContain('preserved')
@@ -72,6 +72,9 @@ describe('Git synchronization UI', () => {
 
     fireEvent.click(await view.findByRole('button', { name: 'First' }))
     await waitFor(() => expect(view.container.textContent).toContain('First note'), { timeout: 5000 })
+    await waitFor(() => expect(view.getByLabelText('2 words')).toBeTruthy())
+    expect(view.getByLabelText('10 characters')).toBeTruthy()
+    expect(view.getByLabelText('1 lines')).toBeTruthy()
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/repository/git/sync')).toBe(true))
 
     fireEvent.click(view.getByRole('button', { name: 'Second' }))

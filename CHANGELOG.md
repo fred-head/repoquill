@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Calculate document status statistics from the parsed editor content so
+  Markdown syntax, image metadata, and link destinations do not inflate visible
+  word and character counts; Unicode graphemes and logical document lines are
+  counted consistently in Edit and Read only modes.
 - Refresh an open note after conflict-free synchronization receives external
   edits, while preserving editor drafts across sync races and safely tracking
   remote note moves and deletions.

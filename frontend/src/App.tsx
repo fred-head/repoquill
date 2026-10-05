@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { AutoLockController, autoLockOptions, loadAutoLockPreference, parseAutoLockMinutes, saveAutoLockPreference, type AutoLockMinutes } from './app/autoLock'
 import { readConflictDecisionDraft, removeConflictDecisionDraft, writeConflictDecisionDraft } from './app/conflictDraftStorage'
-import { documentStats } from './app/documentStats'
+import { emptyDocumentStats, type DocumentStats } from './app/documentStats'
 import { defaultSyncPreferences, loadSyncPreferences, saveSyncPreferences, type SyncPreferences } from './app/syncPreferences'
 import { apiFetch, listenForAuthEvents, notifyAuthChanged, setCSRFToken } from './api'
 
@@ -20,6 +20,7 @@ type TreeNode = { name: string; path: string; type: 'directory' | 'file'; childr
 type FileResponse = { path: string; content: string; version: string }
 type Draft = FileResponse & { savedContent: string }
 type SyncRefreshSnapshot = { notebookID: string; path: string; version: string; generation: number }
+type DocumentStatsSnapshot = { documentKey: string; stats: DocumentStats }
 type MenuState = { entry?: TreeNode; x: number; y: number }
 type CleanupAsset = { path: string; size: number }
 type CleanupFailure = { path: string; error: string }
@@ -147,6 +148,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   const [selectedPath, setSelectedPath] = useState<string>()
   const [tabs, setTabs] = useState<NoteTab[]>([])
   const [note, setNote] = useState<FileResponse>()
+  const [documentStatsSnapshot, setDocumentStatsSnapshot] = useState<DocumentStatsSnapshot>()
   const [noteLoading, setNoteLoading] = useState(false)
   const [noteError, setNoteError] = useState<string>()
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved')
@@ -1401,6 +1403,14 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     setInstallPrompt(undefined)
   }
 
+  const editorDocumentKey = note ? `${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}` : ''
+  const visibleDocumentStats = documentStatsSnapshot?.documentKey === editorDocumentKey ? documentStatsSnapshot.stats : emptyDocumentStats
+  const publishDocumentStats = useCallback((stats: DocumentStats) => {
+    setDocumentStatsSnapshot((previous) => previous?.documentKey === editorDocumentKey && previous.stats === stats
+      ? previous
+      : { documentKey: editorDocumentKey, stats })
+  }, [editorDocumentKey])
+
   return (
     <div className="repoquill-app-shell flex min-h-0 flex-col bg-zinc-950 text-zinc-100 lg:flex-row">
       {mobileNavigationOpen && <button type="button" aria-label="Close notebook navigation" className="fixed inset-0 z-30 bg-black/65 lg:hidden" onClick={() => setMobileNavigationOpen(false)} />}
@@ -1456,9 +1466,9 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
           {noteError && <ErrorMessage>{noteError}</ErrorMessage>}
 		  {deletedNotePath === selectedPath && <div role="status" className="mb-4 rounded-lg border border-amber-800/70 bg-amber-950/30 p-4 text-sm text-amber-100"><p className="font-medium">This note was deleted in another synchronization.</p><p className="mt-1 text-xs leading-5 text-amber-100/75">The editor content is preserved here. Recover it as a new note before saving, or close this tab.</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" disabled={operationBusy} onClick={() => { setDeletedRecoveryError(undefined); setDeletedRecoveryOpen(true) }} className="min-h-9 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 disabled:opacity-40">Recover as new note</button><button type="button" onClick={() => { if (selectedPath) void closeTab(selectedPath) }} className="min-h-9 rounded-md border border-amber-800 px-3 text-xs text-amber-100 hover:bg-amber-900/40">Close deleted note</button></div>{deletedRecoveryError && <p role="alert" className="mt-2 text-xs text-red-300">Recovery failed: {deletedRecoveryError}</p>}</div>}
 		  {saveError && <ErrorMessage>{saveStatus === 'conflict' ? 'This note changed elsewhere. Your version is still preserved in this editor and has not overwritten the other version. Review both versions before choosing the result.' : `This note could not be saved on the RepoQuill server. Your current editor content is still visible. Try saving again before leaving the note. Details: ${saveError}`}</ErrorMessage>}
-          {!noteLoading && note && <Suspense fallback={<p className="text-sm text-zinc-400">Loading editor…</p>}><MarkdownEditor key={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} documentKey={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} notePath={note.path} markdown={note.content} readOnly={readOnly} onChange={updateDraft} notePaths={markdownPaths(entries)} onOpenNoteLink={openInternalNoteLink} stickyToolbar /></Suspense>}
+          {!noteLoading && note && <Suspense fallback={<p className="text-sm text-zinc-400">Loading editor…</p>}><MarkdownEditor key={editorDocumentKey} documentKey={editorDocumentKey} notePath={note.path} markdown={note.content} readOnly={readOnly} onChange={updateDraft} onStats={publishDocumentStats} notePaths={markdownPaths(entries)} onOpenNoteLink={openInternalNoteLink} stickyToolbar /></Suspense>}
         </article>
-		{selectedPath && note && <DocumentStatusBar status={saveStatus} gitStatus={gitStatus} gitSyncing={gitSyncing} markdown={note.content} onOpenSyncDetails={() => setSyncDetailsOpen(true)} />}
+		{selectedPath && note && <DocumentStatusBar status={saveStatus} gitStatus={gitStatus} gitSyncing={gitSyncing} stats={visibleDocumentStats} onOpenSyncDetails={() => setSyncDetailsOpen(true)} />}
       </main>
       {contextMenu && <div className="fixed inset-0 z-40" onClick={() => setContextMenu(undefined)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined) }}><div className="fixed" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><ActionMenu entry={contextMenu.entry} onNewNote={(entry) => { setContextMenu(undefined); createEntry('file', entry) }} onNewFolder={(entry) => { setContextMenu(undefined); createEntry('directory', entry) }} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={requestDeleteEntry} /></div></div>}
       {createRequest && <TextInputDialog title={createRequest.type === 'file' ? 'New Note' : 'New Folder'} label={createRequest.type === 'file' ? `Note name${createRequest.parent ? ` in ${createRequest.parent}` : ''}` : `Folder name${createRequest.parent ? ` in ${createRequest.parent}` : ''}`} initialValue={createRequest.suggested} confirmLabel="Create" onCancel={() => setCreateRequest(undefined)} onConfirm={(value) => void submitCreateEntry(value)} />}
@@ -2213,11 +2223,10 @@ function DecisionButton({ children,selected,danger=false,onClick }: { children:R
 function StatusDetail({ label, value }: { label:string; value:string }) { return <div className="rounded border border-zinc-800 p-3"><dt className="text-[11px] uppercase tracking-wide text-zinc-600">{label}</dt><dd className="mt-1 break-words text-xs text-zinc-300">{value}</dd></div> }
 function formatStatusTime(value?:string, fallback='Not yet'):string { if (!value) return fallback; const date=new Date(value); return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString() }
 
-export function DocumentStatusBar({ status, gitStatus, gitSyncing, markdown, onOpenSyncDetails = () => undefined }: { status: SaveStatus; gitStatus: GitStatus; gitSyncing: boolean; markdown: string; onOpenSyncDetails?:()=>void }) {
+export function DocumentStatusBar({ status, gitStatus, gitSyncing, stats = emptyDocumentStats, onOpenSyncDetails = () => undefined }: { status: SaveStatus; gitStatus: GitStatus; gitSyncing: boolean; stats?: DocumentStats; onOpenSyncDetails?:()=>void }) {
   const labels: Record<SaveStatus, string> = { saved: 'Saved on this server', unsaved: 'Changes not saved yet', saving: 'Saving on this server…', error: 'Save could not finish', conflict: 'Your decision is required' }
   const colors: Record<SaveStatus, string> = { saved: 'text-emerald-400', unsaved: 'text-amber-300', saving: 'text-zinc-400', error: 'text-red-400', conflict: 'text-red-400' }
 	const synchronization = synchronizationPresentation(gitStatus, gitSyncing)
-  const stats = documentStats(markdown)
   return <footer aria-label="Document status" className="sticky bottom-0 z-10 flex h-7 shrink-0 items-center gap-2.5 border-t border-zinc-800 bg-zinc-950/90 px-5 text-[11px] leading-none text-zinc-500 backdrop-blur sm:px-8"><span role="status" className={`truncate font-medium ${colors[status]}`}>{labels[status]}</span><span aria-hidden="true" className="text-zinc-700">•</span><button type="button" onClick={onOpenSyncDetails} aria-label={`Synchronization: ${synchronization.label}. Open details`} title={`${synchronization.happened} ${synchronization.safety}`} className={`truncate rounded px-1 py-1 font-medium hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-amber-500 ${synchronization.attention ? 'text-red-400' : gitStatus.state === 'synced' || gitStatus.state === 'clean' ? 'text-emerald-400' : 'text-zinc-400'}`}>{synchronization.label}</button><span aria-hidden="true" className="hidden text-zinc-700 sm:inline">•</span><span className="hidden sm:inline" aria-label={`${stats.words} words`}>{stats.words} words</span><span className="hidden md:inline" aria-label={`${stats.characters} characters`}>{stats.characters} characters</span><span className="hidden md:inline" aria-label={`${stats.lines} lines`}>{stats.lines} lines</span></footer>
 }
 
