@@ -19,6 +19,7 @@ type Theme = 'dark' | 'light'
 type TreeNode = { name: string; path: string; type: 'directory' | 'file'; children?: TreeNode[] }
 type FileResponse = { path: string; content: string; version: string }
 type Draft = FileResponse & { savedContent: string }
+type SyncRefreshSnapshot = { notebookID: string; path: string; version: string; generation: number }
 type MenuState = { entry?: TreeNode; x: number; y: number }
 type CleanupAsset = { path: string; size: number }
 type CleanupFailure = { path: string; error: string }
@@ -80,6 +81,13 @@ function parentPath(path: string): string {
 
 function baseName(path: string): string {
   return path.split('/').pop() ?? path
+}
+
+function recoveredNotePath(path: string): string {
+  const name = baseName(path)
+  const withoutExtension = name.toLowerCase().endsWith('.md') ? name.slice(0, -3) : name
+  const folder = parentPath(path)
+  return `${folder ? `${folder}/` : ''}${withoutExtension} (recovered).md`
 }
 
 function findTreeNode(entries: TreeNode[], path: string): TreeNode | undefined {
@@ -154,8 +162,11 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
 	const [lastSyncAttemptAt, setLastSyncAttemptAt] = useState<string>()
 	const [lastSyncError, setLastSyncError] = useState<string>()
 	const [nextScheduledSyncAt, setNextScheduledSyncAt] = useState<string>()
-	const [receivedChanges, setReceivedChanges] = useState<ReceivedChange[]>([])
-	const [receivedChangesNoticeVisible, setReceivedChangesNoticeVisible] = useState(false)
+  const [receivedChanges, setReceivedChanges] = useState<ReceivedChange[]>([])
+  const [receivedChangesNoticeVisible, setReceivedChangesNoticeVisible] = useState(false)
+  const [deletedNotePath, setDeletedNotePath] = useState<string>()
+  const [deletedRecoveryOpen, setDeletedRecoveryOpen] = useState(false)
+  const [deletedRecoveryError, setDeletedRecoveryError] = useState<string>()
   const [historyPath, setHistoryPath] = useState<string>()
   const [editorRevision, setEditorRevision] = useState(0)
   const [trashOpen, setTrashOpen] = useState(false)
@@ -179,6 +190,8 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   const [searchError, setSearchError] = useState<string>()
   const [recoveryDraft, setRecoveryDraft] = useState<RecoveryDraft|undefined>(loadRecoveryDraft)
   const activeDraft = useRef<Draft | undefined>(undefined)
+  const deletedNotePathRef = useRef<string | undefined>(undefined)
+  const selectedPathRef = useRef(selectedPath)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const savePromise = useRef<Promise<FileResponse> | undefined>(undefined)
   const syncPromise = useRef<Promise<boolean> | undefined>(undefined)
@@ -200,6 +213,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   const [noteHeaderHeight, setNoteHeaderHeight] = useState(0)
 
   activeNotebookIDRef.current = activeNotebookID
+  selectedPathRef.current = selectedPath
   const preserveRecoveryDraft = useCallback(() => {
     const draft = activeDraft.current
     if (!draft || draft.content === draft.savedContent) return
@@ -453,6 +467,11 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       setSaveStatus('saved')
       return true
     }
+    if (deletedNotePathRef.current === draft.path) {
+      setSaveStatus('error')
+      setSaveError('This note was deleted elsewhere. Recover it as a new note before saving.')
+      return false
+    }
 
     const snapshot = { path: draft.path, content: draft.content, version: draft.version }
     setSaveStatus('saving')
@@ -496,6 +515,89 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     return true
   }
 
+  function isCurrentSyncNote(snapshot: SyncRefreshSnapshot, requireUnchanged: boolean) {
+    const draft = activeDraft.current
+    return activeNotebookIDRef.current === snapshot.notebookID &&
+      selectedPathRef.current === snapshot.path &&
+      draft?.path === snapshot.path &&
+      (!requireUnchanged || (draft.version === snapshot.version && draft.content === draft.savedContent && localChangeGeneration.current === snapshot.generation))
+  }
+
+  async function refreshActiveNoteAfterSync(changes: ReceivedChange[], syncingNotebookID: string, snapshot?: SyncRefreshSnapshot) {
+    if (activeNotebookIDRef.current === syncingNotebookID) {
+      for (const change of changes) {
+        if (change.kind !== 'moved' || !change.fromPath || !change.path.toLowerCase().endsWith('.md')) continue
+        setTabs((currentTabs) => {
+          if (!currentTabs.some((tab) => tab.path === change.fromPath)) return currentTabs
+          if (currentTabs.some((tab) => tab.path === change.path)) return currentTabs.filter((tab) => tab.path !== change.fromPath)
+          return currentTabs.map((tab) => tab.path === change.fromPath ? { ...tab, path: change.path } : tab)
+        })
+      }
+    }
+    if (!snapshot || changes.length === 0) return
+
+    const moved = changes.find((change) => change.kind === 'moved' && change.fromPath === snapshot.path && change.path.toLowerCase().endsWith('.md'))
+    if (moved) {
+      if (!isCurrentSyncNote(snapshot, false)) return
+      try {
+        const response = await apiFetch(`/api/repository/file?path=${encodeURIComponent(moved.path)}`)
+        const latest = await responseJSON<FileResponse>(response)
+        if (!isCurrentSyncNote(snapshot, false)) return
+
+        const current = activeDraft.current
+        if (!current) return
+        const changedDuringSync = localChangeGeneration.current !== snapshot.generation
+        const externalContentChanged = changedDuringSync && current.savedContent !== latest.content
+        const displayedContent = changedDuringSync ? current.content : latest.content
+        const savedContent = externalContentChanged ? current.savedContent : latest.content
+        activeDraft.current = { ...latest, version: externalContentChanged ? current.version : latest.version, content: displayedContent, savedContent }
+        selectedPathRef.current = moved.path
+        setSelectedPath(moved.path)
+        setSelectedItem(findTreeNode(entries, moved.path) ?? { name: baseName(moved.path), path: moved.path, type: 'file' })
+        setNote({ ...latest, content: displayedContent })
+        setEditorRevision((revision) => revision + 1)
+        deletedNotePathRef.current = undefined
+        setDeletedNotePath(undefined)
+        setSaveError(undefined)
+        if (externalContentChanged) {
+          setSaveStatus('conflict')
+          setSaveError('This note moved and changed elsewhere while you were editing. Your draft is preserved for review.')
+          setSaveConflict({ server: latest, overview: { token: `save:${latest.version}`, items: [{ path: latest.path, kind: 'markdown', yourExists: true, otherExists: true, yourContent: current.content, otherContent: latest.content }] } })
+        } else {
+          setSaveStatus(displayedContent === savedContent ? 'saved' : 'unsaved')
+        }
+      } catch {
+        // Keep the existing editor and draft visible if the moved path cannot be loaded.
+      }
+      return
+    }
+
+    const deleted = changes.some((change) => change.kind === 'deleted' && change.path === snapshot.path)
+    if (deleted && activeNotebookIDRef.current === snapshot.notebookID && selectedPathRef.current === snapshot.path && activeDraft.current?.path === snapshot.path) {
+      deletedNotePathRef.current = snapshot.path
+      setDeletedNotePath(snapshot.path)
+      setSaveError(undefined)
+      return
+    }
+
+    const updated = changes.some((change) => change.kind === 'updated' && change.path === snapshot.path)
+    if (!updated || !isCurrentSyncNote(snapshot, true)) return
+    try {
+      const response = await apiFetch(`/api/repository/file?path=${encodeURIComponent(snapshot.path)}`)
+      const latest = await responseJSON<FileResponse>(response)
+      if (!isCurrentSyncNote(snapshot, true)) return
+      activeDraft.current = { ...latest, savedContent: latest.content }
+      setNote(latest)
+      setEditorRevision((revision) => revision + 1)
+      setSaveStatus('saved')
+      setSaveError(undefined)
+      deletedNotePathRef.current = undefined
+      setDeletedNotePath(undefined)
+    } catch {
+      // A failed refresh must not replace a version that remains safely visible in the editor.
+    }
+  }
+
   async function syncRepository(): Promise<boolean> {
     if (notebookConfigured !== true) return false
     if (syncPromise.current) return syncPromise.current
@@ -508,6 +610,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
           syncRequested.current = false
           if (!(await saveDraft())) return false
           const syncedGeneration = localChangeGeneration.current
+          const syncingNotebookID = activeNotebookIDRef.current
           const response = await apiFetch('/api/repository/git/sync', { method: 'POST' })
           const result = await responseJSON<GitStatus>(response)
           gitStatusRef.current = result
@@ -519,10 +622,15 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
 
           lastSuccessfulSync.current = result.lastSyncedAt ? Date.parse(result.lastSyncedAt) || Date.now() : Date.now()
 			setLastSuccessfulSyncAt(result.lastSyncedAt ?? new Date().toISOString())
-			if (result.receivedChanges?.length) {
-				setReceivedChanges(result.receivedChanges)
-				setReceivedChangesNoticeVisible(true)
-			}
+            if (result.receivedChanges?.length) {
+              setReceivedChanges(result.receivedChanges)
+              setReceivedChangesNoticeVisible(true)
+              const currentDraft = activeDraft.current
+              const refreshSnapshot = currentDraft && activeNotebookIDRef.current === syncingNotebookID && selectedPathRef.current === currentDraft.path
+                ? { notebookID: syncingNotebookID, path: currentDraft.path, version: currentDraft.version, generation: syncedGeneration }
+                : undefined
+              await refreshActiveNoteAfterSync(result.receivedChanges, syncingNotebookID, refreshSnapshot)
+            }
           lastSyncedGeneration.current = syncedGeneration
           await loadTree()
 
@@ -615,6 +723,9 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
 				resolved = (await responseJSON<{ file:FileResponse }>(response)).file
 			}
 			activeDraft.current = { ...resolved,savedContent:resolved.content }
+			selectedPathRef.current = resolved.path
+			deletedNotePathRef.current = undefined
+			setDeletedNotePath(undefined)
 			setNote(resolved)
 			setSelectedPath(resolved.path)
 			setSelectedItem(findTreeNode(entries,resolved.path) ?? { name:baseName(resolved.path),path:resolved.path,type:'file' })
@@ -663,6 +774,9 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
 
   async function activateClonedNotebook() {
     activeDraft.current = undefined
+    selectedPathRef.current = undefined
+    deletedNotePathRef.current = undefined
+    setDeletedNotePath(undefined)
     setTabs([])
     setSelectedPath(undefined)
     setSelectedItem(undefined)
@@ -687,6 +801,9 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       return
     }
     activeDraft.current = undefined
+    selectedPathRef.current = undefined
+    deletedNotePathRef.current = undefined
+    setDeletedNotePath(undefined)
     setTabs([])
     setSelectedPath(undefined)
     setSelectedItem(undefined)
@@ -713,6 +830,10 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       const response = await apiFetch(`/api/notebooks/${encodeURIComponent(notebook.id)}/activate`, { method: 'POST' })
       await responseJSON<NotebookInfo>(response)
       activeDraft.current = undefined
+      activeNotebookIDRef.current = notebook.id
+      selectedPathRef.current = undefined
+      deletedNotePathRef.current = undefined
+      setDeletedNotePath(undefined)
       setTabs([])
       setSelectedPath(undefined)
       setSelectedItem(undefined)
@@ -753,6 +874,10 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         return current.map((tab) => tab.path === selectedPath ? nextTab : tab)
       })
       activeDraft.current = { ...loaded, savedContent: loaded.content }
+      selectedPathRef.current = path
+      deletedNotePathRef.current = undefined
+      setDeletedNotePath(undefined)
+      setDeletedRecoveryError(undefined)
       setNote(loaded)
       setSelectedPath(path)
       const treeEntry = findTreeNode(entries, path)
@@ -791,6 +916,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         return
       }
       activeDraft.current = { ...current, content: recoveryDraft.content, savedContent: current.content }
+      selectedPathRef.current = current.path
       setNote({ ...current, content: recoveryDraft.content })
       setSelectedPath(current.path)
       setTabs((items) => items.some((tab) => tab.path === current.path) ? items : [...items, { path: current.path, readOnly: false }])
@@ -814,16 +940,84 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       setTabs((current) => current.filter((tab) => tab.path !== path))
       return
     }
-    if (!(await saveDraft())) return
+    const isDeleted = deletedNotePathRef.current === path
+    if (!isDeleted && !(await saveDraft())) return
     const remaining = tabs.filter((tab) => tab.path !== path)
     const next = remaining[Math.min(index, remaining.length - 1)]
     setTabs(remaining)
     activeDraft.current = undefined
+    selectedPathRef.current = undefined
+    if (isDeleted) {
+      deletedNotePathRef.current = undefined
+      setDeletedNotePath(undefined)
+      setDeletedRecoveryError(undefined)
+    }
     setNote(undefined)
     setSelectedPath(undefined)
     setSaveStatus('saved')
     setSaveError(undefined)
     if (next) await openNote(next.path)
+  }
+
+  async function recoverDeletedNote(rawPath: string) {
+    const originalPath = deletedNotePathRef.current
+    const originalDraft = activeDraft.current
+    const notebookID = activeNotebookIDRef.current
+    if (!originalPath || originalDraft?.path !== originalPath) return
+    let path = rawPath.trim()
+    if (!path) return
+    if (!path.toLowerCase().endsWith('.md')) path += '.md'
+    if (path === originalPath) {
+      setDeletedRecoveryError('Choose a new path so the recovered copy does not replace the deleted note.')
+      return
+    }
+
+    setDeletedRecoveryOpen(false)
+    setDeletedRecoveryError(undefined)
+    setOperationBusy(true)
+    const generation = localChangeGeneration.current
+    try {
+      await responseJSON<{ path: string; type: string }>(await apiFetch('/api/repository/entries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, type: 'file' }),
+      }))
+      const created = await responseJSON<FileResponse>(await apiFetch(`/api/repository/file?path=${encodeURIComponent(path)}`))
+      const content = originalDraft.content
+      const saved = await responseJSON<FileResponse>(await apiFetch(`/api/repository/file?path=${encodeURIComponent(path)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, version: created.version }),
+      }))
+      const stillActive = activeNotebookIDRef.current === notebookID && selectedPathRef.current === originalPath && activeDraft.current?.path === originalPath
+      if (stillActive && localChangeGeneration.current === generation) {
+        setTabs((current) => {
+          if (current.some((tab) => tab.path === path)) return current.filter((tab) => tab.path !== originalPath)
+          return current.map((tab) => tab.path === originalPath ? { ...tab, path } : tab)
+        })
+        activeDraft.current = { ...saved, savedContent: saved.content }
+        selectedPathRef.current = path
+        setSelectedPath(path)
+        setSelectedItem(findTreeNode(entries, path) ?? { name: baseName(path), path, type: 'file' })
+        setNote(saved)
+        setEditorRevision((revision) => revision + 1)
+        deletedNotePathRef.current = undefined
+        setDeletedNotePath(undefined)
+        setSaveStatus('saved')
+        setSaveError(undefined)
+        localChangeGeneration.current += 1
+        setOperationNotice(`Recovered note saved as ${path}.`)
+      } else {
+        setTabs((current) => current.some((tab) => tab.path === path) ? current : [...current, { path, readOnly: false }])
+        setOperationNotice(`A recovered copy was saved as ${path}. Changes made during recovery remain in the deleted note.`)
+      }
+      await loadTree()
+      void refreshGitStatus()
+    } catch (error) {
+      setDeletedRecoveryError(messageFrom(error))
+    } finally {
+      setOperationBusy(false)
+    }
   }
 
   async function activateTab(path: string) {
@@ -918,6 +1112,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       })
       if (affectedPath) {
         activeDraft.current = undefined
+        selectedPathRef.current = undefined
         setNote(undefined)
         setSelectedPath(undefined)
       }
@@ -989,6 +1184,9 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       setTabs(remainingTabs)
       if (activeDeleted) {
         activeDraft.current = undefined
+        selectedPathRef.current = undefined
+        deletedNotePathRef.current = undefined
+        setDeletedNotePath(undefined)
         setNote(undefined)
         setSelectedPath(undefined)
         setSaveStatus('saved')
@@ -1251,11 +1449,12 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         {(!browserOnline || health === 'offline') && <div role="status" className="border-b border-amber-800/70 bg-amber-950/40 px-4 py-2 text-sm text-amber-100 sm:px-8"><strong>Offline.</strong> RepoQuill is online-first; viewing may continue, but editing and synchronization require the server connection.</div>}
         {recoveryDraft && <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-800/70 bg-amber-950/30 px-4 py-2 text-xs text-amber-100 sm:px-8"><span>An unsaved recovery draft for <strong>{recoveryDraft.path}</strong> was preserved after authentication ended.</span><span className="flex gap-2"><button type="button" onClick={()=>void restoreRecoveryDraft()} className="min-h-9 rounded border border-amber-700 px-3 hover:bg-amber-900/40">Review draft</button><button type="button" onClick={discardRecoveryDraft} className="min-h-9 rounded px-3 text-zinc-400 hover:bg-zinc-800">Discard</button></span></div>}
         {installPrompt && !installPromptDismissed && <div className="flex items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-300 sm:px-8"><span>Install RepoQuill for a standalone app experience.</span><div className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => void installApplication()} className="min-h-9 rounded-md border border-zinc-600 px-3 font-medium hover:bg-zinc-800">Install app</button><button type="button" onClick={dismissInstallPrompt} aria-label="Dismiss install suggestion" title="Dismiss" className="flex min-h-9 min-w-9 items-center justify-center rounded-md text-lg text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200">×</button></div></div>}
-		{receivedChangesNoticeVisible && receivedChanges.length > 0 && <ReceivedChangesNotice changes={receivedChanges} onOpen={(path) => { setReceivedChangesNoticeVisible(false); void openNote(path, 'new') }} onDismiss={() => setReceivedChangesNoticeVisible(false)} />}
+        {receivedChangesNoticeVisible && receivedChanges.length > 0 && <ReceivedChangesNotice changes={receivedChanges} onOpen={(path) => { setReceivedChangesNoticeVisible(false); void openNote(path, 'new') }} onDismiss={() => setReceivedChangesNoticeVisible(false)} />}
         <article className={`mx-auto w-full max-w-4xl flex-1 px-5 sm:px-8 ${selectedPath ? 'pt-2 pb-8 sm:pt-2 sm:pb-12' : 'py-8 sm:py-12'}`}>
           {!selectedPath && <EmptyState notebookConfigured={notebookConfigured !== false} onAddNotebook={() => setAddNotebookOpen(true)} />}
           {noteLoading && <p className="text-sm text-zinc-400">Loading note…</p>}
           {noteError && <ErrorMessage>{noteError}</ErrorMessage>}
+		  {deletedNotePath === selectedPath && <div role="status" className="mb-4 rounded-lg border border-amber-800/70 bg-amber-950/30 p-4 text-sm text-amber-100"><p className="font-medium">This note was deleted in another synchronization.</p><p className="mt-1 text-xs leading-5 text-amber-100/75">The editor content is preserved here. Recover it as a new note before saving, or close this tab.</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" disabled={operationBusy} onClick={() => { setDeletedRecoveryError(undefined); setDeletedRecoveryOpen(true) }} className="min-h-9 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 disabled:opacity-40">Recover as new note</button><button type="button" onClick={() => { if (selectedPath) void closeTab(selectedPath) }} className="min-h-9 rounded-md border border-amber-800 px-3 text-xs text-amber-100 hover:bg-amber-900/40">Close deleted note</button></div>{deletedRecoveryError && <p role="alert" className="mt-2 text-xs text-red-300">Recovery failed: {deletedRecoveryError}</p>}</div>}
 		  {saveError && <ErrorMessage>{saveStatus === 'conflict' ? 'This note changed elsewhere. Your version is still preserved in this editor and has not overwritten the other version. Review both versions before choosing the result.' : `This note could not be saved on the RepoQuill server. Your current editor content is still visible. Try saving again before leaving the note. Details: ${saveError}`}</ErrorMessage>}
           {!noteLoading && note && <Suspense fallback={<p className="text-sm text-zinc-400">Loading editor…</p>}><MarkdownEditor key={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} documentKey={`${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}`} notePath={note.path} markdown={note.content} readOnly={readOnly} onChange={updateDraft} notePaths={markdownPaths(entries)} onOpenNoteLink={openInternalNoteLink} stickyToolbar /></Suspense>}
         </article>
@@ -1263,6 +1462,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       </main>
       {contextMenu && <div className="fixed inset-0 z-40" onClick={() => setContextMenu(undefined)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined) }}><div className="fixed" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><ActionMenu entry={contextMenu.entry} onNewNote={(entry) => { setContextMenu(undefined); createEntry('file', entry) }} onNewFolder={(entry) => { setContextMenu(undefined); createEntry('directory', entry) }} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={requestDeleteEntry} /></div></div>}
       {createRequest && <TextInputDialog title={createRequest.type === 'file' ? 'New Note' : 'New Folder'} label={createRequest.type === 'file' ? `Note name${createRequest.parent ? ` in ${createRequest.parent}` : ''}` : `Folder name${createRequest.parent ? ` in ${createRequest.parent}` : ''}`} initialValue={createRequest.suggested} confirmLabel="Create" onCancel={() => setCreateRequest(undefined)} onConfirm={(value) => void submitCreateEntry(value)} />}
+      {deletedRecoveryOpen && deletedNotePath && <TextInputDialog title="Recover deleted note" label="Save the recovered copy as" initialValue={recoveredNotePath(deletedNotePath)} confirmLabel="Recover" onCancel={() => setDeletedRecoveryOpen(false)} onConfirm={(value) => void recoverDeletedNote(value)} />}
       {deleteRequest && <ConfirmationDialog title="Move to Trash?" message={`Move “${deleteRequest.path}” to Trash?${deleteRequest.type === 'file' ? ' Its owned image assets will move with it.' : ' Everything inside this folder will move with it.'} You can restore it later.`} confirmLabel="Move to Trash" danger onCancel={() => setDeleteRequest(undefined)} onConfirm={() => { const entry = deleteRequest; setDeleteRequest(undefined); void deleteEntry(entry) }} />}
       {moveEntry && <FolderPicker entries={entries} notebookName={notebookName} moving={moveEntry} destination={moveDestination} onDestination={setMoveDestination} onCancel={() => setMoveEntry(undefined)} onConfirm={() => void confirmMove()} />}
       {moveLinkPreview && <MoveLinkPreviewDialog preview={moveLinkPreview.preview} onCancel={() => setMoveLinkPreview(undefined)} onConfirm={() => void confirmMoveLinkRewrites()} />}
