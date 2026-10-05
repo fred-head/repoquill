@@ -48,6 +48,35 @@ describe('MarkdownEditor read-only mode', () => {
     expect(view.getByRole('button', { name: 'Bold' }).hasAttribute('disabled')).toBe(true)
   })
 
+  it('reports parsed visible-text statistics consistently in Edit and Read only', async () => {
+    const markdown = [
+      '# Heading **styled**',
+      '',
+      'Read [this label](https://example.test/path) and `inline code`.',
+      '',
+      '> quoted text',
+      '',
+      '- item text',
+      '',
+      '![Image alt hidden](<Note.assets/generated-image.png>)',
+      '',
+      '```ts',
+      'const answer = 42',
+      '```',
+    ].join('\n')
+    const onStatsEdit = vi.fn()
+    const properties = { notePath: 'Note.md', markdown, onChange: vi.fn() }
+    const view = render(<MarkdownEditor documentKey="stats-edit" readOnly={false} {...properties} onStats={onStatsEdit} />)
+
+    await waitFor(() => expect(onStatsEdit).toHaveBeenCalled())
+    expect(onStatsEdit.mock.calls.at(-1)?.[0]).toEqual({ words: 15, characters: 83, lines: 6 })
+
+    const onStatsRead = vi.fn()
+    view.rerender(<MarkdownEditor documentKey="stats-read" readOnly {...properties} onStats={onStatsRead} />)
+    await waitFor(() => expect(onStatsRead).toHaveBeenCalled())
+    expect(onStatsRead.mock.calls.at(-1)?.[0]).toEqual(onStatsEdit.mock.calls.at(-1)?.[0])
+  })
+
   it('keeps primary and contextual controls in one opt-in sticky toolbar stack', async () => {
     const markdown = '| A | B |\n| --- | --- |\n| 1 | 2 |'
     const view = render(<MarkdownEditor documentKey="sticky-toolbar" notePath="Note.md" markdown={markdown} readOnly={false} onChange={vi.fn()} stickyToolbar />)
@@ -586,7 +615,8 @@ describe('MarkdownEditor read-only mode', () => {
 
   it('uses Enter for a paragraph and Shift+Enter for a hard line break', async () => {
     const onChange = vi.fn()
-    const view = render(<MarkdownEditor documentKey="line-breaks" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
+    const onStats = vi.fn()
+    const view = render(<MarkdownEditor documentKey="line-breaks" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} onStats={onStats} />)
     const editor = await waitFor(() => {
       const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
       expect(element).toBeTruthy()
@@ -603,6 +633,10 @@ describe('MarkdownEditor read-only mode', () => {
     })
     expect(view.container.querySelectorAll('.ProseMirror p')).toHaveLength(2)
     expect(view.container.querySelector('.ProseMirror p:last-child br')).toBeTruthy()
+    expect(onStats.mock.calls.at(-1)?.[0]).toEqual({ words: 3, characters: 16, lines: 3 })
+
+    await userEvent.keyboard('{Enter}', { skipClick: true })
+    await waitFor(() => expect(onStats.mock.calls.at(-1)?.[0]).toEqual({ words: 3, characters: 16, lines: 4 }))
   })
 
   it('keeps slash commands unavailable in Read only', async () => {
