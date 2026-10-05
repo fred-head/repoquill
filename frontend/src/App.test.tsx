@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App, TrashDialog } from './App'
 
 class ResizeObserverStub {
@@ -11,6 +12,8 @@ class ResizeObserverStub {
 }
 
 beforeEach(() => {
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList
+  Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0)
   vi.stubGlobal('ResizeObserver', ResizeObserverStub)
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
   localStorage.clear()
@@ -56,6 +59,9 @@ afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
+
+// Milkdown removes document listeners 3 seconds after editor setup.
+afterAll(async () => new Promise((resolve) => setTimeout(resolve, 3_100)))
 
 describe('App auto-lock integration', () => {
   it('keeps the note visible when inactivity changes it to Read only', async () => {
@@ -108,6 +114,61 @@ describe('App auto-lock integration', () => {
     expect(view.container.firstElementChild?.classList.contains('repoquill-app-shell')).toBe(true)
     expect(noteScroller?.classList.contains('repoquill-note-scroll')).toBe(true)
     expect(toolbars?.dataset.sticky).toBe('true')
+  })
+
+  it('collapses and restores the desktop sidebar without replacing an active editor and remembers the preference', async () => {
+    const user = userEvent.setup()
+    const view = render(<App />)
+    fireEvent.click(await view.findByRole('button', { name: 'Note' }))
+    fireEvent.click(await view.findByRole('button', { name: 'Second' }), { ctrlKey: true })
+    await waitFor(() => expect(view.getAllByRole('tab')).toHaveLength(2))
+    fireEvent.click(view.getByRole('tab', { name: 'Note' }))
+    await waitFor(() => expect(view.container.querySelector('.ProseMirror')?.textContent).toContain('Auto-lock note'))
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector<HTMLElement>('.ProseMirror')
+      expect(element).toBeTruthy()
+      return element!
+    })
+    editor.focus()
+    await user.type(editor, ' sidebar draft', { skipClick: true })
+    await waitFor(() => expect(editor.textContent).toContain('sidebar draft'))
+    const draftHTML = editor.innerHTML
+
+    const toggle = view.getByRole('button', { name: 'Collapse notebook sidebar' })
+    toggle.focus()
+    await user.keyboard('{Enter}')
+    expect(view.getByRole('button', { name: 'Expand notebook sidebar' }).getAttribute('aria-expanded')).toBe('false')
+    expect(localStorage.getItem('repoquill.notebook-sidebar-collapsed')).toBe('true')
+    expect(view.getAllByRole('tab')).toHaveLength(2)
+    expect(view.getByRole('tab', { name: 'Second' })).toBeTruthy()
+    expect(view.getByRole('tab', { name: 'Note' }).getAttribute('aria-selected')).toBe('true')
+    expect(view.container.querySelector('.ProseMirror')).toBe(editor)
+    expect(editor.innerHTML).toBe(draftHTML)
+
+    const restore = view.getByRole('button', { name: 'Expand notebook sidebar' })
+    restore.focus()
+    await user.keyboard('{Enter}')
+    expect(view.getByRole('button', { name: 'Collapse notebook sidebar' }).getAttribute('aria-expanded')).toBe('true')
+    expect(localStorage.getItem('repoquill.notebook-sidebar-collapsed')).toBeNull()
+    expect(view.container.querySelector('.ProseMirror')).toBe(editor)
+    expect(editor.innerHTML).toBe(draftHTML)
+
+    fireEvent.click(view.getByRole('button', { name: 'Collapse notebook sidebar' }))
+    view.unmount()
+    const reloaded = render(<App />)
+    expect(await reloaded.findByRole('button', { name: 'Expand notebook sidebar' })).toBeTruthy()
+  })
+
+  it('keeps the mobile navigation drawer available when the desktop sidebar preference is collapsed', async () => {
+    localStorage.setItem('repoquill.notebook-sidebar-collapsed', 'true')
+    const view = render(<App />)
+    const openNavigation = await view.findByRole('button', { name: 'Open notebook navigation' })
+    expect(openNavigation.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(openNavigation)
+    expect(openNavigation.getAttribute('aria-expanded')).toBe('true')
+    const sidebar = view.getByRole('complementary', { name: 'Notebook navigation' })
+    expect(sidebar.classList.contains('translate-x-0')).toBe(true)
+    expect(sidebar.classList.contains('lg:invisible')).toBe(true)
   })
 
   it('opens primary notebook navigation, onboarding, and switches without stale tree state', async () => {
