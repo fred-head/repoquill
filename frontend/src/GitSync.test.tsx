@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App, DocumentStatusBar, ReceivedChangesNotice } from './App'
 
 class ResizeObserverStub { observe() {} unobserve() {} disconnect() {} }
@@ -15,6 +15,9 @@ beforeEach(() => {
   Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => null })
 })
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
+
+// Milkdown removes its global listeners 3 seconds after editor setup.
+afterAll(async () => new Promise((resolve) => setTimeout(resolve, 3_100)))
 
 describe('Git synchronization UI', () => {
   it('keeps local save and Git synchronization states distinct', () => {

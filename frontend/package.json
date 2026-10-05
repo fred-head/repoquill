@@ -24,6 +24,7 @@
     "@milkdown/kit": "7.22.1",
     "@milkdown/react": "7.22.1",
     "@tailwindcss/vite": "^4.1.0",
+    "highlight.js": "^11.12.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwindcss": "^4.1.0"
