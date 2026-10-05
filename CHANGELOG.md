@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Refresh an open note after conflict-free synchronization receives external
+  edits, while preserving editor drafts across sync races and safely tracking
+  remote note moves and deletions.
+
 ## [0.1.0-alpha.2.security.4] - 2026-10-05
 
 ### Added

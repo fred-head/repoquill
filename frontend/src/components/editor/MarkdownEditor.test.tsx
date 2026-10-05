@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import userEvent from '@testing-library/user-event'
 import { MarkdownEditor } from './MarkdownEditor'
 
@@ -31,6 +31,9 @@ afterEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
 })
+
+// Milkdown's context timers remove global listeners 3 seconds after editor setup.
+afterAll(async () => new Promise((resolve) => setTimeout(resolve, 3_100)))
 
 describe('MarkdownEditor read-only mode', () => {
   it('mounts in Edit and Read only without losing the document', async () => {
