@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2.security.4] - 2026-10-05
+
 ### Added
 
 - Added an explicit, mobile-friendly Paste as Markdown workflow and automatic
@@ -21,6 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   untrusted assets.
 - Updated the test-only transitive `undici` dependency to 8.11.2 after the npm
   audit gate detected the WebSocket decompression denial-of-service advisory.
+- Fixed npm audit advisories by updating `brace-expansion` 2.1.4/5.0.9 to
+  2.1.7/5.0.12 (GHSA-6j4f-fj2g-mc7p, GHSA-q2hr-2g5m-vwhr,
+  GHSA-qhr7-859c-m2p7), `dompurify` 3.4.14 to 3.4.16
+  (GHSA-p98j-92pf-mc4p), and `fast-uri` 3.1.7 to 3.1.8
+  (GHSA-hrr3-gc8f-f4qj).
 
 ## [0.1.0-alpha.2.security.3] - 2026-09-03
 
