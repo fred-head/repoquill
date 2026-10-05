@@ -16,22 +16,19 @@ principles are welcome.
 
 ## Before opening a pull request
 
-1. Read [AGENTS.md](AGENTS.md) and preserve ordinary Markdown/Git portability.
+1. Read [AGENTS.md](AGENTS.md) for repository invariants and follow only the
+   task-specific references it points to.
 2. Keep the change focused and avoid unrelated formatting or dependency churn.
-3. Add tests for destructive, data-safety, path-security, Git, or editor
+3. Add or update focused tests when behavior changes, especially for
+   destructive, data-safety, path-security, Git, authentication, or editor
    serialization behavior.
 4. Update `CHANGELOG.md` under `Unreleased` for user-visible changes.
-5. Run:
-
-   ```sh
-   go test ./...
-   go vet ./...
-   cd frontend
-   npm ci
-   npm run lint
-   npm test
-   npm run build
-   ```
+5. Choose local validation using the
+   [development and testing guide](docs/development/testing.md). Run focused
+   checks first; CI remains the broad merge gate. Dependency changes and
+   releases follow the full-gate procedures in
+   [SECURITY-MAINTENANCE.md](SECURITY-MAINTENANCE.md) and
+   [ALPHA-RELEASE.md](ALPHA-RELEASE.md).
 
 6. Explain the user-facing outcome, safety implications, and verification in the
    pull-request description.
