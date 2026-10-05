@@ -192,29 +192,38 @@ describe('Git synchronization UI', () => {
   it('refreshes the note after the safe note-switch sync trigger', async () => {
     localStorage.setItem('repoquill.sync-preferences', JSON.stringify({ scheduledMinutes: 0, inactivityMinutes: 0 }))
     let syncCount = 0
-    let content = 'Current note'
+    let content = 'Other note'
     let version = 'v1'
+    let finishStartupSync!: (response: Response) => void
     const staleSyncTime = new Date(Date.now() - 60_000).toISOString()
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url === '/api/health') return Response.json({ status: 'ok' })
       if (url === '/api/notebook') return Response.json({ name: 'Private', configured: true })
       if (url === '/api/notebooks') return Response.json({ activeId: 'private', notebooks: [{ id: 'private', name: 'Private' }] })
-      if (url === '/api/repository/tree') return Response.json({ entries: [{ name: 'Current.md', path: 'Current.md', type: 'file' }] })
+      if (url === '/api/repository/tree') return Response.json({ entries: [{ name: 'Current.md', path: 'Current.md', type: 'file' }, { name: 'Other.md', path: 'Other.md', type: 'file' }] })
       if (url === '/api/repository/git/status') return Response.json({ state: 'synced', branch: 'main', lastSyncedAt: syncCount === 1 ? staleSyncTime : new Date().toISOString() })
-      if (url.startsWith('/api/repository/file?')) return Response.json({ path: 'Current.md', content, version })
+      if (url.startsWith('/api/repository/file?')) {
+        const path = new URL(url, 'http://repoquill.test').searchParams.get('path')
+        return Response.json({ path, content: path === 'Other.md' ? content : 'Current note', version: path === 'Other.md' ? version : 'v1' })
+      }
       if (url === '/api/repository/git/sync' && init?.method === 'POST') {
         syncCount += 1
-        if (syncCount === 1) return Response.json({ state: 'synced', branch: 'main', lastSyncedAt: staleSyncTime })
+        if (syncCount === 1) return new Promise<Response>((resolve) => { finishStartupSync = resolve })
         content = 'Updated on safe note switch'
         version = 'v2'
-        return Response.json({ state: 'synced', branch: 'main', lastSyncedAt: new Date().toISOString(), receivedChanges: [{ kind: 'updated', path: 'Current.md' }] })
+        return Response.json({ state: 'synced', branch: 'main', lastSyncedAt: new Date().toISOString(), receivedChanges: [{ kind: 'updated', path: 'Other.md' }] })
       }
       return Response.json({ error: 'unexpected request' }, { status: 500 })
     })
 
     const view = render(<App />)
+    await waitFor(() => expect(finishStartupSync).toBeTypeOf('function'))
     fireEvent.click(await view.findByRole('button', { name: 'Current' }))
+    await waitFor(() => expect(view.getByText('Current note')).toBeTruthy())
+    finishStartupSync(Response.json({ state: 'synced', branch: 'main', lastSyncedAt: staleSyncTime }))
+    await view.findByRole('button', { name: 'Sync' })
+    fireEvent.click(await view.findByRole('button', { name: 'Other' }))
 
     expect(await view.findByText('Updated on safe note switch')).toBeTruthy()
     expect(syncCount).toBe(2)
