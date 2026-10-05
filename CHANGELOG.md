@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added a keyboard accessible desktop sidebar toggle that remembers its local
+  browser preference while keeping the mobile navigation drawer available.
+
 ### Fixed
 
 - Calculate document status statistics from the parsed editor content so
