@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Aligned interactive task-list checkboxes with the first text line while
+  preserving their touch-friendly target size.
 - Hide expired or revoked browser sessions from Security settings and prune
   inactive session records on subsequent session writes.
 - Calculate document status statistics from the parsed editor content so

@@ -108,7 +108,7 @@ body { margin: 0; min-width: 320px; }
 .repoquill-editor ol { margin: 0.75rem 0; list-style: decimal; padding-left: 1.75rem; }
 .repoquill-editor .repoquill-list-item { position: relative; }
 .repoquill-editor li[data-item-type="task"] { list-style: none; }
-.repoquill-editor .repoquill-task-checkbox { position: absolute; top: -0.1rem; left: -2.55rem; display: flex; width: 2.5rem; height: 2.5rem; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 0.5rem; background: transparent; color: #a1a1aa; font-size: 1.2rem; line-height: 1; cursor: pointer; }
+.repoquill-editor .repoquill-task-checkbox { position: absolute; top: calc((1.6rem - 2.5rem) / 2); left: -2.55rem; display: flex; width: 2.5rem; height: 2.5rem; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 0.5rem; background: transparent; color: #a1a1aa; font-size: 1.2rem; line-height: 1; cursor: pointer; }
 .repoquill-editor .repoquill-task-checkbox:hover:not(:disabled) { border-color: #52525b; background: #27272a; color: #fafafa; }
 .repoquill-editor .repoquill-task-checkbox:focus-visible { border-color: #f59e0b; outline: 2px solid #f59e0b; outline-offset: 1px; }
 .repoquill-editor .repoquill-task-checkbox.is-checked { color: #34d399; }
