@@ -16,6 +16,7 @@ versioned even without RepoQuill.
 ## Features
 
 - Live rendered Markdown editing with CommonMark and GFM
+- Optional document outline from Markdown headings, shown in a desktop panel or mobile drawer without changing note content
 - Folders, note creation, rename, move, recoverable Trash, and multiple open note tabs
 - Formatting toolbar and keyboard-/touch-friendly slash commands
 - Fenced code language selection, syntax highlighting, and copy actions while keeping ordinary Markdown fences
