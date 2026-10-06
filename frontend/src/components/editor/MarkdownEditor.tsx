@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { imageInlineComponent, inlineImageConfig } from '@milkdown/kit/component/image-inline'
 import { commandsCtx, defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, parserCtx, rootCtx, schemaCtx } from '@milkdown/kit/core'
 import { history, redoCommand, undoCommand } from '@milkdown/kit/plugin/history'
@@ -58,9 +58,57 @@ type SlashCommand = { id: SlashCommandID; label: string; description: string; ke
 type LinkDraft = { from: number; to: number; selectedText: string; existingHref?: string }
 type SelectedLink = { href: string; targetPath?: string; exists: boolean }
 type MarkdownPasteDraft = { text: string; error?: string; clipboardHint?: string }
+type OutlineHeading = { position: number; level: number; text: string }
 const emptyToolbarState: ToolbarState = { block: 'paragraph', strong: false, emphasis: false, strike: false, code: false, link: false, bullet: false, ordered: false, task: false, quote: false, table: false }
 const imagePresentationSizes: ImagePresentationSize[] = ['small', 'medium', 'large', 'full']
 const emptyImagePresentations: Record<string, ImagePresentationSize> = {}
+const outlinePreferenceKey = 'repoquill:document-outline-open'
+
+function documentOutline(document: Node): OutlineHeading[] {
+  const headings: OutlineHeading[] = []
+  document.descendants((node, position) => {
+    if (node.type.name === 'heading') {
+      headings.push({ position, level: Number(node.attrs.level) || 1, text: node.textContent.trim() })
+      return false
+    }
+    return true
+  })
+  return headings
+}
+
+function sameOutline(left: OutlineHeading[], right: OutlineHeading[]): boolean {
+  return left.length === right.length && left.every((heading, index) => {
+    const candidate = right[index]
+    return heading.position === candidate.position && heading.level === candidate.level && heading.text === candidate.text
+  })
+}
+
+function currentOutlinePosition(view: EditorView, headings: OutlineHeading[]): number | undefined {
+  let preceding: number | undefined
+  let following: number | undefined
+  for (const heading of headings) {
+    const dom = view.nodeDOM(heading.position)
+    if (!(dom instanceof HTMLElement)) continue
+    if (dom.getBoundingClientRect().top <= 128) preceding = heading.position
+    else if (following === undefined) following = heading.position
+  }
+  return preceding ?? following
+}
+
+function isNarrowViewport(): boolean {
+  return typeof window !== 'undefined' && (window.matchMedia?.('(max-width: 767px)').matches ?? window.innerWidth <= 767)
+}
+
+function requestFrame(callback: FrameRequestCallback): number {
+  return typeof window.requestAnimationFrame === 'function'
+    ? window.requestAnimationFrame(callback)
+    : window.setTimeout(() => callback(Date.now()), 16)
+}
+
+function cancelFrame(handle: number): void {
+  if (typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(handle)
+  else window.clearTimeout(handle)
+}
 
 const slashCommands: SlashCommand[] = [
   { id: 'paragraph', label: 'Paragraph', description: 'Normal text block', keywords: 'text paragraph absatz' },
@@ -283,6 +331,10 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const input = useRef<HTMLInputElement>(null)
   const replacementInput = useRef<HTMLInputElement>(null)
   const editorContainer = useRef<HTMLDivElement>(null)
+  const outlineToggle = useRef<HTMLButtonElement>(null)
+  const outlineClose = useRef<HTMLButtonElement>(null)
+  const outlineUpdateTimer = useRef<number | null>(null)
+  const outlineLastUpdate = useRef(0)
   const viewerReturnFocus = useRef<HTMLElement | null>(null)
   const [uploadState, setUploadState] = useState<UploadState>('idle')
   const [uploadError, setUploadError] = useState<string>()
@@ -292,6 +344,13 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const [presentationError, setPresentationError] = useState<{ contextKey: string; message: string }>()
   const [editingAlt, setEditingAlt] = useState<string>()
   const [toolbarState, setToolbarState] = useState<ToolbarState>(emptyToolbarState)
+  const [outlineOpen, setOutlineOpen] = useState(() => {
+    try { return localStorage.getItem(outlinePreferenceKey) === 'true' } catch { return false }
+  })
+  const outlineOpenRef = useRef(outlineOpen)
+  const [outlineHeadings, setOutlineHeadings] = useState<OutlineHeading[]>([])
+  const [activeOutlinePosition, setActiveOutlinePosition] = useState<number>()
+  const [narrowViewport, setNarrowViewport] = useState(isNarrowViewport)
   const [selectedCodeBlock, setSelectedCodeBlock] = useState<SelectedCodeBlock>()
   const [tablePickerOpen, setTablePickerOpen] = useState(false)
   const [tableSize, setTableSize] = useState<TableSize>({ rows: 3, columns: 3 })
@@ -324,6 +383,55 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const imageContextKey = `${documentKey}\u0000${notePath}`
   const activeViewedImage = viewedImage?.contextKey === imageContextKey ? viewedImage : undefined
   const activeImagePresentations = imagePresentations?.contextKey === imageContextKey ? imagePresentations.values : emptyImagePresentations
+  outlineOpenRef.current = outlineOpen
+
+  useEffect(() => {
+    try { localStorage.setItem(outlinePreferenceKey, String(outlineOpen)) } catch { /* the outline remains available for this editor session */ }
+  }, [outlineOpen])
+
+  useEffect(() => {
+    const updateViewport = () => setNarrowViewport(isNarrowViewport())
+    const media = window.matchMedia?.('(max-width: 767px)')
+    media?.addEventListener?.('change', updateViewport)
+    window.addEventListener('resize', updateViewport)
+    return () => {
+      media?.removeEventListener?.('change', updateViewport)
+      window.removeEventListener('resize', updateViewport)
+    }
+  }, [])
+
+  useEffect(() => () => {
+    if (outlineUpdateTimer.current !== null) window.clearTimeout(outlineUpdateTimer.current)
+  }, [])
+
+  useEffect(() => {
+    if (!outlineOpen) return
+    outlineClose.current?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setOutlineOpen(false)
+        requestFrame(() => outlineToggle.current?.focus())
+        return
+      }
+      if (!narrowViewport || event.key !== 'Tab' || !editorContainer.current) return
+      const panel = outlineClose.current?.closest<HTMLElement>('.repoquill-outline-panel')
+      if (!panel) return
+      const focusable = Array.from(panel.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'))
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [outlineOpen, narrowViewport])
 
   useEffect(() => {
     if (!pasteNotice) return
@@ -527,6 +635,18 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     (root) =>
       Editor.make()
         .config((ctx) => {
+          const queueOutlineRefresh = (view: EditorView) => {
+            if (!outlineOpenRef.current || outlineUpdateTimer.current !== null) return
+            const delay = Math.max(0, 120 - (Date.now() - outlineLastUpdate.current))
+            outlineUpdateTimer.current = window.setTimeout(() => {
+              outlineUpdateTimer.current = null
+              if (!outlineOpenRef.current || view.isDestroyed) return
+              outlineLastUpdate.current = Date.now()
+              const headings = documentOutline(view.state.doc)
+              setOutlineHeadings((previous) => sameOutline(previous, headings) ? previous : headings)
+              setActiveOutlinePosition(currentOutlinePosition(view, headings))
+            }, delay)
+          }
           ctx.set(rootCtx, root)
           ctx.set(defaultValueCtx, markdown)
           ctx.update(editorViewOptionsCtx, (previous) => ({
@@ -536,6 +656,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
               ...previous.attributes,
               class: 'repoquill-editor',
               'aria-label': 'Markdown editor',
+              tabindex: '0',
             },
             handleTextInput: (view, from, to, text, defaultHandler) => {
               if (inlineCodeTypingRef.current && view.state.selection.empty) {
@@ -669,6 +790,8 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
             },
           }))
           ctx.get(listenerCtx).markdownUpdated((_ctx, nextMarkdown, previousMarkdown) => {
+            const view = _ctx.get(editorViewCtx)
+            if (view?.state) queueOutlineRefresh(view)
             if (nextMarkdown !== previousMarkdown) onChange(nextMarkdown)
           })
           ctx.get(listenerCtx).selectionUpdated((_ctx, selection) => {
@@ -690,6 +813,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
             const view = ctx.get(editorViewCtx)
             if (view?.state) {
               onStats?.(documentStats(view.state.doc))
+              queueOutlineRefresh(view)
               setToolbarState(toolbarStateFromEditor(view.state))
               setSelectedCodeBlock(selectedCodeBlockFromEditor(view.state))
               updateSelectedLink(view.state)
@@ -701,6 +825,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
             const view = ctx.get(editorViewCtx)
             if (view?.state) {
               onStats?.(documentStats(view.state.doc))
+              queueOutlineRefresh(view)
               setToolbarState(toolbarStateFromEditor(view.state))
               setSelectedCodeBlock(selectedCodeBlockFromEditor(view.state))
               updateSelectedLink(view.state)
@@ -721,6 +846,59 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         .use(imageInlineComponent),
     [documentKey],
   )
+
+  useEffect(() => {
+    if (!outlineOpen || outlineHeadings.length === 0) return
+    let frame: number | null = null
+    const updateActiveHeading = () => {
+      if (frame !== null) cancelFrame(frame)
+      frame = requestFrame(() => {
+        frame = null
+        get()?.action((ctx) => {
+          const view = ctx.get(editorViewCtx)
+          setActiveOutlinePosition(currentOutlinePosition(view, outlineHeadings))
+        })
+      })
+    }
+    window.addEventListener('scroll', updateActiveHeading, true)
+    updateActiveHeading()
+    return () => {
+      window.removeEventListener('scroll', updateActiveHeading, true)
+      if (frame !== null) cancelFrame(frame)
+    }
+  }, [get, outlineHeadings, outlineOpen])
+
+  useEffect(() => {
+    if (!outlineOpen) return
+    get()?.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const headings = documentOutline(view.state.doc)
+      setOutlineHeadings((previous) => sameOutline(previous, headings) ? previous : headings)
+      setActiveOutlinePosition(currentOutlinePosition(view, headings))
+    })
+  }, [get, outlineOpen])
+
+  function selectOutlineHeading(heading: OutlineHeading) {
+    let editorElement: HTMLElement | undefined
+    get()?.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      editorElement = view.dom
+      const position = Math.min(heading.position + 1, view.state.doc.content.size)
+      const selection = TextSelection.near(view.state.doc.resolve(position), 1)
+      view.dispatch(view.state.tr.setSelection(selection).scrollIntoView())
+      const dom = view.nodeDOM(heading.position)
+      if (dom instanceof HTMLElement) dom.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      view.focus()
+      setActiveOutlinePosition(heading.position)
+    })
+    setOutlineOpen(false)
+    requestFrame(() => editorElement?.focus())
+  }
+
+  function closeOutline() {
+    setOutlineOpen(false)
+    requestFrame(() => outlineToggle.current?.focus())
+  }
 
   useEffect(() => {
     const container = editorContainer.current
@@ -1150,7 +1328,8 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   }
 
   return (
-    <div>
+    <div className="repoquill-editor-layout">
+      <div className="repoquill-editor-main">
       <div aria-label="Editor toolbars" data-sticky={stickyToolbar ? 'true' : 'false'} className="repoquill-editor-toolbars mb-3 space-y-1.5">
       <div role="toolbar" aria-label="Editor formatting" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
         <ToolbarButton label="Undo" disabled={readOnly} onClick={() => callCommand(undoCommand)}>↶</ToolbarButton>
@@ -1179,6 +1358,8 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         <input ref={input} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="sr-only" onChange={(event) => { void insertSelectedImages(event.target.files) }} />
         <ToolbarButton label="Insert table" disabled={readOnly} onClick={() => setTablePickerOpen(true)}>Table</ToolbarButton>
         <ToolbarButton label="Horizontal rule" disabled={readOnly} onClick={() => callCommand(insertHrCommand)}>―</ToolbarButton>
+        <ToolbarDivider />
+        <button ref={outlineToggle} type="button" title="Outline / Table of contents" aria-label="Outline / Table of contents" aria-pressed={outlineOpen} aria-expanded={outlineOpen} aria-controls={outlineOpen ? 'repoquill-document-outline' : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => setOutlineOpen((open) => !open)} className={`min-h-8 shrink-0 rounded px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${outlineOpen ? 'border border-amber-500 bg-amber-400/15 text-amber-100' : 'border border-transparent text-zinc-300 hover:bg-zinc-800 hover:text-white'}`}>Outline</button>
       </div>
 
       {selectedCodeBlock && !readOnly && (
@@ -1262,6 +1443,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       >
         <Milkdown />
       </div>
+      </div>
 
       {slashState && !readOnly && <SlashCommandMenu commands={filteredSlashCommands(slashState.query)} selectedIndex={slashIndex} left={slashState.left} top={slashState.top} onSelect={executeSlashCommand} />}
       {noteLinkTrigger?.documentKey === documentKey && !readOnly && <NoteLinkTriggerMenu paths={filteredNotePaths(noteLinkTrigger.query,notePaths,notePath)} selectedIndex={noteLinkTriggerIndex} left={noteLinkTrigger.left} top={noteLinkTrigger.top} onSelect={insertTriggeredNoteLink} />}
@@ -1270,6 +1452,24 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       {linkPicker && !readOnly && <LinkPicker notePath={notePath} notePaths={notePaths} draft={linkPicker} onApply={applyLink} onClose={() => setLinkPicker(undefined)} />}
       {markdownPaste && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setMarkdownPaste(undefined) }}><form onSubmit={(event) => { event.preventDefault(); applyMarkdownPaste() }} role="dialog" aria-modal="true" aria-labelledby="markdown-paste-title" className="w-full max-w-2xl rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="markdown-paste-title" className="text-lg font-semibold text-zinc-100">Paste as Markdown</h2><p className="mt-1 text-sm text-zinc-400">Headings, lists, tasks, quotes, code, links, tables, and dividers become editable note content.</p><label className="mt-4 block text-sm text-zinc-300">Markdown<textarea autoFocus rows={12} value={markdownPaste.text} onChange={(event) => setMarkdownPaste({ text: event.target.value, clipboardHint: markdownPaste.clipboardHint })} className="mt-2 w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder="# Heading&#10;&#10;- First item&#10;- Second item" /></label><p className="mt-2 text-xs text-zinc-500">{markdownPaste.clipboardHint} External image URLs and raw HTML are kept from becoming active content.</p>{markdownPaste.error && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{markdownPaste.error}</p>}<div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setMarkdownPaste(undefined)} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => applyMarkdownPaste(true)} disabled={!markdownPaste.text} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40">Insert as plain text</button><button type="submit" disabled={!markdownPaste.text} className="min-h-10 rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">Insert Markdown</button></div></form></div>}
       {editingAlt !== undefined && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingAlt(undefined) }}><form onSubmit={(event) => { event.preventDefault(); saveImageMetadata() }} role="dialog" aria-modal="true" aria-labelledby="image-metadata-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="image-metadata-title" className="text-lg font-semibold text-zinc-100">Edit image</h2><label className="mt-4 block text-sm text-zinc-300">Alt text<input autoFocus value={editingAlt} onChange={(event) => setEditingAlt(event.target.value)} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-amber-500" placeholder="Leave empty for a decorative image" /></label><p className="mt-2 text-xs text-zinc-500">Describe meaningful content briefly, or leave this empty for a decorative image.</p><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setEditingAlt(undefined)} className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="submit" className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">Save</button></div></form></div>}
+      {outlineOpen && <>
+        <button type="button" aria-label="Dismiss document outline" onClick={closeOutline} className="repoquill-outline-backdrop" />
+        <aside id="repoquill-document-outline" aria-label="Document outline" role={narrowViewport ? 'dialog' : undefined} aria-modal={narrowViewport ? 'true' : undefined} aria-labelledby="repoquill-document-outline-title" className="repoquill-outline-panel">
+          <header className="flex min-h-12 items-center justify-between gap-3 border-b border-zinc-800 px-3 py-2">
+            <h2 id="repoquill-document-outline-title" className="text-sm font-semibold text-zinc-200">Outline</h2>
+            <button ref={outlineClose} type="button" aria-label="Close document outline" onClick={closeOutline} className="min-h-10 min-w-10 rounded border border-zinc-700 px-2 text-lg leading-none text-zinc-300 hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-amber-500">×</button>
+          </header>
+          <nav aria-label="Table of contents" className="repoquill-outline-nav">
+            {outlineHeadings.length === 0
+              ? <p className="px-3 py-4 text-sm text-zinc-500">This note has no headings yet.</p>
+              : <ol className="space-y-1 p-2">{outlineHeadings.map((heading) => <li key={heading.position}>
+                <button type="button" aria-label={`Heading ${heading.level}: ${heading.text || 'Untitled heading'}`} aria-current={activeOutlinePosition === heading.position ? 'location' : undefined} onClick={() => selectOutlineHeading(heading)} style={{ '--outline-level': Math.max(0, heading.level - 1) } as CSSProperties} className="repoquill-outline-entry">
+                  <span className="repoquill-outline-level" aria-hidden="true">H{heading.level}</span><span className="min-w-0 flex-1 truncate">{heading.text || 'Untitled heading'}</span>
+                </button>
+              </li>)}</ol>}
+          </nav>
+        </aside>
+      </>}
       {activeViewedImage && <ImageViewer image={activeViewedImage} onClose={closeImageViewer} />}
     </div>
   )
