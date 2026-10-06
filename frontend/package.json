@@ -1,7 +1,7 @@
 {
   "name": "repoquill-frontend",
   "private": true,
-  "version": "0.1.0-alpha.2.security.3",
+  "version": "0.1.0-alpha.2.security.5",
   "license": "Apache-2.0",
   "description": "Browser frontend for RepoQuill Git-backed Markdown notes",
   "homepage": "https://github.com/fred-head/repoquill#readme",
@@ -45,5 +45,8 @@
     "vite": "^8.2.2",
     "vite-plugin-pwa": "^1.3.0",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "katex": "0.18.4"
   }
 }
