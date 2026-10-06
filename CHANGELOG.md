@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- Updated transitive `katex` to 0.18.4 for GHSA-238p-pmpm-9mq7 and
+  `source-map-js` to 1.2.2 for GHSA-68fv-2mgg-jv7q.
+
 ### Added
 
 - Added portable fenced-code language selection, controlled syntax highlighting,
