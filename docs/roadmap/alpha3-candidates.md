@@ -762,6 +762,36 @@ keeps normal and Read only list behavior intact. Focused regression coverage
 includes pointer and keyboard activation, text-click isolation, Undo/Redo,
 nested and mixed lists, reload, and non-mutating Read only behavior.
 
+## Milestone 42 - Expired browser session cleanup
+
+Keep expired and revoked browser sessions out of the Security settings list and
+remove inactive session records during subsequent session writes. A session
+that expires after the user returns must not leave a stale entry beside the
+newly created session.
+
+Requirements:
+
+- list only sessions that have not been revoked and whose idle and absolute
+  expiry times are still in the future,
+- prune expired and revoked records opportunistically when a session is written
+  so inactive metadata stays bounded without making the read-only listing
+  mutate storage,
+- preserve the current session row until its upsert is checked, so an expired
+  or revoked token cannot be recreated by a stale request,
+- retain the existing session revocation and expiry behavior.
+
+Completion criteria:
+
+- expired and revoked sessions no longer appear in Security settings,
+- a later session write removes inactive records while preserving the new
+  session,
+- a stale request cannot resurrect an expired or revoked session,
+- focused tests cover listing, cleanup, and non-resurrection behavior.
+
+Status: implementation completed and merged into `main` in PR #79 on
+2026-10-06. It is not included in `v0.1.0-alpha.2.security.5`; it is planned
+for an Alpha 3 release.
+
 ---
 
 

@@ -6,11 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Security
-
-- Updated transitive `katex` to 0.18.4 for GHSA-238p-pmpm-9mq7 and
-  `source-map-js` to 1.2.2 for GHSA-68fv-2mgg-jv7q.
-
 ### Added
 
 - Added portable fenced-code language selection, controlled syntax highlighting,
@@ -30,6 +25,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   edits, while preserving editor drafts across sync races and safely tracking
   remote note moves and deletions.
 
+## [0.1.0-alpha.2.security.5] - 2026-10-06
+
+### Security
+
+- Updated vulnerable transitive npm dependencies to audit-clean versions,
+  including `brace-expansion` 2.1.7/5.0.12, `dompurify` 3.4.16,
+  `fast-uri` 3.1.8, and test-only `undici` 8.11.2. These updates address
+  GHSA-6j4f-fj2g-mc7p, GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7,
+  GHSA-p98j-92pf-mc4p, GHSA-6688-9rhm-gjv2, GHSA-hrr3-gc8f-f4qj,
+  GHSA-3wwx-pv8p-q78v, GHSA-pmjh-fq2x-6v4x, GHSA-r53p-7pc4-xj5r,
+  GHSA-rfgv-xxqx-mfg5, GHSA-3xpg-4rpp-hhhm, GHSA-2jfj-6hjv-fm6j,
+  GHSA-2gqq-gqf2-x968, GHSA-w293-vg96-wgc3, GHSA-8436-99hf-9mmv,
+  GHSA-vp8m-p9jh-q5pm, and GHSA-rx4f-c7p8-82vq.
+- Pinned transitive `katex` to 0.18.4 for GHSA-238p-pmpm-9mq7 and updated
+  `source-map-js` to 1.2.2 for GHSA-68fv-2mgg-jv7q.
+
 ## [0.1.0-alpha.2.security.4] - 2026-10-05
 
 ### Added
@@ -39,6 +50,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   ordinary text, rich HTML, and pasted-image behavior.
 - Added accessible GFM task controls that toggle `[ ]` and `[x]` with mouse,
   touch, or keyboard input while participating in Undo/Redo and autosave.
+
+### Changed
+
+- Made the received-changes notification transient. It now disappears
+  automatically while the change list remains available in synchronization
+  details.
+
+### Fixed
+
+- Internal-note suggestions now open only after an intentional `[[` trigger,
+  so ordinary brackets and task-list syntax do not open the suggestion menu.
 
 ### Security
 
