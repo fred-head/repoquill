@@ -8,8 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Added an optional document outline generated from live Markdown headings,
-  with desktop navigation and a mobile drawer that keeps note content unchanged.
+- Added an optional document outline as a collapsible right-side heading tree,
+  generated from live Markdown without changing note content.
 - Added portable fenced-code language selection and controlled syntax
   highlighting, with accessible in-block copy controls in Edit and Read only
   modes.

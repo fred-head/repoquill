@@ -61,7 +61,6 @@ type OutlineHeading = { position: number; level: number; text: string }
 const emptyToolbarState: ToolbarState = { block: 'paragraph', strong: false, emphasis: false, strike: false, code: false, link: false, bullet: false, ordered: false, task: false, quote: false, table: false }
 const imagePresentationSizes: ImagePresentationSize[] = ['small', 'medium', 'large', 'full']
 const emptyImagePresentations: Record<string, ImagePresentationSize> = {}
-const outlinePreferenceKey = 'repoquill:document-outline-open'
 
 function documentOutline(document: Node): OutlineHeading[] {
   const headings: OutlineHeading[] = []
@@ -83,12 +82,15 @@ function sameOutline(left: OutlineHeading[], right: OutlineHeading[]): boolean {
 }
 
 function currentOutlinePosition(view: EditorView, headings: OutlineHeading[]): number | undefined {
+  const stickyToolbar = view.dom.closest('.repoquill-editor-layout')?.querySelector<HTMLElement>('.repoquill-editor-toolbars[data-sticky="true"]')
+  const toolbarBottom = stickyToolbar?.getBoundingClientRect().bottom
+  const threshold = toolbarBottom !== undefined && toolbarBottom > 0 ? toolbarBottom + 8 : 128
   let preceding: number | undefined
   let following: number | undefined
   for (const heading of headings) {
     const dom = view.nodeDOM(heading.position)
     if (!(dom instanceof HTMLElement)) continue
-    if (dom.getBoundingClientRect().top <= 128) preceding = heading.position
+    if (dom.getBoundingClientRect().top <= threshold) preceding = heading.position
     else if (following === undefined) following = heading.position
   }
   return preceding ?? following
@@ -317,7 +319,6 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const replacementInput = useRef<HTMLInputElement>(null)
   const editorContainer = useRef<HTMLDivElement>(null)
   const outlineToggle = useRef<HTMLButtonElement>(null)
-  const outlineClose = useRef<HTMLButtonElement>(null)
   const outlineUpdateTimer = useRef<number | null>(null)
   const outlineLastUpdate = useRef(0)
   const viewerReturnFocus = useRef<HTMLElement | null>(null)
@@ -329,9 +330,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const [presentationError, setPresentationError] = useState<{ contextKey: string; message: string }>()
   const [editingAlt, setEditingAlt] = useState<string>()
   const [toolbarState, setToolbarState] = useState<ToolbarState>(emptyToolbarState)
-  const [outlineOpen, setOutlineOpen] = useState(() => {
-    try { return localStorage.getItem(outlinePreferenceKey) === 'true' } catch { return false }
-  })
+  const [outlineOpen, setOutlineOpen] = useState(false)
   const outlineOpenRef = useRef(outlineOpen)
   const [outlineHeadings, setOutlineHeadings] = useState<OutlineHeading[]>([])
   const [activeOutlinePosition, setActiveOutlinePosition] = useState<number>()
@@ -370,10 +369,6 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   outlineOpenRef.current = outlineOpen
 
   useEffect(() => {
-    try { localStorage.setItem(outlinePreferenceKey, String(outlineOpen)) } catch { /* the outline remains available for this editor session */ }
-  }, [outlineOpen])
-
-  useEffect(() => {
     const updateViewport = () => setNarrowViewport(isNarrowViewport())
     const media = window.matchMedia?.('(max-width: 767px)')
     media?.addEventListener?.('change', updateViewport)
@@ -390,32 +385,16 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
 
   useEffect(() => {
     if (!outlineOpen) return
-    outlineClose.current?.focus()
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
         setOutlineOpen(false)
         requestFrame(() => outlineToggle.current?.focus())
-        return
-      }
-      if (!narrowViewport || event.key !== 'Tab' || !editorContainer.current) return
-      const panel = outlineClose.current?.closest<HTMLElement>('.repoquill-outline-panel')
-      if (!panel) return
-      const focusable = Array.from(panel.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'))
-      if (!focusable.length) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
       }
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [outlineOpen, narrowViewport])
+  }, [outlineOpen])
 
   useEffect(() => {
     if (!pasteNotice) return
@@ -872,7 +851,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       view.focus()
       setActiveOutlinePosition(heading.position)
     })
-    setOutlineOpen(false)
+    if (narrowViewport) setOutlineOpen(false)
     requestFrame(() => editorElement?.focus())
   }
 
@@ -1302,6 +1281,9 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     <div className="repoquill-editor-layout">
       <div className="repoquill-editor-main">
       <div aria-label="Editor toolbars" data-sticky={stickyToolbar ? 'true' : 'false'} className="repoquill-editor-toolbars mb-3 space-y-1.5">
+      <div className="flex justify-end">
+        <button ref={outlineToggle} type="button" title="Toggle document outline" aria-label="Outline / Table of contents" aria-pressed={outlineOpen} aria-expanded={outlineOpen} aria-controls={outlineOpen ? 'repoquill-document-outline' : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => setOutlineOpen((open) => !open)} className="flex min-h-8 items-center gap-2 rounded px-2 text-xs font-medium text-zinc-300 outline-none hover:bg-zinc-800 hover:text-white focus-visible:ring-2 focus-visible:ring-amber-500"><span aria-hidden="true">☷</span><span>Outline</span><span aria-hidden="true" className="text-zinc-500">{outlineOpen ? '›' : '‹'}</span></button>
+      </div>
       <div role="toolbar" aria-label="Editor formatting" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
         <ToolbarButton label="Undo" disabled={readOnly} onClick={() => callCommand(undoCommand)}>↶</ToolbarButton>
         <ToolbarButton label="Redo" disabled={readOnly} onClick={() => callCommand(redoCommand)}>↷</ToolbarButton>
@@ -1329,8 +1311,6 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         <input ref={input} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="sr-only" onChange={(event) => { void insertSelectedImages(event.target.files) }} />
         <ToolbarButton label="Insert table" disabled={readOnly} onClick={() => setTablePickerOpen(true)}>Table</ToolbarButton>
         <ToolbarButton label="Horizontal rule" disabled={readOnly} onClick={() => callCommand(insertHrCommand)}>―</ToolbarButton>
-        <ToolbarDivider />
-        <button ref={outlineToggle} type="button" title="Outline / Table of contents" aria-label="Outline / Table of contents" aria-pressed={outlineOpen} aria-expanded={outlineOpen} aria-controls={outlineOpen ? 'repoquill-document-outline' : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => setOutlineOpen((open) => !open)} className={`min-h-8 shrink-0 rounded px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${outlineOpen ? 'border border-amber-500 bg-amber-400/15 text-amber-100' : 'border border-transparent text-zinc-300 hover:bg-zinc-800 hover:text-white'}`}>Outline</button>
       </div>
 
       {toolbarState.table && !readOnly && (
@@ -1412,18 +1392,17 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       {markdownPaste && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setMarkdownPaste(undefined) }}><form onSubmit={(event) => { event.preventDefault(); applyMarkdownPaste() }} role="dialog" aria-modal="true" aria-labelledby="markdown-paste-title" className="w-full max-w-2xl rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="markdown-paste-title" className="text-lg font-semibold text-zinc-100">Paste as Markdown</h2><p className="mt-1 text-sm text-zinc-400">Headings, lists, tasks, quotes, code, links, tables, and dividers become editable note content.</p><label className="mt-4 block text-sm text-zinc-300">Markdown<textarea autoFocus rows={12} value={markdownPaste.text} onChange={(event) => setMarkdownPaste({ text: event.target.value, clipboardHint: markdownPaste.clipboardHint })} className="mt-2 w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder="# Heading&#10;&#10;- First item&#10;- Second item" /></label><p className="mt-2 text-xs text-zinc-500">{markdownPaste.clipboardHint} External image URLs and raw HTML are kept from becoming active content.</p>{markdownPaste.error && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{markdownPaste.error}</p>}<div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setMarkdownPaste(undefined)} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => applyMarkdownPaste(true)} disabled={!markdownPaste.text} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40">Insert as plain text</button><button type="submit" disabled={!markdownPaste.text} className="min-h-10 rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">Insert Markdown</button></div></form></div>}
       {editingAlt !== undefined && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingAlt(undefined) }}><form onSubmit={(event) => { event.preventDefault(); saveImageMetadata() }} role="dialog" aria-modal="true" aria-labelledby="image-metadata-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="image-metadata-title" className="text-lg font-semibold text-zinc-100">Edit image</h2><label className="mt-4 block text-sm text-zinc-300">Alt text<input autoFocus value={editingAlt} onChange={(event) => setEditingAlt(event.target.value)} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-amber-500" placeholder="Leave empty for a decorative image" /></label><p className="mt-2 text-xs text-zinc-500">Describe meaningful content briefly, or leave this empty for a decorative image.</p><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setEditingAlt(undefined)} className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="submit" className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">Save</button></div></form></div>}
       {outlineOpen && <>
-        <button type="button" aria-label="Dismiss document outline" onClick={closeOutline} className="repoquill-outline-backdrop" />
-        <aside id="repoquill-document-outline" aria-label="Document outline" role={narrowViewport ? 'dialog' : undefined} aria-modal={narrowViewport ? 'true' : undefined} aria-labelledby="repoquill-document-outline-title" className="repoquill-outline-panel">
-          <header className="flex min-h-12 items-center justify-between gap-3 border-b border-zinc-800 px-3 py-2">
+        <aside id="repoquill-document-outline" aria-label="Document outline" aria-labelledby="repoquill-document-outline-title" className="repoquill-outline-panel">
+          <header className="flex min-h-10 items-center justify-between gap-3 border-b border-zinc-800 px-2 py-2">
             <h2 id="repoquill-document-outline-title" className="text-sm font-semibold text-zinc-200">Outline</h2>
-            <button ref={outlineClose} type="button" aria-label="Close document outline" onClick={closeOutline} className="min-h-10 min-w-10 rounded border border-zinc-700 px-2 text-lg leading-none text-zinc-300 hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-amber-500">×</button>
+            <button type="button" aria-label="Close document outline" onClick={closeOutline} className="min-h-8 min-w-8 rounded px-2 text-lg leading-none text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-amber-500">×</button>
           </header>
           <nav aria-label="Table of contents" className="repoquill-outline-nav">
             {outlineHeadings.length === 0
-              ? <p className="px-3 py-4 text-sm text-zinc-500">This note has no headings yet.</p>
-              : <ol className="space-y-1 p-2">{outlineHeadings.map((heading) => <li key={heading.position}>
+              ? <p className="px-2 py-3 text-sm text-zinc-500">This note has no headings yet.</p>
+              : <ol className="space-y-0.5 py-2">{outlineHeadings.map((heading) => <li key={heading.position}>
                 <button type="button" aria-label={`Heading ${heading.level}: ${heading.text || 'Untitled heading'}`} aria-current={activeOutlinePosition === heading.position ? 'location' : undefined} onClick={() => selectOutlineHeading(heading)} style={{ '--outline-level': Math.max(0, heading.level - 1) } as CSSProperties} className="repoquill-outline-entry">
-                  <span className="repoquill-outline-level" aria-hidden="true">H{heading.level}</span><span className="min-w-0 flex-1 truncate">{heading.text || 'Untitled heading'}</span>
+                  <span className="min-w-0 flex-1 truncate">{heading.text || 'Untitled heading'}</span>
                 </button>
               </li>)}</ol>}
           </nav>

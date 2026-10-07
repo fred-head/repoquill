@@ -28,7 +28,6 @@ async function typeInternalNoteTrigger(editor: HTMLElement, query = '') {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
-  localStorage.removeItem('repoquill:document-outline-open')
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
 })
@@ -64,12 +63,13 @@ describe('MarkdownEditor read-only mode', () => {
       'Heading 1: Main', 'Heading 3: Skipped level', 'Heading 2: Same label', 'Heading 2: Same label',
     ])
     expect(view.getByRole('button', { name: 'Close document outline' })).toBeTruthy()
+    expect(view.container.querySelector('.repoquill-outline-backdrop')).toBeNull()
+    expect(view.container.querySelector('[role="toolbar"][aria-label="Editor formatting"] [aria-label="Outline / Table of contents"]')).toBeNull()
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(onChange).not.toHaveBeenCalled()
     expect(Array.from(view.container.querySelectorAll<HTMLElement>('.ProseMirror h1, .ProseMirror h2, .ProseMirror h3')).map((heading) => heading.id)).toEqual(renderedHeadingIds)
 
     view.unmount()
-    localStorage.removeItem('repoquill:document-outline-open')
     const plain = render(<MarkdownEditor documentKey="outline-empty" notePath="Empty.md" markdown="Just a paragraph." readOnly onChange={onChange} />)
     await userEvent.click(plain.getByRole('button', { name: 'Outline / Table of contents' }))
     expect(await plain.findByText('This note has no headings yet.')).toBeTruthy()
@@ -89,12 +89,11 @@ describe('MarkdownEditor read-only mode', () => {
     const secondHeading = view.container.querySelectorAll('.ProseMirror h1')[1]
     await userEvent.click(duplicates[1])
     expect(scrollIntoView.mock.contexts).toContain(secondHeading)
-    expect(view.getByRole('button', { name: 'Outline / Table of contents' }).getAttribute('aria-expanded')).toBe('false')
+    expect(view.getByRole('button', { name: 'Outline / Table of contents' }).getAttribute('aria-expanded')).toBe('true')
+    expect(duplicates[1].getAttribute('aria-current')).toBe('location')
     await waitFor(() => expect(document.activeElement).toBe(view.container.querySelector('.ProseMirror')))
 
-    await userEvent.click(view.getByRole('button', { name: 'Outline / Table of contents' }))
     await userEvent.click(view.getByRole('button', { name: 'Heading 2: Details' }))
-    await userEvent.click(view.getByRole('button', { name: 'Outline / Table of contents' }))
     const editor = view.container.querySelector<HTMLElement>('.ProseMirror')!
     editor.focus()
     await userEvent.type(editor, 'Updated ', { skipClick: true })
@@ -109,29 +108,29 @@ describe('MarkdownEditor read-only mode', () => {
     expect(view.getAllByRole('button', { name: 'Heading 1: Duplicate' })).toHaveLength(2)
   })
 
-  it('remembers the outline preference, supports Escape, and presents a mobile drawer that returns focus to the note', async () => {
+  it('opens a compact right-side mobile outline, supports Escape, and closes after heading navigation', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
     const onChange = vi.fn()
     const properties = { notePath: 'Mobile.md', markdown: '# Start\n\n## Next', onChange }
     const view = render(<MarkdownEditor documentKey="outline-mobile" readOnly {...properties} />)
     const toggle = view.getByRole('button', { name: 'Outline / Table of contents' })
     await userEvent.click(toggle)
-    const drawer = await view.findByRole('dialog', { name: 'Outline' })
-    expect(drawer.getAttribute('aria-modal')).toBe('true')
-    expect(localStorage.getItem('repoquill:document-outline-open')).toBe('true')
+    const drawer = await view.findByRole('complementary', { name: 'Outline' })
+    expect(drawer.classList.contains('repoquill-outline-panel')).toBe(true)
+    expect(view.container.querySelector('.repoquill-outline-backdrop')).toBeNull()
+    expect(localStorage.getItem('repoquill:document-outline-open')).toBeNull()
     await userEvent.keyboard('{Escape}')
-    await waitFor(() => expect(view.queryByRole('dialog', { name: 'Outline' })).toBeNull())
+    await waitFor(() => expect(view.queryByRole('complementary', { name: 'Outline' })).toBeNull())
     await waitFor(() => expect(document.activeElement).toBe(toggle))
-    expect(localStorage.getItem('repoquill:document-outline-open')).toBe('false')
 
     await userEvent.click(toggle)
     await userEvent.click(await view.findByRole('button', { name: 'Heading 2: Next' }))
-    expect(view.queryByRole('dialog', { name: 'Outline' })).toBeNull()
+    expect(view.queryByRole('complementary', { name: 'Outline' })).toBeNull()
     await waitFor(() => expect(document.activeElement).toBe(view.container.querySelector('.ProseMirror')))
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  it('builds the outline for long notes and restores the desktop open preference on remount', async () => {
+  it('builds the right-side outline for long notes and keeps it collapsed on remount', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 })
     const markdown = Array.from({ length: 300 }, (_, index) => `# Section ${index + 1}`).join('\n\n')
     const onChange = vi.fn()
@@ -142,12 +141,11 @@ describe('MarkdownEditor read-only mode', () => {
     const navigation = await view.findByRole('navigation', { name: 'Table of contents' })
     await waitFor(() => expect(navigation.querySelectorAll('li')).toHaveLength(300))
     expect(view.container.querySelector('.repoquill-outline-panel')?.getAttribute('role')).toBeNull()
-    expect(localStorage.getItem('repoquill:document-outline-open')).toBe('true')
     view.unmount()
 
     const restored = render(<MarkdownEditor documentKey="outline-restored" readOnly={false} {...properties} />)
-    expect(await restored.findByRole('navigation', { name: 'Table of contents' })).toBeTruthy()
-    expect(restored.getByRole('button', { name: 'Outline / Table of contents' }).getAttribute('aria-expanded')).toBe('true')
+    expect(restored.queryByRole('navigation', { name: 'Table of contents' })).toBeNull()
+    expect(restored.getByRole('button', { name: 'Outline / Table of contents' }).getAttribute('aria-expanded')).toBe('false')
     expect(onChange).not.toHaveBeenCalled()
   })
 
