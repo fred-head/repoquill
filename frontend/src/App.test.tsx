@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App, TrashDialog } from './App'
@@ -10,6 +10,9 @@ class ResizeObserverStub {
   unobserve() {}
   disconnect() {}
 }
+
+let previousClipboardDescriptor: PropertyDescriptor | undefined
+let clipboardWasOverridden = false
 
 beforeEach(() => {
   Range.prototype.getClientRects = () => [] as unknown as DOMRectList
@@ -58,6 +61,38 @@ afterEach(() => {
   cleanup()
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  if (clipboardWasOverridden) {
+    if (previousClipboardDescriptor) Object.defineProperty(navigator, 'clipboard', previousClipboardDescriptor)
+    else Reflect.deleteProperty(navigator, 'clipboard')
+    previousClipboardDescriptor = undefined
+    clipboardWasOverridden = false
+  }
+})
+
+describe('Application version footer', () => {
+  it('shows and copies the exact backend-provided release version', async () => {
+    previousClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    clipboardWasOverridden = true
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const version = '0.1.0-alpha.2.security.5'
+    const view = render(<App runningVersion={version} />)
+    const footer = await view.findByRole('region', { name: 'Application version' })
+
+    expect(within(footer).getByText(version)).toBeTruthy()
+    expect(within(footer).getByRole('link', { name: 'View release' })).toBeTruthy()
+    fireEvent.click(within(footer).getByRole('button', { name: 'Copy version' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(version))
+    expect((await within(footer).findByRole('status')).textContent).toContain('Version copied')
+  })
+
+  it('shows dev clearly for an unversioned development build', async () => {
+    const view = render(<App />)
+    const footer = await view.findByRole('region', { name: 'Application version' })
+
+    expect(within(footer).getByText('dev')).toBeTruthy()
+    expect(within(footer).queryByRole('link', { name: 'View release' })).toBeNull()
+  })
 })
 
 // Milkdown removes document listeners 3 seconds after editor setup.
