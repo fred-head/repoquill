@@ -793,7 +793,8 @@ describe('MarkdownEditor read-only mode', () => {
       expect(view.container.querySelector('.repoquill-code-block-content .hljs-keyword')).toBeTruthy()
       return elements
     })
-    expect(view.container.querySelector('[data-language="future-language-v2"]')?.textContent).toContain('Unrecognized language')
+    const unknownLanguage = view.container.querySelector<HTMLSelectElement>('[data-language="future-language-v2"] .repoquill-code-block-language-select')
+    expect(unknownLanguage?.selectedOptions[0]?.textContent).toBe('future-language-v2')
     expect(codeBlocks[1].querySelector('.hljs-keyword')).toBeNull()
     expect(view.container.querySelector('img')).toBeNull()
 
@@ -814,7 +815,7 @@ describe('MarkdownEditor read-only mode', () => {
     })
   })
 
-  it('offers a contextual language selector and serializes its portable fence tag', async () => {
+  it('offers language selection on the code-block label and serializes its portable fence tag', async () => {
     const onChange = vi.fn()
     const view = render(<MarkdownEditor documentKey="code-language" notePath="Note.md" markdown={'```\nconsole.log("hello")\n```'} readOnly={false} onChange={onChange} />)
     await waitFor(() => {
@@ -823,11 +824,12 @@ describe('MarkdownEditor read-only mode', () => {
     })
 
     const selector = await view.findByRole('combobox', { name: 'Code block language' }) as HTMLSelectElement
-    expect(view.getByRole('toolbar', { name: 'Code block options' })).toBeTruthy()
+    expect(selector.closest('.repoquill-code-block')).toBeTruthy()
+    expect(view.queryByRole('toolbar', { name: 'Code block options' })).toBeNull()
     fireEvent.change(selector, { target: { value: 'typescript' } })
 
     await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('```typescript'))
-    expect((view.container.querySelector('.repoquill-code-block-language') as HTMLElement).textContent).toBe('TypeScript')
+    expect(selector.selectedOptions[0]?.textContent).toBe('TypeScript')
     fireEvent.change(view.getByRole('combobox', { name: 'Code block language' }), { target: { value: '' } })
     await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toMatch(/```\nconsole\.log\("hello"\)/))
   })
@@ -841,6 +843,14 @@ describe('MarkdownEditor read-only mode', () => {
       const onChange = vi.fn()
       const view = render(<MarkdownEditor documentKey={`copy-code-${readOnly}`} notePath="Note.md" markdown={'```bash\nprintf "hello"\n```'} readOnly={readOnly} onChange={onChange} />)
       const copy = await view.findByRole('button', { name: 'Copy code block' })
+      expect(copy.textContent).toBe('')
+      expect(copy.querySelector('svg[data-icon="copy"]')).toBeTruthy()
+      if (readOnly) {
+        expect(view.container.querySelector('.repoquill-code-block-language-label')?.textContent).toBe('Shell / Bash')
+        expect(view.queryByRole('combobox', { name: 'Code block language' })).toBeNull()
+      } else {
+        expect((view.getByRole('combobox', { name: 'Code block language' }) as HTMLSelectElement).value).toBe('bash')
+      }
       const code = view.container.querySelector('.repoquill-code-block-content') as HTMLElement
       const expectedCode = code.textContent
       const changesBeforeCopy = onChange.mock.calls.length
@@ -849,7 +859,8 @@ describe('MarkdownEditor read-only mode', () => {
       copy.focus()
       await userEvent.keyboard('{Enter}')
       await waitFor(() => expect(writeText).toHaveBeenCalledWith(expectedCode))
-      await waitFor(() => expect(view.container.querySelector('.repoquill-code-block-copy-status')?.textContent).toBe('Code copied.'))
+      await waitFor(() => expect(view.container.querySelector('.repoquill-code-block-copy-status')?.textContent).toBe('Code copied to clipboard.'))
+      expect(copy.querySelector('svg[data-icon="check"]')).toBeTruthy()
       expect(onChange).toHaveBeenCalledTimes(changesBeforeCopy)
       view.unmount()
     }
@@ -1005,7 +1016,7 @@ describe('MarkdownEditor read-only mode', () => {
 
     await waitFor(() => expect(view.container.querySelector('.ProseMirror code')?.textContent).toContain('# Must stay code'))
     expect(view.container.querySelector('.ProseMirror h1')).toBeNull()
-    expect(view.queryByRole('status')).toBeNull()
+    expect(view.getByRole('status').textContent).toBe('')
   })
 
   it('keeps relative Markdown image references portable without uploading them', async () => {

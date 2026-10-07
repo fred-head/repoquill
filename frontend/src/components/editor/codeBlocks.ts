@@ -81,11 +81,12 @@ function normalizedLanguage(language: unknown): string {
 export function codeBlockLanguageLabel(language: unknown): string {
   const value = typeof language === 'string' ? language : ''
   const normalized = normalizedLanguage(value)
+  if (!normalized) return ''
   const canonical = highlightedLanguageAliases[normalized]
   const languageOption = canonical === 'xml' ? 'html' : canonical
   const selected = codeBlockLanguages.find((option) => option.value === normalized)
     ?? codeBlockLanguages.find((option) => option.value === languageOption)
-  return selected?.label ?? (value ? `Unrecognized language: ${value}` : 'Plain text')
+  return selected?.label ?? value
 }
 
 function addBlockHighlights(node: ProseMirrorNode, position: number): Decoration[] {
@@ -148,60 +149,135 @@ export const codeHighlightPlugin = $prose(() => new Plugin<DecorationSet>({
   },
 }))
 
-export const codeBlockView = $view(codeBlockSchema.node, () => (initialNode) => {
+export const codeBlockView = $view(codeBlockSchema.node, () => (initialNode, editorView, getPos) => {
   const dom = document.createElement('div')
   dom.className = 'repoquill-code-block'
 
-  const header = document.createElement('div')
-  header.className = 'repoquill-code-block-header'
-
   const language = document.createElement('span')
   language.className = 'repoquill-code-block-language'
-  language.setAttribute('aria-label', 'Code block language')
+  language.setAttribute('data-editable', String(editorView.editable))
+
+  const languageSelect = document.createElement('select')
+  languageSelect.className = 'repoquill-code-block-language-select'
+  languageSelect.setAttribute('aria-label', 'Code block language')
+  languageSelect.setAttribute('contenteditable', 'false')
+  languageSelect.append(new Option('Language', ''))
+  for (const option of codeBlockLanguages) {
+    if (option.value) languageSelect.append(new Option(option.label, option.value))
+  }
+
+  const languageLabel = document.createElement('span')
+  languageLabel.className = 'repoquill-code-block-language-label'
+  language.append(languageSelect, languageLabel)
 
   const copyButton = document.createElement('button')
   copyButton.type = 'button'
   copyButton.className = 'repoquill-code-block-copy'
   copyButton.setAttribute('aria-label', 'Copy code block')
+  copyButton.title = 'Copy code block'
   copyButton.setAttribute('contenteditable', 'false')
-  copyButton.textContent = 'Copy'
+
+  const renderCopyIcon = (copied: boolean) => {
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    icon.setAttribute('viewBox', '0 0 20 20')
+    icon.setAttribute('aria-hidden', 'true')
+    icon.setAttribute('focusable', 'false')
+    icon.dataset.icon = copied ? 'check' : 'copy'
+    if (copied) {
+      const check = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      check.setAttribute('d', 'm4 10.5 4 4 8-9')
+      icon.append(check)
+    } else {
+      const back = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      back.setAttribute('x', '7')
+      back.setAttribute('y', '7')
+      back.setAttribute('width', '10')
+      back.setAttribute('height', '10')
+      back.setAttribute('rx', '2')
+      const front = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      front.setAttribute('d', 'M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2')
+      icon.append(back, front)
+    }
+    copyButton.replaceChildren(icon)
+  }
+  renderCopyIcon(false)
 
   const status = document.createElement('span')
   status.className = 'repoquill-code-block-copy-status'
   status.setAttribute('role', 'status')
   status.setAttribute('aria-live', 'polite')
-  status.hidden = true
-
-  header.append(language, copyButton, status)
+  status.setAttribute('aria-atomic', 'true')
 
   const pre = document.createElement('pre')
   pre.className = 'repoquill-code-block-pre'
   const contentDOM = document.createElement('code')
   contentDOM.className = 'repoquill-code-block-content'
   pre.append(contentDOM)
-  dom.append(header, pre)
+  dom.append(language, copyButton, status, pre)
 
   let currentNode = initialNode
   const render = (node: ProseMirrorNode) => {
-    language.textContent = codeBlockLanguageLabel(node.attrs.language)
-    language.dataset.language = typeof node.attrs.language === 'string' ? node.attrs.language : ''
+    const value = typeof node.attrs.language === 'string' ? node.attrs.language : ''
+    const editable = editorView.editable
+    language.dataset.language = value
+    language.dataset.editable = String(editable)
+    languageSelect.disabled = !editable
+    languageSelect.hidden = !editable
+    languageLabel.hidden = editable || !value
+    languageLabel.textContent = codeBlockLanguageLabel(value)
+    language.hidden = !editable && !value
+
+    for (const customOption of languageSelect.querySelectorAll('option[data-custom-language="true"]')) customOption.remove()
+    if (value && !codeBlockLanguages.some((option) => option.value === value)) {
+      const customOption = new Option(codeBlockLanguageLabel(value), value)
+      customOption.dataset.customLanguage = 'true'
+      languageSelect.append(customOption)
+    }
+    languageSelect.value = value
   }
 
+  let copyResetTimer: number | undefined
+  let statusTimer: number | undefined
+  let destroyed = false
+  const announce = (message: string) => {
+    status.textContent = ''
+    if (statusTimer !== undefined) window.clearTimeout(statusTimer)
+    statusTimer = window.setTimeout(() => {
+      if (!destroyed) status.textContent = message
+      statusTimer = undefined
+    }, 0)
+  }
+  const resetCopyIcon = () => {
+    if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer)
+    copyResetTimer = undefined
+    renderCopyIcon(false)
+  }
   const copy = async () => {
     try {
       const clipboard = navigator.clipboard
       if (!clipboard?.writeText) throw new Error('Clipboard access is unavailable')
       await clipboard.writeText(currentNode.textContent)
-      status.hidden = false
-      status.textContent = 'Code copied.'
+      renderCopyIcon(true)
+      if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer)
+      copyResetTimer = window.setTimeout(resetCopyIcon, 1400)
+      announce('Code copied to clipboard.')
     } catch {
-      status.hidden = false
-      status.textContent = 'Copy failed. Select and copy the code manually.'
+      resetCopyIcon()
+      announce('Copy failed. Select and copy the code manually.')
     }
+  }
+  const setLanguage = () => {
+    if (!editorView.editable) return
+    const position = getPos()
+    if (typeof position !== 'number') return
+    const node = editorView.state.doc.nodeAt(position)
+    if (!node || node.type !== currentNode.type) return
+    editorView.dispatch(editorView.state.tr.setNodeAttribute(position, 'language', languageSelect.value))
   }
   const preserveEditorSelection = (event: MouseEvent) => event.preventDefault()
   copyButton.addEventListener('click', copy)
   copyButton.addEventListener('mousedown', preserveEditorSelection)
+  languageSelect.addEventListener('change', setLanguage)
   render(initialNode)
 
   return {
@@ -213,13 +289,18 @@ export const codeBlockView = $view(codeBlockSchema.node, () => (initialNode) => 
       render(node)
       return true
     },
-    stopEvent: (event: Event) => event.target instanceof HTMLElement && copyButton.contains(event.target),
+    stopEvent: (event: Event) => event.target instanceof globalThis.Node
+      && (copyButton.contains(event.target) || languageSelect.contains(event.target)),
     ignoreMutation: (mutation: ViewMutationRecord) => mutation.type !== 'selection' && !contentDOM.contains(mutation.target),
     selectNode: () => dom.classList.add('ProseMirror-selectednode'),
     deselectNode: () => dom.classList.remove('ProseMirror-selectednode'),
     destroy: () => {
+      destroyed = true
+      if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer)
+      if (statusTimer !== undefined) window.clearTimeout(statusTimer)
       copyButton.removeEventListener('click', copy)
       copyButton.removeEventListener('mousedown', preserveEditorSelection)
+      languageSelect.removeEventListener('change', setLanguage)
     },
   }
 })
