@@ -15,6 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added a keyboard accessible desktop sidebar toggle that remembers its local
   browser preference while keeping the mobile navigation drawer available.
 
+### Changed
+
+- Moved the running RepoQuill version to a compact notebook-navigation footer
+  with one-click copy and a release link.
+
 ### Fixed
 
 - Aligned interactive task-list checkboxes with the first text line while
