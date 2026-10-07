@@ -31,8 +31,9 @@ versioned even without RepoQuill.
 - Note-focused Git version history with readable comparison and safe restore
 - Portable internal note links with search, broken-link detection, and safe rename/move updates
 - Full-text search across note names, folders, and Markdown content
-- Responsive desktop/mobile UI with a collapsible desktop notebook sidebar,
-  dark/light mode, and installable online-first PWA
+- Responsive desktop/mobile UI with a collapsible desktop notebook sidebar
+  that gives the editor more room, dark/light mode, and installable online-first
+  PWA
 - Fail-closed single-owner password authentication with optional TOTP MFA and session administration
 - Multi-architecture Docker images for `linux/amd64` and `linux/arm64`
 
