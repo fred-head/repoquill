@@ -11,9 +11,6 @@ class ResizeObserverStub {
   disconnect() {}
 }
 
-let previousClipboardDescriptor: PropertyDescriptor | undefined
-let clipboardWasOverridden = false
-
 beforeEach(() => {
   Range.prototype.getClientRects = () => [] as unknown as DOMRectList
   Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0)
@@ -61,37 +58,29 @@ afterEach(() => {
   cleanup()
   vi.useRealTimers()
   vi.unstubAllGlobals()
-  if (clipboardWasOverridden) {
-    if (previousClipboardDescriptor) Object.defineProperty(navigator, 'clipboard', previousClipboardDescriptor)
-    else Reflect.deleteProperty(navigator, 'clipboard')
-    previousClipboardDescriptor = undefined
-    clipboardWasOverridden = false
-  }
 })
 
-describe('Application version footer', () => {
-  it('shows and copies the exact backend-provided release version', async () => {
-    previousClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
-    clipboardWasOverridden = true
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+describe('Application version in Settings', () => {
+  it('shows the exact running version beside the Settings heading without a copy button', async () => {
     const version = '0.1.0-alpha.2.security.5'
     const view = render(<App runningVersion={version} />)
-    const footer = await view.findByRole('region', { name: 'Application version' })
+    fireEvent.click(await view.findByRole('button', { name: 'Settings' }))
+    const heading = await view.findByRole('heading', { name: 'Settings' })
+    const header = heading.parentElement!
 
-    expect(within(footer).getByText(version)).toBeTruthy()
-    expect(within(footer).getByRole('link', { name: 'View release' })).toBeTruthy()
-    fireEvent.click(within(footer).getByRole('button', { name: 'Copy version' }))
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(version))
-    expect((await within(footer).findByRole('status')).textContent).toContain('Version copied')
+    expect(header.className).toContain('justify-between')
+    expect(within(header).getByText(version)).toBeTruthy()
+    expect(view.queryByRole('button', { name: 'Copy version' })).toBeNull()
+    expect(view.queryByRole('region', { name: 'Application version' })).toBeNull()
   })
 
-  it('shows dev clearly for an unversioned development build', async () => {
+  it('shows dev beside the Settings heading for an unversioned development build', async () => {
     const view = render(<App />)
-    const footer = await view.findByRole('region', { name: 'Application version' })
+    fireEvent.click(await view.findByRole('button', { name: 'Settings' }))
+    const heading = await view.findByRole('heading', { name: 'Settings' })
+    const header = heading.parentElement!
 
-    expect(within(footer).getByText('dev')).toBeTruthy()
-    expect(within(footer).queryByRole('link', { name: 'View release' })).toBeNull()
+    expect(within(header).getByText('dev')).toBeTruthy()
   })
 })
 
