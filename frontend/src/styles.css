@@ -142,14 +142,19 @@ body { margin: 0; min-width: 320px; }
 .repoquill-editor code { border-radius: 0.3rem; background: #27272a; padding: 0.15rem 0.35rem; color: #fde68a; font-family: ui-monospace, monospace; font-size: 0.9em; }
 .repoquill-editor pre { margin: 1rem 0; overflow-x: auto; border: 1px solid #3f3f46; border-radius: 0.65rem; background: #18181b; padding: 1rem; line-height: 1.45; overflow-wrap: normal; word-break: normal; }
 .repoquill-editor pre code { display: block; background: transparent; padding: 0; color: #e4e4e7; line-height: 1.35; }
-.repoquill-editor .repoquill-code-block { margin: 1rem 0; overflow: hidden; border: 1px solid #3f3f46; border-radius: 0.65rem; background: #18181b; }
-.repoquill-editor .repoquill-code-block-header { display: flex; min-height: 2.75rem; flex-wrap: wrap; align-items: center; gap: 0.5rem; border-bottom: 1px solid #3f3f46; padding: 0.25rem 0.5rem; }
-.repoquill-editor .repoquill-code-block-language { min-width: 0; overflow-wrap: anywhere; color: #a1a1aa; font-family: ui-monospace, monospace; font-size: 0.75rem; }
-.repoquill-editor .repoquill-code-block-copy { min-height: 2.5rem; border: 1px solid #52525b; border-radius: 0.35rem; padding: 0.35rem 0.7rem; color: #e4e4e7; font-size: 0.75rem; font-weight: 600; }
-.repoquill-editor .repoquill-code-block-copy:hover { background: #27272a; }
-.repoquill-editor .repoquill-code-block-copy:focus-visible { outline: 2px solid #f59e0b; outline-offset: 2px; }
-.repoquill-editor .repoquill-code-block-copy-status { min-width: 0; color: #d4d4d8; font-size: 0.75rem; }
-.repoquill-editor .repoquill-code-block-pre { max-width: 100%; margin: 0; overflow: auto; border: 0; border-radius: 0; background: transparent; padding: 0.8rem 1rem 1rem; }
+.repoquill-editor .repoquill-code-block { position: relative; margin: 1rem 0; overflow: hidden; border: 1px solid #3f3f46; border-radius: 0.65rem; background: #18181b; }
+.repoquill-editor .repoquill-code-block-language { position: absolute; z-index: 1; top: 0.4rem; left: 0.65rem; display: inline-flex; max-width: calc(100% - 4rem); align-items: center; color: #a1a1aa; font-family: ui-monospace, monospace; font-size: 0.7rem; line-height: 1.35rem; }
+.repoquill-editor .repoquill-code-block-language[data-editable="true"]::after { content: '⌄'; margin-left: -0.75rem; color: #71717a; pointer-events: none; }
+.repoquill-editor .repoquill-code-block-language-select { max-width: min(12rem, calc(100vw - 7rem)); appearance: none; border: 0; background: transparent; padding: 0.1rem 1rem 0.1rem 0.1rem; color: inherit; font: inherit; text-overflow: ellipsis; cursor: pointer; }
+.repoquill-editor .repoquill-code-block-language-select:focus-visible { border-radius: 0.2rem; outline: 2px solid #f59e0b; outline-offset: 2px; }
+.repoquill-editor .repoquill-code-block-language-select:disabled { cursor: default; }
+.repoquill-editor .repoquill-code-block-language-label { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repoquill-editor .repoquill-code-block-copy { position: absolute; z-index: 2; top: 0.3rem; right: 0.35rem; display: flex; width: 2rem; height: 2rem; align-items: center; justify-content: center; border: 0; border-radius: 0.35rem; background: transparent; padding: 0; color: #a1a1aa; cursor: pointer; }
+.repoquill-editor .repoquill-code-block-copy:hover { background: #27272a; color: #fafafa; }
+.repoquill-editor .repoquill-code-block-copy:focus-visible { outline: 2px solid #f59e0b; outline-offset: 1px; color: #fafafa; }
+.repoquill-editor .repoquill-code-block-copy svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.repoquill-editor .repoquill-code-block-copy-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; }
+.repoquill-editor .repoquill-code-block-pre { max-width: 100%; margin: 0; overflow: auto; border: 0; border-radius: 0; background: transparent; padding: 2.55rem 1rem 1rem; }
 .repoquill-editor .repoquill-code-block-content { display: block; min-width: max-content; background: transparent; padding: 0; color: #e4e4e7; font-family: ui-monospace, monospace; font-size: 0.9em; line-height: 1.45; white-space: pre; }
 .repoquill-editor .hljs-comment, .repoquill-editor .hljs-quote { color: #a1a1aa; font-style: italic; }
 .repoquill-editor .hljs-keyword, .repoquill-editor .hljs-selector-tag, .repoquill-editor .hljs-literal, .repoquill-editor .hljs-built_in { color: #fbbf24; }
@@ -187,11 +192,12 @@ milkdown-image-inline { display: inline-block; max-width: 100%; vertical-align: 
 .theme-light .repoquill-editor pre { border-color: #d4d4d8; background: #f4f4f5; }
 .theme-light .repoquill-editor pre code { background: transparent; color: #27272a; }
 .theme-light .repoquill-editor .repoquill-code-block { border-color: #d4d4d8; background: #f4f4f5; }
-.theme-light .repoquill-editor .repoquill-code-block-header { border-color: #d4d4d8; }
 .theme-light .repoquill-editor .repoquill-code-block-language { color: #52525b; }
-.theme-light .repoquill-editor .repoquill-code-block-copy { border-color: #a1a1aa; color: #27272a; }
-.theme-light .repoquill-editor .repoquill-code-block-copy:hover { background: #e4e4e7; }
-.theme-light .repoquill-editor .repoquill-code-block-copy-status { color: #3f3f46; }
+.theme-light .repoquill-editor .repoquill-code-block-language[data-editable="true"]::after { color: #71717a; }
+.theme-light .repoquill-editor .repoquill-code-block-language-select:focus-visible { outline-color: #b45309; }
+.theme-light .repoquill-editor .repoquill-code-block-copy { color: #71717a; }
+.theme-light .repoquill-editor .repoquill-code-block-copy:hover { background: #e4e4e7; color: #18181b; }
+.theme-light .repoquill-editor .repoquill-code-block-copy:focus-visible { outline-color: #b45309; color: #18181b; }
 .theme-light .repoquill-editor .repoquill-code-block-content { color: #27272a; }
 .theme-light .repoquill-editor .hljs-comment, .theme-light .repoquill-editor .hljs-quote { color: #71717a; }
 .theme-light .repoquill-editor .hljs-keyword, .theme-light .repoquill-editor .hljs-selector-tag, .theme-light .repoquill-editor .hljs-literal, .theme-light .repoquill-editor .hljs-built_in { color: #a16207; }

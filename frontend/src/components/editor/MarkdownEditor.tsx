@@ -18,7 +18,7 @@ import { Milkdown, MilkdownProvider, useEditor } from '@milkdown/react'
 import { isEditorEditable } from '../../app/autoLock'
 import { documentStats, type DocumentStats } from '../../app/documentStats'
 import { apiFetch } from '../../api'
-import { codeBlockLanguages, codeBlockLanguageLabel, codeBlockView, codeHighlightPlugin } from './codeBlocks'
+import { codeBlockView, codeHighlightPlugin } from './codeBlocks'
 
 type MarkdownEditorProps = {
   documentKey: string
@@ -46,7 +46,6 @@ type ViewedImage = { src: string; alt: string }
 type ActiveImageView = ViewedImage & { contextKey: string }
 type ImagePresentationSize = 'small' | 'medium' | 'large' | 'full'
 type ImagePresentationState = { contextKey: string; values: Record<string, ImagePresentationSize> }
-type SelectedCodeBlock = { position: number; language: string }
 type ToolbarState = { block: string; strong: boolean; emphasis: boolean; strike: boolean; code: boolean; link: boolean; bullet: boolean; ordered: boolean; task: boolean; quote: boolean; table: boolean }
 type TableSize = { rows: number; columns: number }
 type SlashState = { from: number; to: number; query: string; left: number; top: number }
@@ -186,20 +185,6 @@ function toolbarStateFromEditor(state: EditorState): ToolbarState {
     if (node.type.name === 'table') table = true
   }
   return { block, strong: markActive('strong'), emphasis: markActive('emphasis'), strike: markActive('strike_through'), code: markActive('inlineCode'), link: markActive('link'), bullet, ordered, task, quote, table }
-}
-
-function selectedCodeBlockFromEditor(state: EditorState): SelectedCodeBlock | undefined {
-  const { selection } = state
-  if (selection instanceof NodeSelection && selection.node.type.name === 'code_block') {
-    return { position: selection.from, language: String(selection.node.attrs.language ?? '') }
-  }
-  for (let depth = selection.$from.depth; depth > 0; depth -= 1) {
-    const node = selection.$from.node(depth)
-    if (node.type.name === 'code_block') {
-      return { position: selection.$from.before(depth), language: String(node.attrs.language ?? '') }
-    }
-  }
-  return undefined
 }
 
 function resolveInternalNotePath(notePath: string, href: string): string | undefined {
@@ -351,7 +336,6 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const [outlineHeadings, setOutlineHeadings] = useState<OutlineHeading[]>([])
   const [activeOutlinePosition, setActiveOutlinePosition] = useState<number>()
   const [narrowViewport, setNarrowViewport] = useState(isNarrowViewport)
-  const [selectedCodeBlock, setSelectedCodeBlock] = useState<SelectedCodeBlock>()
   const [tablePickerOpen, setTablePickerOpen] = useState(false)
   const [tableSize, setTableSize] = useState<TableSize>({ rows: 3, columns: 3 })
   const [slashState, setSlashState] = useState<SlashState>()
@@ -798,7 +782,6 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
             const view = _ctx.get(editorViewCtx)
             if (view?.state) {
               setToolbarState(toolbarStateFromEditor(view.state))
-              setSelectedCodeBlock(selectedCodeBlockFromEditor(view.state))
               updateSelectedLink(view.state)
               updateSlashMenu(view)
               updateNoteLinkTrigger(view)
@@ -815,7 +798,6 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
               onStats?.(documentStats(view.state.doc))
               queueOutlineRefresh(view)
               setToolbarState(toolbarStateFromEditor(view.state))
-              setSelectedCodeBlock(selectedCodeBlockFromEditor(view.state))
               updateSelectedLink(view.state)
               updateSlashMenu(view)
               updateNoteLinkTrigger(view)
@@ -827,7 +809,6 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
               onStats?.(documentStats(view.state.doc))
               queueOutlineRefresh(view)
               setToolbarState(toolbarStateFromEditor(view.state))
-              setSelectedCodeBlock(selectedCodeBlockFromEditor(view.state))
               updateSelectedLink(view.state)
               updateNoteLinkTrigger(view)
             }
@@ -1169,16 +1150,6 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     else callCommand(wrapInHeadingCommand, Number(block.replace('heading-', '')))
   }
 
-  function setCodeBlockLanguage(language: string) {
-    if (!selectedCodeBlock) return
-    get()?.action((ctx) => {
-      const view = ctx.get(editorViewCtx)
-      const node = view.state.doc.nodeAt(selectedCodeBlock.position)
-      if (!node || node.type.name !== 'code_block') return
-      view.dispatch(view.state.tr.setNodeAttribute(selectedCodeBlock.position, 'language', language))
-    })
-  }
-
   function editLink() {
     if (readOnly) return
     get()?.action((ctx) => {
@@ -1361,18 +1332,6 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         <ToolbarDivider />
         <button ref={outlineToggle} type="button" title="Outline / Table of contents" aria-label="Outline / Table of contents" aria-pressed={outlineOpen} aria-expanded={outlineOpen} aria-controls={outlineOpen ? 'repoquill-document-outline' : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => setOutlineOpen((open) => !open)} className={`min-h-8 shrink-0 rounded px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${outlineOpen ? 'border border-amber-500 bg-amber-400/15 text-amber-100' : 'border border-transparent text-zinc-300 hover:bg-zinc-800 hover:text-white'}`}>Outline</button>
       </div>
-
-      {selectedCodeBlock && !readOnly && (
-        <div role="toolbar" aria-label="Code block options" className="flex max-w-full flex-wrap items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
-          <label className="flex min-h-10 items-center gap-2 px-1 text-xs font-medium text-zinc-400">
-            Language
-            <select aria-label="Code block language" value={selectedCodeBlock.language} onChange={(event) => setCodeBlockLanguage(event.target.value)} className="min-h-10 max-w-full rounded border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-200">
-              {codeBlockLanguages.map((language) => <option key={language.value || 'plain-text'} value={language.value}>{language.label}</option>)}
-              {selectedCodeBlock.language && !codeBlockLanguages.some((language) => language.value === selectedCodeBlock.language) && <option value={selectedCodeBlock.language}>{codeBlockLanguageLabel(selectedCodeBlock.language)}</option>}
-            </select>
-          </label>
-        </div>
-      )}
 
       {toolbarState.table && !readOnly && (
         <div role="toolbar" aria-label="Table editing" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
