@@ -17,8 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Moved the running RepoQuill version to a compact notebook-navigation footer
-  with one-click copy and a release link.
+- Moved the running RepoQuill version into the Settings header, right-aligned
+  beside the heading.
 
 ### Fixed
 

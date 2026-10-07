@@ -1459,7 +1459,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
           {!treeLoading && !treeError && entries.length > 0 && <nav aria-label="Notebook notes"><ul className="space-y-0.5">{entries.map((entry) => <TreeEntry key={entry.path} entry={entry} selectedPath={selectedItem?.path} expandedFolders={expandedFolders} renamePath={renameEntry?.path} renameValue={renameValue} onSelect={selectEntry} onToggleFolder={toggleFolder} onContextMenu={showContextMenu} onRenameValue={setRenameValue} onRenameCommit={() => void commitRename()} onRenameCancel={() => setRenameEntry(undefined)} />)}</ul></nav>}
           </>}
         </div>
-        <ApplicationVersionFooter version={runningVersion || 'dev'} />
       </aside>
 
       <main className="repoquill-note-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto" style={{ '--editor-toolbar-top': `${noteHeaderHeight || (tabs.length > 0 ? 99 : 55)}px` } as CSSProperties}>
@@ -1490,7 +1489,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       {deleteRequest && <ConfirmationDialog title="Move to Trash?" message={`Move “${deleteRequest.path}” to Trash?${deleteRequest.type === 'file' ? ' Its owned image assets will move with it.' : ' Everything inside this folder will move with it.'} You can restore it later.`} confirmLabel="Move to Trash" danger onCancel={() => setDeleteRequest(undefined)} onConfirm={() => { const entry = deleteRequest; setDeleteRequest(undefined); void deleteEntry(entry) }} />}
       {moveEntry && <FolderPicker entries={entries} notebookName={notebookName} moving={moveEntry} destination={moveDestination} onDestination={setMoveDestination} onCancel={() => setMoveEntry(undefined)} onConfirm={() => void confirmMove()} />}
       {moveLinkPreview && <MoveLinkPreviewDialog preview={moveLinkPreview.preview} onCancel={() => setMoveLinkPreview(undefined)} onConfirm={() => void confirmMoveLinkRewrites()} />}
-      {settingsOpen && <SettingsDialog mode="settings" authMode={authMode} onLoggedOut={onLoggedOut} autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} syncPreferences={syncPreferences} onSyncPreferences={setSyncPreferences} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsDialog mode="settings" authMode={authMode} runningVersion={runningVersion} onLoggedOut={onLoggedOut} autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} syncPreferences={syncPreferences} onSyncPreferences={setSyncPreferences} onClose={() => setSettingsOpen(false)} />}
       {addNotebookOpen && <SettingsDialog mode="onboarding" autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} onNotebookAdded={async () => { await activateClonedNotebook(); setAddNotebookOpen(false); setManageNotebooksOpen(true) }} onClose={() => setAddNotebookOpen(false)} />}
       {manageNotebooksOpen && <ManageNotebooksDialog notebooks={notebooks} activeNotebookID={activeNotebookID} operationsBlocked={operationBusy || saveStatus === 'saving' || saveStatus === 'unsaved'} onChanged={refreshNotebookRegistrations} onClose={() => setManageNotebooksOpen(false)} />}
 	  {syncDetailsOpen && <SynchronizationDetailsPanel saveStatus={saveStatus} gitStatus={gitStatus} syncing={gitSyncing} browserOnline={browserOnline && health !== 'offline'} lastSuccessfulSyncAt={lastSuccessfulSyncAt} lastSyncAttemptAt={lastSyncAttemptAt} lastSyncError={lastSyncError} nextScheduledSyncAt={nextScheduledSyncAt} receivedChanges={receivedChanges} onSync={() => void syncRepository()} onReviewConflicts={() => void openConflictAssistant()} conflictLoading={conflictLoading} conflictError={conflictError} onOpenNote={(path) => void openNote(path, 'new')} onOpenSettings={() => { setSyncDetailsOpen(false); setSettingsOpen(true) }} onCheckConnection={() => { setSyncDetailsOpen(false); setManageNotebooksOpen(true) }} onClose={() => setSyncDetailsOpen(false)} />}
@@ -1502,29 +1501,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   )
 }
 
-function ApplicationVersionFooter({ version }: { version: string }) {
-  const [copyState, setCopyState] = useState('')
-
-  async function copyVersion() {
-    try {
-      await navigator.clipboard.writeText(version)
-      setCopyState('Version copied')
-    } catch {
-      setCopyState('Could not copy version')
-    }
-  }
-
-  return <footer role="region" aria-label="Application version" className="shrink-0 border-t border-zinc-800 px-5 pt-3 text-[11px] text-zinc-500" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}>
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <p className="min-w-0 truncate">RepoQuill <span className="sr-only">version </span><code className="select-text text-zinc-400">{version}</code></p>
-      <button type="button" onClick={() => void copyVersion()} className="min-h-10 shrink-0 rounded-md border border-zinc-700 px-3 text-zinc-300 hover:bg-zinc-800">Copy version</button>
-    </div>
-    {version !== 'dev' && <a className="mt-1 inline-block text-amber-400 hover:underline" href={`https://github.com/fred-head/repoquill/releases/tag/v${encodeURIComponent(version)}`} target="_blank" rel="noreferrer">View release</a>}
-    {copyState && <p role="status" className="mt-1">{copyState}</p>}
-  </footer>
-}
-
-export function SettingsDialog({ mode = 'settings', authMode = 'disabled', onLoggedOut = () => undefined, autoLockMinutes, onAutoLockMinutes, syncPreferences = defaultSyncPreferences, onSyncPreferences = () => undefined, onNotebookAdded, onClose }: { mode?: 'settings' | 'onboarding'; authMode?:'local'|'disabled'; onLoggedOut?:()=>void; autoLockMinutes: AutoLockMinutes; onAutoLockMinutes: (value: AutoLockMinutes) => void; syncPreferences?: SyncPreferences; onSyncPreferences?: (value: SyncPreferences) => void; onNotebookAdded?: () => Promise<void> | void; onClose: () => void }) {
+export function SettingsDialog({ mode = 'settings', authMode = 'disabled', runningVersion = 'dev', onLoggedOut = () => undefined, autoLockMinutes, onAutoLockMinutes, syncPreferences = defaultSyncPreferences, onSyncPreferences = () => undefined, onNotebookAdded, onClose }: { mode?: 'settings' | 'onboarding'; authMode?:'local'|'disabled'; runningVersion?:string; onLoggedOut?:()=>void; autoLockMinutes: AutoLockMinutes; onAutoLockMinutes: (value: AutoLockMinutes) => void; syncPreferences?: SyncPreferences; onSyncPreferences?: (value: SyncPreferences) => void; onNotebookAdded?: () => Promise<void> | void; onClose: () => void }) {
   const [cleanupAssets, setCleanupAssets] = useState<CleanupAsset[]>()
   const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set())
   const [cleanupBusy, setCleanupBusy] = useState(false)
@@ -1737,7 +1714,7 @@ export function SettingsDialog({ mode = 'settings', authMode = 'disabled', onLog
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div role="dialog" aria-modal="true" aria-labelledby="settings-title" className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
-        <header className="shrink-0 border-b border-zinc-800 px-5 py-4"><h2 id="settings-title" className="text-lg font-semibold">{mode === 'onboarding' ? 'Add Notebook' : 'Settings'}</h2></header>
+        <header className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-zinc-800 px-5 py-4"><h2 id="settings-title" className="text-lg font-semibold">{mode === 'onboarding' ? 'Add Notebook' : 'Settings'}</h2>{mode === 'settings' && <code aria-label="Application version" title={`RepoQuill ${runningVersion || 'dev'}`} className="ml-auto shrink-0 select-text whitespace-nowrap font-mono text-[10px] text-zinc-500 sm:text-xs">{runningVersion || 'dev'}</code>}</header>
         <div className={`min-h-0 overflow-y-auto p-5 ${mode === 'settings' ? 'flex flex-col' : ''}`}>
           {mode === 'onboarding' && <section>
             <div className="flex items-center justify-between"><div><h3 className="text-sm font-semibold text-zinc-200">Connect a notebook</h3><p className="mt-1 text-xs text-zinc-500">Step {onboardingStep} of 5</p></div><div aria-label="Connection progress" className="flex gap-1">{[1,2,3,4,5].map(step=><span key={step} className={`h-1.5 w-6 rounded ${step<=onboardingStep?'bg-amber-500':'bg-zinc-700'}`}><span className="sr-only">Step {step}</span></span>)}</div></div>
