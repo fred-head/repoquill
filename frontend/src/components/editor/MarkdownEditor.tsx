@@ -334,6 +334,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const outlineOpenRef = useRef(outlineOpen)
   const [outlineHeadings, setOutlineHeadings] = useState<OutlineHeading[]>([])
   const [activeOutlinePosition, setActiveOutlinePosition] = useState<number>()
+  const [outlineTop, setOutlineTop] = useState<number>()
   const [narrowViewport, setNarrowViewport] = useState(isNarrowViewport)
   const [tablePickerOpen, setTablePickerOpen] = useState(false)
   const [tableSize, setTableSize] = useState<TableSize>({ rows: 3, columns: 3 })
@@ -389,11 +390,29 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       if (event.key === 'Escape') {
         event.preventDefault()
         setOutlineOpen(false)
+        setOutlineTop(undefined)
         requestFrame(() => outlineToggle.current?.focus())
       }
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [outlineOpen])
+
+  useEffect(() => {
+    if (!outlineOpen) return
+    const toolbar = editorContainer.current?.closest('.repoquill-editor-layout')?.querySelector<HTMLElement>('.repoquill-editor-toolbars')
+    if (!toolbar) return
+    const updatePanelTop = () => setOutlineTop(Math.max(0, toolbar.getBoundingClientRect().bottom))
+    const resizeObserver = new ResizeObserver(updatePanelTop)
+    resizeObserver.observe(toolbar)
+    window.addEventListener('scroll', updatePanelTop, true)
+    window.addEventListener('resize', updatePanelTop)
+    updatePanelTop()
+    return () => {
+      resizeObserver.disconnect()
+      window.removeEventListener('scroll', updatePanelTop, true)
+      window.removeEventListener('resize', updatePanelTop)
+    }
   }, [outlineOpen])
 
   useEffect(() => {
@@ -851,12 +870,16 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       view.focus()
       setActiveOutlinePosition(heading.position)
     })
-    if (narrowViewport) setOutlineOpen(false)
+    if (narrowViewport) {
+      setOutlineOpen(false)
+      setOutlineTop(undefined)
+    }
     requestFrame(() => editorElement?.focus())
   }
 
   function closeOutline() {
     setOutlineOpen(false)
+    setOutlineTop(undefined)
     requestFrame(() => outlineToggle.current?.focus())
   }
 
@@ -1282,7 +1305,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       <div className="repoquill-editor-main">
       <div aria-label="Editor toolbars" data-sticky={stickyToolbar ? 'true' : 'false'} className="repoquill-editor-toolbars mb-3 space-y-1.5">
       <div className="flex justify-end">
-        <button ref={outlineToggle} type="button" title="Toggle document outline" aria-label="Outline / Table of contents" aria-pressed={outlineOpen} aria-expanded={outlineOpen} aria-controls={outlineOpen ? 'repoquill-document-outline' : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => setOutlineOpen((open) => !open)} className="flex min-h-8 items-center gap-2 rounded px-2 text-xs font-medium text-zinc-300 outline-none hover:bg-zinc-800 hover:text-white focus-visible:ring-2 focus-visible:ring-amber-500"><span aria-hidden="true">☷</span><span>Outline</span><span aria-hidden="true" className="text-zinc-500">{outlineOpen ? '›' : '‹'}</span></button>
+        <button ref={outlineToggle} type="button" title="Toggle document outline" aria-label="Outline / Table of contents" aria-pressed={outlineOpen} aria-expanded={outlineOpen} aria-controls={outlineOpen ? 'repoquill-document-outline' : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => { setOutlineTop(undefined); setOutlineOpen((open) => !open) }} className="flex min-h-8 items-center gap-2 rounded px-2 text-xs font-medium text-zinc-300 outline-none hover:bg-zinc-800 hover:text-white focus-visible:ring-2 focus-visible:ring-amber-500"><span aria-hidden="true">☷</span><span>Outline</span><span aria-hidden="true" className="text-zinc-500">{outlineOpen ? '›' : '‹'}</span></button>
       </div>
       <div role="toolbar" aria-label="Editor formatting" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
         <ToolbarButton label="Undo" disabled={readOnly} onClick={() => callCommand(undoCommand)}>↶</ToolbarButton>
@@ -1392,7 +1415,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       {markdownPaste && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setMarkdownPaste(undefined) }}><form onSubmit={(event) => { event.preventDefault(); applyMarkdownPaste() }} role="dialog" aria-modal="true" aria-labelledby="markdown-paste-title" className="w-full max-w-2xl rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="markdown-paste-title" className="text-lg font-semibold text-zinc-100">Paste as Markdown</h2><p className="mt-1 text-sm text-zinc-400">Headings, lists, tasks, quotes, code, links, tables, and dividers become editable note content.</p><label className="mt-4 block text-sm text-zinc-300">Markdown<textarea autoFocus rows={12} value={markdownPaste.text} onChange={(event) => setMarkdownPaste({ text: event.target.value, clipboardHint: markdownPaste.clipboardHint })} className="mt-2 w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder="# Heading&#10;&#10;- First item&#10;- Second item" /></label><p className="mt-2 text-xs text-zinc-500">{markdownPaste.clipboardHint} External image URLs and raw HTML are kept from becoming active content.</p>{markdownPaste.error && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{markdownPaste.error}</p>}<div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setMarkdownPaste(undefined)} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => applyMarkdownPaste(true)} disabled={!markdownPaste.text} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40">Insert as plain text</button><button type="submit" disabled={!markdownPaste.text} className="min-h-10 rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">Insert Markdown</button></div></form></div>}
       {editingAlt !== undefined && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingAlt(undefined) }}><form onSubmit={(event) => { event.preventDefault(); saveImageMetadata() }} role="dialog" aria-modal="true" aria-labelledby="image-metadata-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="image-metadata-title" className="text-lg font-semibold text-zinc-100">Edit image</h2><label className="mt-4 block text-sm text-zinc-300">Alt text<input autoFocus value={editingAlt} onChange={(event) => setEditingAlt(event.target.value)} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-amber-500" placeholder="Leave empty for a decorative image" /></label><p className="mt-2 text-xs text-zinc-500">Describe meaningful content briefly, or leave this empty for a decorative image.</p><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setEditingAlt(undefined)} className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="submit" className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">Save</button></div></form></div>}
       {outlineOpen && <>
-        <aside id="repoquill-document-outline" aria-label="Document outline" aria-labelledby="repoquill-document-outline-title" className="repoquill-outline-panel">
+        <aside id="repoquill-document-outline" aria-label="Document outline" aria-labelledby="repoquill-document-outline-title" className="repoquill-outline-panel" style={{ position: 'fixed', top: outlineTop === undefined ? undefined : `${outlineTop}px`, right: 0 }}>
           <header className="flex min-h-10 items-center justify-between gap-3 border-b border-zinc-800 px-2 py-2">
             <h2 id="repoquill-document-outline-title" className="text-sm font-semibold text-zinc-200">Outline</h2>
             <button type="button" aria-label="Close document outline" onClick={closeOutline} className="min-h-8 min-w-8 rounded px-2 text-lg leading-none text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-amber-500">×</button>

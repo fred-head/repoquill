@@ -52,6 +52,8 @@ describe('MarkdownEditor read-only mode', () => {
     const onChange = vi.fn()
     const markdown = '# Main\n\n### Skipped level\n\n## Same label\n\n## Same label'
     const view = render(<MarkdownEditor documentKey="outline-hierarchy" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} />)
+    const toolbar = view.container.querySelector<HTMLElement>('.repoquill-editor-toolbars')!
+    vi.spyOn(toolbar, 'getBoundingClientRect').mockReturnValue({ bottom: 186 } as DOMRect)
     const toggle = view.getByRole('button', { name: 'Outline / Table of contents' })
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
     expect(view.queryByRole('navigation', { name: 'Table of contents' })).toBeNull()
@@ -63,6 +65,10 @@ describe('MarkdownEditor read-only mode', () => {
       'Heading 1: Main', 'Heading 3: Skipped level', 'Heading 2: Same label', 'Heading 2: Same label',
     ])
     expect(view.getByRole('button', { name: 'Close document outline' })).toBeTruthy()
+    const panel = view.container.querySelector<HTMLElement>('.repoquill-outline-panel')
+    expect(panel?.style.position).toBe('fixed')
+    expect(panel?.style.right).toBe('0px')
+    expect(panel?.style.top).toBe('186px')
     expect(view.container.querySelector('.repoquill-outline-backdrop')).toBeNull()
     expect(view.container.querySelector('[role="toolbar"][aria-label="Editor formatting"] [aria-label="Outline / Table of contents"]')).toBeNull()
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
