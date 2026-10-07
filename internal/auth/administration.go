@@ -45,7 +45,11 @@ type SessionRecord struct {
 }
 
 func (s *Service) Sessions(ctx context.Context, currentHash []byte) ([]SessionRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT session_id_hash, created_at, last_activity_at, idle_expires_at, absolute_expires_at, revoked_at, client_description FROM auth_sessions ORDER BY last_activity_at DESC LIMIT 100`)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rows, err := s.db.QueryContext(ctx, `SELECT session_id_hash, created_at, last_activity_at, idle_expires_at, absolute_expires_at, revoked_at, client_description
+		FROM auth_sessions
+		WHERE revoked_at IS NULL AND julianday(idle_expires_at) > julianday(?) AND julianday(absolute_expires_at) > julianday(?)
+		ORDER BY last_activity_at DESC LIMIT 100`, now, now)
 	if err != nil {
 		return nil, err
 	}

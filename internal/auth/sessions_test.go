@@ -90,6 +90,59 @@ func TestSQLiteSessionStoreRejectsExpiredSessions(t *testing.T) {
 	}
 }
 
+func TestSessionListingHidesInactiveRowsAndSessionWritesPruneThem(t *testing.T) {
+	service, err := Open(t.Context(), Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	store := &sqliteSessionStore{db: service.db}
+
+	if err := store.CommitCtx(t.Context(), "expired-session", []byte("expired"), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitCtx(t.Context(), "revoked-session", []byte("revoked"), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteCtx(t.Context(), "revoked-session"); err != nil {
+		t.Fatal(err)
+	}
+	expiredHash := sessionHash("expired-session")
+	if _, err := service.db.ExecContext(t.Context(), `UPDATE auth_sessions SET idle_expires_at=?, absolute_expires_at=? WHERE session_id_hash=?`, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano), time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano), expiredHash[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := service.Sessions(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("inactive sessions were listed: %#v", records)
+	}
+	var beforeCleanup int
+	if err := service.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM auth_sessions`).Scan(&beforeCleanup); err != nil {
+		t.Fatal(err)
+	}
+	if beforeCleanup != 2 {
+		t.Fatalf("session listing mutated inactive rows: count=%d", beforeCleanup)
+	}
+
+	if err := store.CommitCtx(t.Context(), "fresh-session", []byte("fresh"), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int
+	if err := service.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM auth_sessions`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("session write did not prune inactive rows: count=%d", remaining)
+	}
+	records, err = service.Sessions(t.Context(), nil)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("fresh session was not listed after cleanup: records=%#v err=%v", records, err)
+	}
+}
+
 func TestSQLiteSessionStoreDoesNotResurrectRevokedSession(t *testing.T) {
 	service, err := Open(t.Context(), Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")}, testLogger())
 	if err != nil {

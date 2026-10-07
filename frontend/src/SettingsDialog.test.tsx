@@ -328,7 +328,7 @@ describe('Settings asset cleanup', () => {
     expect(view.getAllByText(/asset is referenced or no longer eligible/).length).toBeGreaterThan(0)
   })
 
-  it('shows security administration, active sessions, and the running version', async () => {
+  it('shows the running app version beside Settings and keeps security administration available', async () => {
     setCSRFToken('csrf-before')
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       if (input === '/api/auth/security') return jsonResponse({ sessionSettings: { lifetimeHours: 12, idleHours: 168, rememberDays: 30 } })
@@ -339,7 +339,10 @@ describe('Settings asset cleanup', () => {
     const view = render(<SettingsDialog authMode="local" runningVersion="0.2.0-alpha.2" autoLockMinutes={0} onAutoLockMinutes={vi.fn()} onClose={vi.fn()} />)
 
     await waitFor(() => expect(view.getByText('Firefox on Linux')).toBeTruthy())
-    expect(view.getByText(/RepoQuill 0.2.0-alpha.2/)).toBeTruthy()
+    const settingsHeading = view.getByRole('heading', { name: 'Settings' })
+    expect(settingsHeading.parentElement?.className).toContain('justify-between')
+    expect(view.getByText('0.2.0-alpha.2')).toBeTruthy()
+    expect(view.queryByRole('button', { name: 'Copy version' })).toBeNull()
     expect(view.getByText('· Current')).toBeTruthy()
 
     const passwordForm = view.getAllByText('Change password').find((element) => element.tagName === 'H4')!.closest('form')!

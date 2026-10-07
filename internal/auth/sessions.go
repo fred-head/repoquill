@@ -326,6 +326,18 @@ func (s *sqliteSessionStore) CommitCtx(ctx context.Context, token string, data [
 		}
 	}
 	hash := sessionHash(token)
+	// Expired and revoked rows no longer grant access. Prune them when a
+	// session is written so the settings list and metadata stay bounded. Keep
+	// the current token's row until the upsert checks it, preventing a stale
+	// request from recreating an expired or revoked session.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM auth_sessions
+		WHERE session_id_hash <> ? AND (
+			revoked_at IS NOT NULL OR
+			julianday(idle_expires_at) IS NULL OR julianday(absolute_expires_at) IS NULL OR
+			julianday(idle_expires_at) <= julianday(?) OR julianday(absolute_expires_at) <= julianday(?)
+		)`, hash[:], now, now); err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(ctx, `INSERT INTO auth_sessions (session_id_hash, created_at, last_activity_at, idle_expires_at, absolute_expires_at, client_description, session_data)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_id_hash) DO UPDATE SET last_activity_at=excluded.last_activity_at, idle_expires_at=excluded.idle_expires_at, absolute_expires_at=excluded.absolute_expires_at, client_description=excluded.client_description, session_data=excluded.session_data WHERE auth_sessions.revoked_at IS NULL AND auth_sessions.idle_expires_at>? AND auth_sessions.absolute_expires_at>?`, hash[:], now, now, expires, absoluteExpiry, client, data, now, now)

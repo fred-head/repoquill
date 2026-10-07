@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App, TrashDialog } from './App'
@@ -58,6 +58,30 @@ afterEach(() => {
   cleanup()
   vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+describe('Application version in Settings', () => {
+  it('shows the exact running version beside the Settings heading without a copy button', async () => {
+    const version = '0.1.0-alpha.2.security.5'
+    const view = render(<App runningVersion={version} />)
+    fireEvent.click(await view.findByRole('button', { name: 'Settings' }))
+    const heading = await view.findByRole('heading', { name: 'Settings' })
+    const header = heading.parentElement!
+
+    expect(header.className).toContain('justify-between')
+    expect(within(header).getByText(version)).toBeTruthy()
+    expect(view.queryByRole('button', { name: 'Copy version' })).toBeNull()
+    expect(view.queryByRole('region', { name: 'Application version' })).toBeNull()
+  })
+
+  it('shows dev beside the Settings heading for an unversioned development build', async () => {
+    const view = render(<App />)
+    fireEvent.click(await view.findByRole('button', { name: 'Settings' }))
+    const heading = await view.findByRole('heading', { name: 'Settings' })
+    const header = heading.parentElement!
+
+    expect(within(header).getByText('dev')).toBeTruthy()
+  })
 })
 
 // Milkdown removes document listeners 3 seconds after editor setup.
