@@ -158,10 +158,15 @@ describe('App auto-lock integration', () => {
     await waitFor(() => expect(editor.textContent).toContain('sidebar draft'))
     const draftHTML = editor.innerHTML
 
-    const toggle = view.getByRole('button', { name: 'Collapse notebook sidebar' })
+    const sidebar = view.getByRole('complementary', { name: 'Notebook navigation' })
+    const toggle = within(sidebar).getByRole('button', { name: 'Collapse notebook sidebar' })
     toggle.focus()
     await user.keyboard('{Enter}')
-    expect(view.getByRole('button', { name: 'Expand notebook sidebar' }).getAttribute('aria-expanded')).toBe('false')
+    const restore = within(sidebar).getByRole('button', { name: 'Expand notebook sidebar' })
+    expect(restore.getAttribute('aria-expanded')).toBe('false')
+    expect(sidebar.classList.contains('lg:w-12')).toBe(true)
+    expect(sidebar.classList.contains('lg:invisible')).toBe(false)
+    expect(view.container.querySelector('article')?.classList.contains('max-w-none')).toBe(true)
     expect(localStorage.getItem('repoquill.notebook-sidebar-collapsed')).toBe('true')
     expect(view.getAllByRole('tab')).toHaveLength(2)
     expect(view.getByRole('tab', { name: 'Second' })).toBeTruthy()
@@ -169,15 +174,16 @@ describe('App auto-lock integration', () => {
     expect(view.container.querySelector('.ProseMirror')).toBe(editor)
     expect(editor.innerHTML).toBe(draftHTML)
 
-    const restore = view.getByRole('button', { name: 'Expand notebook sidebar' })
     restore.focus()
     await user.keyboard('{Enter}')
-    expect(view.getByRole('button', { name: 'Collapse notebook sidebar' }).getAttribute('aria-expanded')).toBe('true')
+    expect(within(sidebar).getByRole('button', { name: 'Collapse notebook sidebar' }).getAttribute('aria-expanded')).toBe('true')
+    expect(sidebar.classList.contains('lg:w-80')).toBe(true)
+    expect(view.container.querySelector('article')?.classList.contains('max-w-4xl')).toBe(true)
     expect(localStorage.getItem('repoquill.notebook-sidebar-collapsed')).toBeNull()
     expect(view.container.querySelector('.ProseMirror')).toBe(editor)
     expect(editor.innerHTML).toBe(draftHTML)
 
-    fireEvent.click(view.getByRole('button', { name: 'Collapse notebook sidebar' }))
+    fireEvent.click(within(sidebar).getByRole('button', { name: 'Collapse notebook sidebar' }))
     view.unmount()
     const reloaded = render(<App />)
     expect(await reloaded.findByRole('button', { name: 'Expand notebook sidebar' })).toBeTruthy()
@@ -192,7 +198,9 @@ describe('App auto-lock integration', () => {
     expect(openNavigation.getAttribute('aria-expanded')).toBe('true')
     const sidebar = view.getByRole('complementary', { name: 'Notebook navigation' })
     expect(sidebar.classList.contains('translate-x-0')).toBe(true)
-    expect(sidebar.classList.contains('lg:invisible')).toBe(true)
+    expect(sidebar.classList.contains('lg:w-12')).toBe(true)
+    expect(within(sidebar).getByRole('button', { name: 'Expand notebook sidebar' })).toBeTruthy()
+    expect(sidebar.querySelector('#notebook-navigation-content')).toBeTruthy()
   })
 
   it('opens primary notebook navigation, onboarding, and switches without stale tree state', async () => {

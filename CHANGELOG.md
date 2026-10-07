@@ -13,8 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added portable fenced-code language selection and controlled syntax
   highlighting, with accessible in-block copy controls in Edit and Read only
   modes.
-- Added a keyboard accessible desktop sidebar toggle that remembers its local
-  browser preference while keeping the mobile navigation drawer available.
+- Added a keyboard accessible desktop sidebar control that leaves a narrow
+  restore strip and lets the editor use the released width; the local browser
+  preference is remembered while the mobile navigation drawer stays available.
 
 ### Changed
 
