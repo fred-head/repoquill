@@ -152,6 +152,7 @@ describe('Git synchronization UI', () => {
 
     const editor = view.container.querySelector<HTMLElement>('.ProseMirror')
     expect(editor).toBeTruthy()
+    fireEvent.click(view.getByRole('button', { name: 'Insert' }))
     fireEvent.click(view.getByRole('button', { name: 'Insert table' }))
     fireEvent.click(view.getByRole('gridcell', { name: 'Insert 2 columns by 2 rows' }))
     await waitFor(() => expect(view.getByText('Changes not saved yet')).toBeTruthy())
@@ -299,6 +300,7 @@ describe('Git synchronization UI', () => {
     await waitFor(() => expect(view.getByText('Current note')).toBeTruthy())
     await waitFor(() => expect(finishSync).toBeTypeOf('function'))
     const editor = view.container.querySelector<HTMLElement>('.ProseMirror')!
+    fireEvent.click(view.getByRole('button', { name: 'Insert' }))
     fireEvent.click(view.getByRole('button', { name: 'Insert table' }))
     fireEvent.click(view.getByRole('gridcell', { name: 'Insert 2 columns by 2 rows' }))
     await waitFor(() => expect(view.getByText('Changes not saved yet')).toBeTruthy())
@@ -427,6 +429,7 @@ describe('Git synchronization UI', () => {
     await waitFor(() => expect(view.getByText('Base note')).toBeTruthy())
     fireEvent.click(view.getByRole('button', { name: 'Sync' }))
     await waitFor(() => expect(finishSync).toBeTypeOf('function'))
+    fireEvent.click(view.getByRole('button', { name: 'Insert' }))
     fireEvent.click(view.getByRole('button', { name: 'Insert table' }))
     fireEvent.click(view.getByRole('gridcell', { name: 'Insert 2 columns by 2 rows' }))
     await waitFor(() => expect(view.getByText('Changes not saved yet')).toBeTruthy())
@@ -476,6 +479,7 @@ describe('Git synchronization UI', () => {
     await waitFor(() => expect(view.getByText('Current note')).toBeTruthy())
     fireEvent.click(await view.findByRole('button', { name: 'Sync' }))
     await waitFor(() => expect(finishSync).toBeTypeOf('function'))
+    fireEvent.click(view.getByRole('button', { name: 'Insert' }))
     fireEvent.click(view.getByRole('button', { name: 'Insert table' }))
     fireEvent.click(view.getByRole('gridcell', { name: 'Insert 2 columns by 2 rows' }))
     await waitFor(() => expect(view.getByText('Changes not saved yet')).toBeTruthy())
@@ -573,6 +577,7 @@ describe('Git synchronization UI', () => {
       expect(scheduledCallback).toBeTypeOf('function')
       await act(async () => { if (typeof scheduledCallback === 'function') scheduledCallback() })
     } else {
+      fireEvent.click(view.getByRole('button', { name: 'Insert' }))
       fireEvent.click(view.getByRole('button', { name: 'Insert table' }))
       fireEvent.click(view.getByRole('gridcell', { name: 'Insert 2 columns by 2 rows' }))
       await waitFor(() => expect(view.getByText('Changes not saved yet')).toBeTruthy())
