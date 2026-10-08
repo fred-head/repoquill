@@ -64,7 +64,14 @@ body { margin: 0; min-width: 320px; }
 
 .repoquill-editor-layout { display: flex; min-width: 0; align-items: flex-start; }
 .repoquill-editor-main { min-width: 0; flex: 1 1 auto; }
-.repoquill-outline-panel { position: fixed; top: calc(var(--editor-toolbar-top, 55px) + 6rem); right: 0; bottom: 1.75rem; z-index: 11; display: flex; width: 15rem; flex-direction: column; overflow: hidden; border-left: 1px solid #3f3f46; background: rgb(24 24 27 / 90%); color: #e4e4e7; }
+.repoquill-outline-dock { position: fixed; top: var(--editor-toolbar-top, 55px); right: 0; bottom: 1.75rem; z-index: 11; display: flex; align-items: stretch; visibility: hidden; }
+.repoquill-outline-dock[data-positioned="true"] { visibility: visible; }
+.repoquill-outline-rail { display: flex; width: 2.75rem; flex: 0 0 2.75rem; flex-direction: column; align-items: stretch; border-left: 1px solid #3f3f46; background: #18181b; }
+.repoquill-outline-toggle { display: flex; min-height: 2.75rem; width: 100%; align-items: center; justify-content: center; border: 0; border-radius: 0; background: transparent; color: #a1a1aa; cursor: pointer; font-size: 1rem; }
+.repoquill-outline-toggle:hover { background: #27272a; color: #fafafa; }
+.repoquill-outline-toggle:focus-visible { position: relative; z-index: 1; outline: 2px solid #f59e0b; outline-offset: -2px; }
+.repoquill-outline-toggle[aria-pressed="true"] { color: #fcd34d; }
+.repoquill-outline-panel { display: flex; width: 15rem; min-width: 0; flex: 0 0 15rem; flex-direction: column; overflow: hidden; border-left: 1px solid #3f3f46; border-right: 1px solid #3f3f46; background: #18181b; color: #e4e4e7; }
 .repoquill-outline-nav { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .repoquill-outline-entry { display: block; min-height: 2rem; width: 100%; overflow: hidden; border-left: 2px solid transparent; padding: 0.35rem 0.5rem 0.35rem calc(0.5rem + min(var(--outline-level, 0), 5) * 0.75rem); color: #d4d4d8; text-align: left; font-size: 0.8rem; line-height: 1.2rem; outline: none; }
 .repoquill-outline-entry:hover { background: rgb(39 39 42 / 65%); color: #fafafa; }
@@ -92,7 +99,10 @@ body { margin: 0; min-width: 320px; }
 .theme-light [class~="hover:bg-zinc-800"]:hover { background-color: #e4e4e7 !important; }
 .theme-light [class~="hover:text-white"]:hover { color: #18181b !important; }
 .theme-light .repoquill-editor-toolbars[data-sticky="true"] { background-color: rgb(250 250 250 / 92%) !important; }
-.theme-light .repoquill-outline-panel { border-color: #d4d4d8; background: rgb(250 250 250 / 94%); color: #27272a; }
+.theme-light .repoquill-outline-rail, .theme-light .repoquill-outline-panel { border-color: #d4d4d8; background: #fafafa; color: #27272a; }
+.theme-light .repoquill-outline-toggle { color: #71717a; }
+.theme-light .repoquill-outline-toggle:hover { background: #e4e4e7; color: #18181b; }
+.theme-light .repoquill-outline-toggle[aria-pressed="true"] { color: #92400e; }
 .theme-light .repoquill-outline-entry { color: #3f3f46; }
 .theme-light .repoquill-outline-entry:hover { background: rgb(228 228 231 / 75%); color: #18181b; }
 .theme-light .repoquill-outline-entry[aria-current="location"] { color: #92400e; }
@@ -103,7 +113,8 @@ body { margin: 0; min-width: 320px; }
 
 @media (max-width: 767px) {
   .repoquill-editor-layout { display: block; }
-  .repoquill-outline-panel { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); width: min(12rem, calc(100vw - 4rem)); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .repoquill-outline-dock { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); }
+  .repoquill-outline-panel { width: min(12rem, calc(100vw - 4rem)); flex-basis: min(12rem, calc(100vw - 4rem)); }
 }
 
 .milkdown {

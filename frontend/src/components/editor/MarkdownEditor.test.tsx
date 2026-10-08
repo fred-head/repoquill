@@ -51,9 +51,12 @@ describe('MarkdownEditor read-only mode', () => {
   it('opens a semantic outline with heading levels and a compact empty state without changing Markdown', async () => {
     const onChange = vi.fn()
     const markdown = '# Main\n\n### Skipped level\n\n## Same label\n\n## Same label'
-    const view = render(<MarkdownEditor documentKey="outline-hierarchy" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} />)
+    const view = render(<main className="repoquill-note-scroll"><MarkdownEditor documentKey="outline-hierarchy" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} /></main>)
+    const scroller = view.container.querySelector<HTMLElement>('.repoquill-note-scroll')!
+    Object.defineProperty(scroller, 'offsetWidth', { configurable: true, value: 800 })
+    Object.defineProperty(scroller, 'clientWidth', { configurable: true, value: 785 })
     const toolbar = view.container.querySelector<HTMLElement>('.repoquill-editor-toolbars')!
-    vi.spyOn(toolbar, 'getBoundingClientRect').mockReturnValue({ bottom: 186 } as DOMRect)
+    vi.spyOn(toolbar, 'getBoundingClientRect').mockReturnValue({ top: 128, bottom: 186 } as DOMRect)
     const toggle = view.getByRole('button', { name: 'Outline / Table of contents' })
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
     expect(view.queryByRole('navigation', { name: 'Table of contents' })).toBeNull()
@@ -65,10 +68,10 @@ describe('MarkdownEditor read-only mode', () => {
       'Heading 1: Main', 'Heading 3: Skipped level', 'Heading 2: Same label', 'Heading 2: Same label',
     ])
     expect(view.getByRole('button', { name: 'Close document outline' })).toBeTruthy()
-    const panel = view.container.querySelector<HTMLElement>('.repoquill-outline-panel')
-    expect(panel?.style.position).toBe('fixed')
-    expect(panel?.style.right).toBe('0px')
-    expect(panel?.style.top).toBe('186px')
+    const dock = view.container.querySelector<HTMLElement>('.repoquill-outline-dock')
+    expect(dock?.dataset.positioned).toBe('true')
+    expect(dock?.style.right).toBe('15px')
+    expect(dock?.style.top).toBe('128px')
     expect(view.container.querySelector('.repoquill-outline-backdrop')).toBeNull()
     expect(view.container.querySelector('[role="toolbar"][aria-label="Editor formatting"] [aria-label="Outline / Table of contents"]')).toBeNull()
     expect(toggle.getAttribute('aria-expanded')).toBe('true')

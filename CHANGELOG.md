@@ -35,6 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Refresh an open note after conflict-free synchronization receives external
   edits, while preserving editor drafts across sync races and safely tracking
   remote note moves and deletions.
+- Align the document outline with the editor toolbar and keep the note
+  scrollbar visible while the outline is open.
 
 ## [0.1.0-alpha.2.security.5] - 2026-10-06
 
