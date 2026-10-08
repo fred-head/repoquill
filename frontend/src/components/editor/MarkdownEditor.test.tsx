@@ -45,7 +45,8 @@ describe('MarkdownEditor read-only mode', () => {
     view.rerender(<MarkdownEditor key="read" documentKey="read" readOnly {...properties} />)
     await waitFor(() => expect(view.container.textContent).toContain('Visible note'))
     expect(view.container.querySelector('.ProseMirror')?.getAttribute('contenteditable')).toBe('false')
-    expect(view.getByRole('button', { name: 'Bold' }).hasAttribute('disabled')).toBe(true)
+    expect(view.queryByRole('toolbar', { name: 'Editor formatting' })).toBeNull()
+    expect(view.queryByRole('button', { name: 'Bold' })).toBeNull()
   })
 
   it('opens a semantic outline with heading levels and a compact empty state without changing Markdown', async () => {
@@ -208,6 +209,7 @@ describe('MarkdownEditor read-only mode', () => {
     await waitFor(() => expect(view.container.textContent).toContain('Text'))
     fireEvent.change(view.getByLabelText('Block type'), { target: { value: 'heading-2' } })
     await waitFor(() => expect(onChange.mock.calls.some(([markdown]) => String(markdown).startsWith('## Text'))).toBe(true))
+    await userEvent.click(view.getByRole('button', { name: 'Insert' }))
     fireEvent.click(view.getByRole('button', { name: 'Insert table' }))
     expect(view.getByRole('dialog', { name: 'Insert table' })).toBeTruthy()
     expect(view.getAllByRole('gridcell')).toHaveLength(100)
@@ -468,7 +470,8 @@ describe('MarkdownEditor read-only mode', () => {
     const view = render(<MarkdownEditor documentKey="table-read" notePath="Note.md" markdown={markdown} readOnly onChange={onChange} />)
     await waitFor(() => expect(view.container.querySelector('table')).toBeTruthy())
     expect(view.queryByRole('toolbar', { name: 'Table editing' })).toBeNull()
-    expect(view.getByRole('button', { name: 'Insert table' }).hasAttribute('disabled')).toBe(true)
+    expect(view.queryByRole('button', { name: 'Insert' })).toBeNull()
+    expect(view.queryByRole('button', { name: 'Insert table' })).toBeNull()
     expect(onChange).not.toHaveBeenCalled()
   })
 
@@ -935,6 +938,7 @@ describe('MarkdownEditor read-only mode', () => {
     editor.focus()
     await userEvent.keyboard('{Control>}a{/Control}')
 
+    await userEvent.click(view.getByRole('button', { name: 'Insert' }))
     fireEvent.click(view.getByRole('button', { name: 'Paste as Markdown' }))
     const dialog = await view.findByRole('dialog', { name: 'Paste as Markdown' })
     await waitFor(() => expect((view.getByRole('textbox', { name: 'Markdown' }) as HTMLTextAreaElement).value).toBe(markdown))
@@ -959,13 +963,20 @@ describe('MarkdownEditor read-only mode', () => {
     await waitFor(() => expect(view.container.querySelector('.ProseMirror h1')?.textContent).toBe('Pasted heading'))
   })
 
-  it('uses a compact Markdown paste button with an accessible hover label', async () => {
+  it('groups less frequent insert actions in a compact, dismissible menu', async () => {
     const view = render(<MarkdownEditor documentKey="markdown-paste-toolbar" notePath="Note.md" markdown="" readOnly={false} onChange={vi.fn()} />)
+    const toggle = await view.findByRole('button', { name: 'Insert' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(view.queryByRole('button', { name: 'Paste as Markdown' })).toBeNull()
+
+    await userEvent.click(toggle)
     const button = await view.findByRole('button', { name: 'Paste as Markdown' })
 
     expect(button.getAttribute('title')).toBe('Paste as Markdown')
-    expect(button.textContent).toBe('MD')
-    expect(button.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('false'))
+    await waitFor(() => expect(document.activeElement).toBe(toggle))
   })
 
   it('parses the unambiguous text/markdown clipboard media type directly', async () => {
@@ -1041,6 +1052,7 @@ describe('MarkdownEditor read-only mode', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
     const view = render(<MarkdownEditor documentKey="relative-image-paste" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
 
+    await userEvent.click(view.getByRole('button', { name: 'Insert' }))
     fireEvent.click(view.getByRole('button', { name: 'Paste as Markdown' }))
     await waitFor(() => expect((view.getByRole('textbox', { name: 'Markdown' }) as HTMLTextAreaElement).value).toContain('diagram.png'))
     fireEvent.click(view.getByRole('button', { name: 'Insert Markdown' }))
@@ -1057,6 +1069,7 @@ describe('MarkdownEditor read-only mode', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
     const view = render(<MarkdownEditor documentKey="external-image-placeholder" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
 
+    await userEvent.click(view.getByRole('button', { name: 'Insert' }))
     fireEvent.click(view.getByRole('button', { name: 'Paste as Markdown' }))
     await waitFor(() => expect((view.getByRole('textbox', { name: 'Markdown' }) as HTMLTextAreaElement).value).toBe(source))
     fireEvent.click(view.getByRole('button', { name: 'Insert Markdown' }))
@@ -1082,6 +1095,7 @@ describe('MarkdownEditor read-only mode', () => {
     const onChange = vi.fn()
     const view = render(<MarkdownEditor documentKey="unsafe-markdown-paste" notePath="Note.md" markdown="Safe note" readOnly={false} onChange={onChange} />)
 
+    await userEvent.click(view.getByRole('button', { name: 'Insert' }))
     fireEvent.click(view.getByRole('button', { name: 'Paste as Markdown' }))
     await waitFor(() => expect((view.getByRole('textbox', { name: 'Markdown' }) as HTMLTextAreaElement).value).toContain('tracker.png'))
     fireEvent.click(view.getByRole('button', { name: 'Insert Markdown' }))
@@ -1141,10 +1155,11 @@ describe('MarkdownEditor read-only mode', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('keeps Paste as Markdown non-mutating in Read only mode', async () => {
+  it('hides formatting and insertion actions in Read only mode', async () => {
     const view = render(<MarkdownEditor documentKey="markdown-paste-read-only" notePath="Note.md" markdown="# Existing" readOnly onChange={vi.fn()} />)
     await waitFor(() => expect(view.container.querySelector('.ProseMirror h1')?.textContent).toBe('Existing'))
-    expect(view.getByRole('button', { name: 'Paste as Markdown' }).hasAttribute('disabled')).toBe(true)
+    expect(view.queryByRole('button', { name: 'Insert' })).toBeNull()
+    expect(view.queryByRole('button', { name: 'Paste as Markdown' })).toBeNull()
     expect(view.queryByRole('dialog', { name: 'Paste as Markdown' })).toBeNull()
   })
 

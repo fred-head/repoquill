@@ -415,6 +415,8 @@ const interactiveListItemView = $view(listItemSchema.node, () => (initialNode, e
 
 function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, notePaths = [], onOpenNoteLink, stickyToolbar = false, onStats }: MarkdownEditorProps) {
   const input = useRef<HTMLInputElement>(null)
+  const insertMenuButton = useRef<HTMLButtonElement>(null)
+  const insertMenuPanel = useRef<HTMLDivElement>(null)
   const replacementInput = useRef<HTMLInputElement>(null)
   const editorContainer = useRef<HTMLDivElement>(null)
   const outlineToggle = useRef<HTMLButtonElement>(null)
@@ -430,6 +432,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const [presentationError, setPresentationError] = useState<{ contextKey: string; message: string }>()
   const [editingAlt, setEditingAlt] = useState<string>()
   const [toolbarState, setToolbarState] = useState<ToolbarState>(emptyToolbarState)
+  const [insertMenuOpen, setInsertMenuOpen] = useState(false)
   const [outlineOpen, setOutlineOpen] = useState(false)
   const outlineOpenRef = useRef(outlineOpen)
   const [outlineHeadings, setOutlineHeadings] = useState<OutlineHeading[]>([])
@@ -532,7 +535,30 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   }, [pasteNotice])
 
   useEffect(() => {
+    if (!insertMenuOpen) return
+    const closeOnOutsideInteraction = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+      if (insertMenuButton.current?.contains(target) || insertMenuPanel.current?.contains(target)) return
+      setInsertMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setInsertMenuOpen(false)
+      requestFrame(() => insertMenuButton.current?.focus())
+    }
+    document.addEventListener('pointerdown', closeOnOutsideInteraction)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideInteraction)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [insertMenuOpen])
+
+  useEffect(() => {
     const reset = globalThis.setTimeout(() => {
+      setInsertMenuOpen(false)
       noteLinkTriggerIntentRef.current = undefined
       noteLinkOpeningRef.current = undefined
       noteLinkOpeningKeyDownRef.current = false
@@ -1430,38 +1456,44 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   return (
     <div className="repoquill-editor-layout">
       <div className="repoquill-editor-main">
-      <div aria-label="Editor toolbars" data-sticky={stickyToolbar ? 'true' : 'false'} className="repoquill-editor-toolbars mb-3 space-y-1.5">
-      <div role="toolbar" aria-label="Editor formatting" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
-        <ToolbarButton label="Undo" disabled={readOnly} onClick={() => callCommand(undoCommand)}>↶</ToolbarButton>
-        <ToolbarButton label="Redo" disabled={readOnly} onClick={() => callCommand(redoCommand)}>↷</ToolbarButton>
+      {(!readOnly || selectedLink?.targetPath) && <div aria-label="Editor toolbars" data-sticky={stickyToolbar ? 'true' : 'false'} className="repoquill-editor-toolbars mb-3 space-y-1.5">
+      {!readOnly && <div role="toolbar" aria-label="Editor formatting" className="flex max-w-full flex-wrap items-center gap-0.5 border-b border-zinc-800/80 pb-1.5">
+        <ToolbarButton label="Undo" disabled={false} onClick={() => callCommand(undoCommand)}><EditorIcon name="undo" /></ToolbarButton>
+        <ToolbarButton label="Redo" disabled={false} onClick={() => callCommand(redoCommand)}><EditorIcon name="redo" /></ToolbarButton>
         <ToolbarDivider />
-        <select aria-label="Block type" disabled={readOnly} value={toolbarState.block} onChange={(event) => setBlock(event.target.value)} className="h-8 shrink-0 rounded border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-200">
+        <select aria-label="Block type" value={toolbarState.block} onChange={(event) => setBlock(event.target.value)} className="h-8 max-w-32 shrink-0 rounded border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-200">
           <option value="paragraph">Paragraph</option>
           {[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={`heading-${level}`}>Heading {level}</option>)}
-          <option value="code-block">Code block</option>
+          <option hidden value="code-block">Code block</option>
         </select>
         <ToolbarDivider />
-        <ToolbarButton label="Bold" active={toolbarState.strong} disabled={readOnly} onClick={() => callCommand(toggleStrongCommand)}><strong>B</strong></ToolbarButton>
-        <ToolbarButton label="Italic" active={toolbarState.emphasis} disabled={readOnly} onClick={() => callCommand(toggleEmphasisCommand)}><em>I</em></ToolbarButton>
-        <ToolbarButton label="Strikethrough" active={toolbarState.strike} disabled={readOnly} onClick={() => callCommand(toggleStrikethroughCommand)}><span className="line-through">S</span></ToolbarButton>
-        <ToolbarButton label="Inline code" active={toolbarState.code} disabled={readOnly} onClick={toggleInlineCode}>&lt;/&gt;</ToolbarButton>
+        <ToolbarButton label="Bold" active={toolbarState.strong} disabled={false} onClick={() => callCommand(toggleStrongCommand)}><EditorIcon name="bold" /></ToolbarButton>
+        <ToolbarButton label="Italic" active={toolbarState.emphasis} disabled={false} onClick={() => callCommand(toggleEmphasisCommand)}><EditorIcon name="italic" /></ToolbarButton>
+        <ToolbarButton label="Strikethrough" active={toolbarState.strike} disabled={false} onClick={() => callCommand(toggleStrikethroughCommand)}><EditorIcon name="strikethrough" /></ToolbarButton>
+        <ToolbarButton label="Inline code" active={toolbarState.code} disabled={false} onClick={toggleInlineCode}><EditorIcon name="code" /></ToolbarButton>
         <ToolbarDivider />
-        <ToolbarButton label="Bullet list" active={toolbarState.bullet && !toolbarState.task} disabled={readOnly} onClick={() => callCommand(toolbarState.bullet ? liftListItemCommand : wrapInBulletListCommand)}>• List</ToolbarButton>
-        <ToolbarButton label="Numbered list" active={toolbarState.ordered} disabled={readOnly} onClick={() => callCommand(toolbarState.ordered ? liftListItemCommand : wrapInOrderedListCommand)}>1. List</ToolbarButton>
-        <ToolbarButton label="Task list" active={toolbarState.task} disabled={readOnly} onClick={toggleTaskList}>☐ Task</ToolbarButton>
-        <ToolbarButton label="Blockquote" active={toolbarState.quote} disabled={readOnly} onClick={() => toolbarState.quote ? callProseCommand(lift) : callCommand(wrapInBlockquoteCommand)}>❯ Quote</ToolbarButton>
-        <ToolbarButton label="Code block" active={toolbarState.block === 'code-block'} disabled={readOnly} onClick={() => callCommand(toolbarState.block === 'code-block' ? turnIntoTextCommand : createCodeBlockCommand)}>{'{ }'}</ToolbarButton>
+        <ToolbarButton label="Bullet list" active={toolbarState.bullet && !toolbarState.task} disabled={false} onClick={() => callCommand(toolbarState.bullet ? liftListItemCommand : wrapInBulletListCommand)}><EditorIcon name="bullet-list" /></ToolbarButton>
+        <ToolbarButton label="Numbered list" active={toolbarState.ordered} disabled={false} onClick={() => callCommand(toolbarState.ordered ? liftListItemCommand : wrapInOrderedListCommand)}><EditorIcon name="numbered-list" /></ToolbarButton>
+        <ToolbarButton label="Task list" active={toolbarState.task} disabled={false} onClick={toggleTaskList}><EditorIcon name="task-list" /></ToolbarButton>
+        <ToolbarButton label="Blockquote" active={toolbarState.quote} disabled={false} onClick={() => toolbarState.quote ? callProseCommand(lift) : callCommand(wrapInBlockquoteCommand)}><EditorIcon name="quote" /></ToolbarButton>
+        <ToolbarButton label="Code block" active={toolbarState.block === 'code-block'} disabled={false} onClick={() => callCommand(toolbarState.block === 'code-block' ? turnIntoTextCommand : createCodeBlockCommand)}><EditorIcon name="code-block" /></ToolbarButton>
         <ToolbarDivider />
-        <ToolbarButton label="Link" active={toolbarState.link} disabled={readOnly} onClick={editLink}>🔗</ToolbarButton>
-        <ToolbarButton label="Paste as Markdown" disabled={readOnly} onClick={() => { void openMarkdownPaste() }}><span className="inline-flex items-center gap-1.5"><svg aria-hidden="true" viewBox="0 0 20 20" fill="none" className="h-4 w-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M7 3.5h6a1.5 1.5 0 0 1 1.5 1.5v1"/><path d="M6 5.5H5A1.5 1.5 0 0 0 3.5 7v9A1.5 1.5 0 0 0 5 17.5h7A1.5 1.5 0 0 0 13.5 16v-1"/><path d="M8.5 6.5h7A1.5 1.5 0 0 1 17 8v7a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 15V8a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M10 10h4M10 12.5h4"/></svg><span className="text-[10px] font-bold tracking-wide">MD</span></span></ToolbarButton>
-        <ToolbarButton label="Insert image" disabled={readOnly || uploadState === 'uploading'} onClick={() => input.current?.click()}>{uploadState === 'uploading' ? '…' : 'Image'}</ToolbarButton>
-        <input ref={input} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="sr-only" onChange={(event) => { void insertSelectedImages(event.target.files) }} />
-        <ToolbarButton label="Insert table" disabled={readOnly} onClick={() => setTablePickerOpen(true)}>Table</ToolbarButton>
-        <ToolbarButton label="Horizontal rule" disabled={readOnly} onClick={() => callCommand(insertHrCommand)}>―</ToolbarButton>
-      </div>
+        <ToolbarButton label="Link" active={toolbarState.link} disabled={false} onClick={editLink}><EditorIcon name="link" /></ToolbarButton>
+        <div className="relative shrink-0">
+          <button ref={insertMenuButton} type="button" aria-label="Insert" aria-controls="editor-insert-menu" aria-expanded={insertMenuOpen} onMouseDown={(event) => event.preventDefault()} onClick={() => setInsertMenuOpen((open) => !open)} className={`inline-flex h-9 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${insertMenuOpen ? 'bg-amber-400/15 text-amber-200 ring-1 ring-inset ring-amber-500/70' : 'border border-zinc-700 bg-zinc-950/40 text-zinc-300 hover:bg-zinc-800 hover:text-white'}`}><EditorIcon name="plus" /><span>Insert</span><EditorIcon name="chevron-down" /></button>
+          <div ref={insertMenuPanel} id="editor-insert-menu" role="group" aria-label="Insert actions" hidden={!insertMenuOpen} className="absolute right-0 top-full z-30 mt-2 grid w-56 max-w-[calc(100vw-2rem)] gap-0.5 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-xl shadow-black/30">
+            <button type="button" aria-label="Paste as Markdown" title="Paste as Markdown" onMouseDown={(event) => event.preventDefault()} onClick={() => { setInsertMenuOpen(false); void openMarkdownPaste() }} className="flex min-h-10 items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-zinc-200 transition-colors hover:bg-zinc-800"><EditorIcon name="markdown" /><span>Paste as Markdown</span></button>
+            <button type="button" aria-label="Insert image" title="Insert image" disabled={uploadState === 'uploading'} onMouseDown={(event) => event.preventDefault()} onClick={() => { setInsertMenuOpen(false); input.current?.click() }} className="flex min-h-10 items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-40"><EditorIcon name="image" /><span>{uploadState === 'uploading' ? 'Uploading image…' : 'Image'}</span></button>
+            <button type="button" aria-label="Insert table" title="Insert table" onMouseDown={(event) => event.preventDefault()} onClick={() => { setInsertMenuOpen(false); setTablePickerOpen(true) }} className="flex min-h-10 items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-zinc-200 transition-colors hover:bg-zinc-800"><EditorIcon name="table" /><span>Table</span></button>
+            <span role="separator" className="my-1 h-px bg-zinc-700" />
+            <button type="button" aria-label="Horizontal rule" title="Horizontal rule" onMouseDown={(event) => event.preventDefault()} onClick={() => { setInsertMenuOpen(false); callCommand(insertHrCommand) }} className="flex min-h-10 items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-zinc-200 transition-colors hover:bg-zinc-800"><EditorIcon name="horizontal-rule" /><span>Horizontal rule</span></button>
+          </div>
+          <input ref={input} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="sr-only" onChange={(event) => { void insertSelectedImages(event.target.files) }} />
+        </div>
+      </div>}
 
       {toolbarState.table && !readOnly && (
-        <div role="toolbar" aria-label="Table editing" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
+        <div role="toolbar" aria-label="Table editing" className="flex max-w-full flex-wrap items-center gap-1 border-b border-zinc-800/60 pb-1.5">
           <span className="shrink-0 px-1 text-xs font-medium text-zinc-400">Table</span>
           <ToolbarDivider />
           <ToolbarButton label="Add row above" disabled={false} onClick={() => callCommand(addRowBeforeCommand)}>↑ Row</ToolbarButton>
@@ -1477,7 +1509,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       )}
 
       {selectedLink?.targetPath && (
-        <div role="toolbar" aria-label="Internal note link" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
+        <div role="toolbar" aria-label="Internal note link" className="flex max-w-full flex-wrap items-center gap-1 border-b border-zinc-800/60 pb-1.5">
           <span className="shrink-0 px-1 text-xs font-medium text-zinc-400">Note link</span>
           <span className={`shrink-0 px-1 text-xs ${selectedLink.exists ? 'text-zinc-500' : 'text-red-300'}`}>{selectedLink.exists ? selectedLink.targetPath : `Missing: ${selectedLink.targetPath}`}</span>
           <ToolbarDivider />
@@ -1488,7 +1520,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       )}
 
       {selectedImage && !readOnly && (
-        <div role="toolbar" aria-label="Image editing" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
+        <div role="toolbar" aria-label="Image editing" className="flex max-w-full flex-wrap items-center gap-1 border-b border-zinc-800/60 pb-1.5">
           <span className="shrink-0 px-1 text-xs font-medium text-zinc-400">Image</span>
           <ToolbarDivider />
           {!isExternalImageSource(selectedImage.src) && <><span className="shrink-0 px-1 text-xs text-zinc-500">Image size</span>
@@ -1502,6 +1534,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         </div>
       )}
       </div>
+      }
 
       {readOnly && <p className="mb-3 text-xs text-zinc-500">Read only: select and copy without changing the note.</p>}
       {uploadError && <p className="mb-4 rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{uploadError}</p>}
@@ -1654,8 +1687,35 @@ function TablePicker({ size, onPreview, onSelect, onClose }: { size: TableSize; 
   )
 }
 
-function ToolbarButton({ label, active = false, disabled, onClick, children }: { label: string; active?: boolean; disabled: boolean; onClick: () => void; children: ReactNode }) {
-  return <button type="button" title={label} aria-label={label} aria-pressed={active} disabled={disabled} onMouseDown={(event) => event.preventDefault()} onClick={onClick} className={`h-8 shrink-0 rounded px-2 text-xs font-medium disabled:cursor-default disabled:opacity-35 ${active ? 'border border-amber-500 bg-amber-400/15 text-amber-200 shadow-inner' : 'border border-transparent text-zinc-300 hover:bg-zinc-800 hover:text-white'}`}>{children}<span className="sr-only">{active ? ' active' : ''}</span></button>
+type EditorIconName = 'undo' | 'redo' | 'bold' | 'italic' | 'strikethrough' | 'code' | 'code-block' | 'bullet-list' | 'numbered-list' | 'task-list' | 'quote' | 'link' | 'plus' | 'chevron-down' | 'markdown' | 'image' | 'table' | 'horizontal-rule'
+
+function EditorIcon({ name }: { name: EditorIconName }) {
+  let paths: ReactNode
+  switch (name) {
+    case 'undo': paths = <><path d="M3 7v6h6" /><path d="M21 17a9 9 0 0 0-15-6.7L3 13" /></>; break
+    case 'redo': paths = <><path d="M21 7v6h-6" /><path d="M3 17a9 9 0 0 1 15-6.7L21 13" /></>; break
+    case 'bold': paths = <><path d="M6 4h7a4 4 0 0 1 0 8H6z" /><path d="M6 12h8a4 4 0 0 1 0 8H6z" /></>; break
+    case 'italic': paths = <><line x1="19" y1="4" x2="10" y2="4" /><line x1="14" y1="20" x2="5" y2="20" /><line x1="15" y1="4" x2="9" y2="20" /></>; break
+    case 'strikethrough': paths = <><path d="M16 5c-1-.8-2.4-1.2-4-1.2-3 0-5 1.4-5 3.7 0 1.7 1.3 2.6 3 3.5" /><path d="M4 12h16" /><path d="M8 16c.7 1.3 2.2 2.2 4.5 2.2 3 0 5-1.3 5-3.5 0-1.4-1-2.4-2.7-3.1" /></>; break
+    case 'code': paths = <><polyline points="8 8 4 12 8 16" /><polyline points="16 8 20 12 16 16" /><line x1="14" y1="4" x2="10" y2="20" /></>; break
+    case 'code-block': paths = <><rect x="3" y="4" width="18" height="16" rx="2" /><polyline points="10 9 7 12 10 15" /><polyline points="14 9 17 12 14 15" /></>; break
+    case 'bullet-list': paths = <><circle cx="4" cy="6" r="1" /><circle cx="4" cy="12" r="1" /><circle cx="4" cy="18" r="1" /><line x1="9" y1="6" x2="21" y2="6" /><line x1="9" y1="12" x2="21" y2="12" /><line x1="9" y1="18" x2="21" y2="18" /></>; break
+    case 'numbered-list': paths = <><path d="M3 5h2v4M3 9h2" /><path d="M3 13c0-1.3 2.5-1.3 2.5 0 0 .7-.6 1.2-2.5 3h2.7" /><line x1="10" y1="6" x2="21" y2="6" /><line x1="10" y1="12" x2="21" y2="12" /><line x1="10" y1="18" x2="21" y2="18" /></>; break
+    case 'task-list': paths = <><path d="m3 6 1.5 1.5L7 5" /><line x1="10" y1="6" x2="21" y2="6" /><rect x="3" y="11" width="4" height="4" rx="1" /><line x1="10" y1="13" x2="21" y2="13" /><rect x="3" y="18" width="4" height="3" rx="1" /><line x1="10" y1="19.5" x2="21" y2="19.5" /></>; break
+    case 'quote': paths = <><path d="M4 7h6v5H5l-1 5" /><path d="M14 7h6v5h-5l-1 5" /></>; break
+    case 'link': paths = <><path d="M10 13a5 5 0 0 0 7.1 0l2-2A5 5 0 0 0 12 3.9l-1.2 1.2" /><path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.2-1.2" /></>; break
+    case 'plus': paths = <><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></>; break
+    case 'chevron-down': paths = <polyline points="6 9 12 15 18 9" />; break
+    case 'markdown': paths = <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><path d="M8 13v4l2-2 2 2v-4M15 13h3M16.5 13v4" /></>; break
+    case 'image': paths = <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></>; break
+    case 'table': paths = <><rect x="3" y="4" width="18" height="16" rx="2" /><line x1="3" y1="10" x2="21" y2="10" /><line x1="9" y1="4" x2="9" y2="20" /><line x1="15" y1="4" x2="15" y2="20" /></>; break
+    case 'horizontal-rule': paths = <line x1="4" y1="12" x2="20" y2="12" />; break
+  }
+  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0">{paths}</svg>
 }
 
-function ToolbarDivider() { return <span aria-hidden="true" className="mx-0.5 h-5 w-px shrink-0 bg-zinc-700" /> }
+function ToolbarButton({ label, active = false, disabled, onClick, children }: { label: string; active?: boolean; disabled: boolean; onClick: () => void; children: ReactNode }) {
+  return <button type="button" title={label} aria-label={label} aria-pressed={active} disabled={disabled} onMouseDown={(event) => event.preventDefault()} onClick={onClick} className={`inline-flex h-8 min-w-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 disabled:cursor-default disabled:opacity-35 ${active ? 'border border-amber-500 bg-amber-400/15 text-amber-200 shadow-inner' : 'border border-transparent text-zinc-300 hover:bg-zinc-800 hover:text-white'}`}>{children}<span className="sr-only">{active ? ' active' : ''}</span></button>
+}
+
+function ToolbarDivider() { return <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-zinc-700/80" /> }
