@@ -16,11 +16,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added a keyboard accessible desktop sidebar control that leaves a narrow
   restore strip and lets the editor use the released width; the local browser
   preference is remembered while the mobile navigation drawer stays available.
+- Kept Markdown paste available when it contains external HTTP(S) images, with
+  each image blocked until the user explicitly loads it.
 
 ### Changed
 
 - Moved the running RepoQuill version into the Settings header, right-aligned
   beside the heading.
+- Made the Paste as Markdown toolbar action more compact with a paste icon and
+  visible MD label while retaining its full accessible name and hover tooltip.
 
 ### Fixed
 

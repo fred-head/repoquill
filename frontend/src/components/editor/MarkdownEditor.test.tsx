@@ -959,6 +959,15 @@ describe('MarkdownEditor read-only mode', () => {
     await waitFor(() => expect(view.container.querySelector('.ProseMirror h1')?.textContent).toBe('Pasted heading'))
   })
 
+  it('uses a compact Markdown paste button with an accessible hover label', async () => {
+    const view = render(<MarkdownEditor documentKey="markdown-paste-toolbar" notePath="Note.md" markdown="" readOnly={false} onChange={vi.fn()} />)
+    const button = await view.findByRole('button', { name: 'Paste as Markdown' })
+
+    expect(button.getAttribute('title')).toBe('Paste as Markdown')
+    expect(button.textContent).toBe('MD')
+    expect(button.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
+  })
+
   it('parses the unambiguous text/markdown clipboard media type directly', async () => {
     const onChange = vi.fn()
     const view = render(<MarkdownEditor documentKey="typed-markdown-paste" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
@@ -1041,7 +1050,34 @@ describe('MarkdownEditor read-only mode', () => {
     expect(fetchSpy.mock.calls.some(([, options]) => options && (options as RequestInit).method === 'POST')).toBe(false)
   })
 
-  it('keeps unsafe Markdown source available instead of activating HTML or external images', async () => {
+  it('preserves external Markdown images and loads them only after an explicit action', async () => {
+    const source = '## Diagram\n\n![Architecture](https://images.example.test/architecture.png)\n\nThe rest of the pasted note stays available.'
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { readText: vi.fn().mockResolvedValue(source) } })
+    const onChange = vi.fn()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const view = render(<MarkdownEditor documentKey="external-image-placeholder" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
+
+    fireEvent.click(view.getByRole('button', { name: 'Paste as Markdown' }))
+    await waitFor(() => expect((view.getByRole('textbox', { name: 'Markdown' }) as HTMLTextAreaElement).value).toBe(source))
+    fireEvent.click(view.getByRole('button', { name: 'Insert Markdown' }))
+
+    const placeholder = await view.findByRole('group', { name: 'External image' })
+    const image = view.container.querySelector<HTMLImageElement>('.ProseMirror .milkdown-image-inline img')!
+    expect(view.container.querySelector('.ProseMirror h2')?.textContent).toBe('Diagram')
+    expect(view.container.querySelector('.ProseMirror')?.textContent).toContain('The rest of the pasted note stays available.')
+    expect(image.getAttribute('src')).toContain('#repoquill-external=')
+    expect(image.style.display).toBe('none')
+    expect(placeholder.textContent).toContain('Loading it sends a request to that site.')
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('https://images.example.test/architecture.png'))
+    expect(fetchSpy).not.toHaveBeenCalled()
+
+    fireEvent.click(view.getByRole('button', { name: 'Load external image from images.example.test' }))
+    await waitFor(() => expect(image.getAttribute('src')).toBe('https://images.example.test/architecture.png'))
+    expect(image.style.display).toBe('')
+    expect(view.queryByRole('group', { name: 'External image' })).toBeNull()
+  })
+
+  it('keeps unsafe raw HTML source available instead of inserting it', async () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { readText: vi.fn().mockResolvedValue('<img src="https://example.test/tracker.png">') } })
     const onChange = vi.fn()
     const view = render(<MarkdownEditor documentKey="unsafe-markdown-paste" notePath="Note.md" markdown="Safe note" readOnly={false} onChange={onChange} />)
@@ -1057,9 +1093,9 @@ describe('MarkdownEditor read-only mode', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  it('falls back to literal source for unsafe text/markdown image references', async () => {
+  it('falls back to literal source for unsupported image URL schemes', async () => {
     const onChange = vi.fn()
-    const source = '![Tracker](https://example.test/tracker.png)'
+    const source = '![Local file](file:///etc/passwd)'
     const view = render(<MarkdownEditor documentKey="external-image-paste" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
     const editor = await waitFor(() => {
       const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
@@ -1076,7 +1112,33 @@ describe('MarkdownEditor read-only mode', () => {
 
     expect((await view.findByRole('status')).textContent).toContain('original clipboard text was pasted unchanged')
     expect(view.container.querySelector('.ProseMirror img')).toBeNull()
-    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('Tracker'))
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('Local file'))
+  })
+
+  it('parses text/markdown with external images without activating the image', async () => {
+    const source = '![Diagram](https://images.example.test/diagram.png)'
+    const onChange = vi.fn()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const view = render(<MarkdownEditor documentKey="typed-markdown-external-image" notePath="Note.md" markdown="" readOnly={false} onChange={onChange} />)
+    const editor = await waitFor(() => {
+      const element = view.container.querySelector('.ProseMirror') as HTMLElement | null
+      expect(element).toBeTruthy()
+      return element!
+    })
+    editor.focus()
+    fireEvent.paste(editor, {
+      clipboardData: {
+        files: [],
+        types: ['text/markdown', 'text/plain'],
+        getData: (type: string) => type === 'text/markdown' ? source : source,
+      },
+    })
+
+    await view.findByRole('group', { name: 'External image' })
+    expect(view.queryByRole('status')).toBeNull()
+    expect(view.container.querySelector('.ProseMirror img')?.getAttribute('src')).toContain('#repoquill-external=')
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain(source))
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
   it('keeps Paste as Markdown non-mutating in Read only mode', async () => {

@@ -61,6 +61,105 @@ type OutlineHeading = { position: number; level: number; text: string }
 const emptyToolbarState: ToolbarState = { block: 'paragraph', strong: false, emphasis: false, strike: false, code: false, link: false, bullet: false, ordered: false, task: false, quote: false, table: false }
 const imagePresentationSizes: ImagePresentationSize[] = ['small', 'medium', 'large', 'full']
 const emptyImagePresentations: Record<string, ImagePresentationSize> = {}
+const externalImagePlaceholderPrefix = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=#repoquill-external='
+
+function isExternalImageSource(source: string): boolean {
+  return source.startsWith('//') || /^https?:/i.test(source)
+}
+
+function externalImagePlaceholderURL(source: string): string {
+  return `${externalImagePlaceholderPrefix}${encodeURIComponent(source)}`
+}
+
+function externalSourceFromPlaceholderURL(source: string | null): string | undefined {
+  if (!source?.startsWith(externalImagePlaceholderPrefix)) return undefined
+  try { return decodeURIComponent(source.slice(externalImagePlaceholderPrefix.length)) } catch { return undefined }
+}
+
+function updateExternalImagePlaceholder(wrapper: HTMLElement, image: HTMLImageElement, source: string): void {
+  if (wrapper.dataset.repoquillExternalImageSource !== source) {
+    wrapper.dataset.repoquillExternalImageSource = source
+    wrapper.dataset.repoquillExternalImageLoaded = 'false'
+    delete wrapper.dataset.repoquillExternalImageFailed
+    wrapper.querySelector('.repoquill-external-image-placeholder')?.remove()
+  }
+
+  if (image.dataset.repoquillExternalImageErrorHandler !== 'true') {
+    image.dataset.repoquillExternalImageErrorHandler = 'true'
+    image.addEventListener('error', () => {
+      const currentWrapper = image.closest<HTMLElement>('.milkdown-image-inline')
+      const currentSource = currentWrapper?.dataset.repoquillExternalImageSource
+      if (!currentWrapper || !currentSource || currentWrapper.dataset.repoquillExternalImageLoaded !== 'true') return
+      currentWrapper.dataset.repoquillExternalImageFailed = 'true'
+      updateExternalImagePlaceholder(currentWrapper, image, currentSource)
+    })
+  }
+
+  const failed = wrapper.dataset.repoquillExternalImageFailed === 'true'
+  if (wrapper.dataset.repoquillExternalImageLoaded === 'true' && !failed) {
+    wrapper.querySelector('.repoquill-external-image-placeholder')?.remove()
+    image.style.display = ''
+    if (image.getAttribute('src') !== source) image.setAttribute('src', source)
+    return
+  }
+
+  image.style.display = 'none'
+  let placeholder = wrapper.querySelector<HTMLSpanElement>('.repoquill-external-image-placeholder')
+  if (!placeholder) {
+    placeholder = document.createElement('span')
+    placeholder.className = 'repoquill-external-image-placeholder'
+    placeholder.setAttribute('role', 'group')
+    placeholder.setAttribute('aria-label', 'External image')
+
+    const details = document.createElement('span')
+    details.className = 'repoquill-external-image-details'
+    const label = document.createElement('span')
+    label.className = 'repoquill-external-image-label'
+    const note = document.createElement('span')
+    note.className = 'repoquill-external-image-note'
+    note.textContent = 'Loading it sends a request to that site.'
+    details.append(label, note)
+
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'repoquill-external-image-load'
+    button.addEventListener('mousedown', (event) => event.preventDefault())
+    button.addEventListener('click', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      wrapper.dataset.repoquillExternalImageLoaded = 'true'
+      delete wrapper.dataset.repoquillExternalImageFailed
+      placeholder?.remove()
+      image.style.display = ''
+      image.referrerPolicy = 'no-referrer'
+      image.setAttribute('src', wrapper.dataset.repoquillExternalImageSource ?? source)
+    })
+    placeholder.append(details, button)
+    wrapper.append(placeholder)
+  }
+
+  const host = (() => {
+    try { return new URL(source, globalThis.location?.href ?? 'https://localhost').hostname || 'external host' } catch { return 'external host' }
+  })()
+  const label = placeholder.querySelector<HTMLElement>('.repoquill-external-image-label')
+  const labelText = failed ? `Could not load image from ${host}.` : `External image from ${host}`
+  if (label && label.textContent !== labelText) label.textContent = labelText
+  const button = placeholder.querySelector<HTMLButtonElement>('button')
+  if (button) {
+    const buttonText = failed ? 'Try again' : 'Load image'
+    const accessibleLabel = `${failed ? 'Retry loading' : 'Load'} external image from ${host}`
+    if (button.textContent !== buttonText) button.textContent = buttonText
+    if (button.getAttribute('aria-label') !== accessibleLabel) button.setAttribute('aria-label', accessibleLabel)
+  }
+}
+
+function clearExternalImagePlaceholder(wrapper: HTMLElement, image: HTMLImageElement): void {
+  delete wrapper.dataset.repoquillExternalImageSource
+  delete wrapper.dataset.repoquillExternalImageLoaded
+  delete wrapper.dataset.repoquillExternalImageFailed
+  wrapper.querySelector('.repoquill-external-image-placeholder')?.remove()
+  image.style.display = ''
+}
 
 function documentOutline(document: Node): OutlineHeading[] {
   const headings: OutlineHeading[] = []
@@ -225,8 +324,8 @@ function markdownConversionError(document: Node): string | undefined {
     }
     if (node.type.name === 'image') {
       const source = String(node.attrs.src ?? '').trim()
-      if (!source || source.startsWith('/') || source.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(source)) {
-        error = 'External or absolute image references are not rendered from pasted Markdown. Use a relative notebook asset path or upload the image instead.'
+      if (!source || (source.startsWith('/') && !source.startsWith('//')) || (/^[a-z][a-z0-9+.-]*:/i.test(source) && !isExternalImageSource(source))) {
+        error = 'Only relative notebook paths and external HTTP(S) image URLs are supported in pasted Markdown.'
         return false
       }
     }
@@ -487,9 +586,24 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     if (!container) return
     const decorateImages = () => {
       const images = container.querySelectorAll<HTMLImageElement>('.repoquill-editor .milkdown-image-inline img')
-      if (images.length) void loadImagePresentations()
+      if (Array.from(images).some((image) => imageAssetPath(image.src, notePath))) void loadImagePresentations()
+      for (const wrapper of container.querySelectorAll<HTMLElement>('.repoquill-editor .milkdown-image-inline')) {
+        if (wrapper.querySelector('img') || !wrapper.dataset.repoquillExternalImageSource) continue
+        delete wrapper.dataset.repoquillExternalImageSource
+        delete wrapper.dataset.repoquillExternalImageLoaded
+        delete wrapper.dataset.repoquillExternalImageFailed
+        wrapper.querySelector('.repoquill-external-image-placeholder')?.remove()
+      }
       for (const image of images) {
         const wrapper = image.closest<HTMLElement>('.milkdown-image-inline')
+        const currentSource = image.getAttribute('src')
+        const placeholderSource = externalSourceFromPlaceholderURL(currentSource)
+        const storedExternalSource = wrapper?.dataset.repoquillExternalImageSource
+        const externalSource = placeholderSource ?? (currentSource && isExternalImageSource(currentSource) ? currentSource : undefined) ?? (currentSource === storedExternalSource ? storedExternalSource : undefined)
+        if (wrapper && externalSource) updateExternalImagePlaceholder(wrapper, image, externalSource)
+        else if (wrapper && storedExternalSource) clearExternalImagePlaceholder(wrapper, image)
+        if (wrapper?.dataset.repoquillExternalImageSource && (wrapper.dataset.repoquillExternalImageLoaded !== 'true' || wrapper.dataset.repoquillExternalImageFailed === 'true')) continue
+
         const assetPath = imageAssetPath(image.src, notePath)
         if (wrapper) wrapper.dataset.presentationSize = assetPath ? activeImagePresentations[assetPath] ?? 'full' : 'full'
         if (readOnly) {
@@ -507,7 +621,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     }
     decorateImages()
     const observer = new MutationObserver(decorateImages)
-    observer.observe(container, { childList: true, subtree: true })
+    observer.observe(container, { attributes: true, attributeFilter: ['src'], childList: true, subtree: true })
     return () => observer.disconnect()
   }, [documentKey, readOnly, activeImagePresentations, loadImagePresentations, notePath])
 
@@ -541,6 +655,10 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   function displayURL(source: string): string {
     if (/^(?:https?:|data:|blob:|\/)/i.test(source)) return source
     return `/api/repository/asset?note=${encodeURIComponent(notePath)}&path=${encodeURIComponent(source)}`
+  }
+
+  function inlineImageURL(source: string): string {
+    return isExternalImageSource(source) ? externalImagePlaceholderURL(source) : displayURL(source)
   }
 
   async function saveImagePresentation(image: string, size: ImagePresentationSize, previousImage = '') {
@@ -823,7 +941,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
             }
           })
           ctx.update(uploadConfig.key, (previous) => ({ ...previous, uploader, enableHtmlFileUploader: true }))
-          ctx.update(inlineImageConfig.key, (previous) => ({ ...previous, onUpload: uploadImage, proxyDomURL: displayURL }))
+          ctx.update(inlineImageConfig.key, (previous) => ({ ...previous, onUpload: uploadImage, proxyDomURL: inlineImageURL }))
         })
         .use(commonmark)
         .use(gfm)
@@ -1335,7 +1453,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         <ToolbarButton label="Code block" active={toolbarState.block === 'code-block'} disabled={readOnly} onClick={() => callCommand(toolbarState.block === 'code-block' ? turnIntoTextCommand : createCodeBlockCommand)}>{'{ }'}</ToolbarButton>
         <ToolbarDivider />
         <ToolbarButton label="Link" active={toolbarState.link} disabled={readOnly} onClick={editLink}>🔗</ToolbarButton>
-        <ToolbarButton label="Paste as Markdown" disabled={readOnly} onClick={() => { void openMarkdownPaste() }}>Paste Markdown</ToolbarButton>
+        <ToolbarButton label="Paste as Markdown" disabled={readOnly} onClick={() => { void openMarkdownPaste() }}><span className="inline-flex items-center gap-1.5"><svg aria-hidden="true" viewBox="0 0 20 20" fill="none" className="h-4 w-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M7 3.5h6a1.5 1.5 0 0 1 1.5 1.5v1"/><path d="M6 5.5H5A1.5 1.5 0 0 0 3.5 7v9A1.5 1.5 0 0 0 5 17.5h7A1.5 1.5 0 0 0 13.5 16v-1"/><path d="M8.5 6.5h7A1.5 1.5 0 0 1 17 8v7a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 15V8a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M10 10h4M10 12.5h4"/></svg><span className="text-[10px] font-bold tracking-wide">MD</span></span></ToolbarButton>
         <ToolbarButton label="Insert image" disabled={readOnly || uploadState === 'uploading'} onClick={() => input.current?.click()}>{uploadState === 'uploading' ? '…' : 'Image'}</ToolbarButton>
         <input ref={input} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="sr-only" onChange={(event) => { void insertSelectedImages(event.target.files) }} />
         <ToolbarButton label="Insert table" disabled={readOnly} onClick={() => setTablePickerOpen(true)}>Table</ToolbarButton>
@@ -1373,9 +1491,9 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         <div role="toolbar" aria-label="Image editing" className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5">
           <span className="shrink-0 px-1 text-xs font-medium text-zinc-400">Image</span>
           <ToolbarDivider />
-          <span className="shrink-0 px-1 text-xs text-zinc-500">Image size</span>
-          <div role="group" aria-label="Image presentation size" className="flex shrink-0 gap-1">{imagePresentationSizes.map((size) => <button key={size} type="button" aria-label={`${size[0].toUpperCase()+size.slice(1)} image size`} aria-pressed={(activeImagePresentations[selectedImage.src] ?? 'full') === size} onClick={() => void saveImagePresentation(selectedImage.src, size)} className={`min-h-10 rounded px-2 text-xs font-medium ${(activeImagePresentations[selectedImage.src] ?? 'full') === size ? 'border border-amber-500 bg-amber-400/15 text-amber-100' : 'border border-zinc-700 text-zinc-300 hover:bg-zinc-800'}`}>{size[0].toUpperCase()+size.slice(1)}</button>)}</div>
-          <ToolbarDivider />
+          {!isExternalImageSource(selectedImage.src) && <><span className="shrink-0 px-1 text-xs text-zinc-500">Image size</span>
+            <div role="group" aria-label="Image presentation size" className="flex shrink-0 gap-1">{imagePresentationSizes.map((size) => <button key={size} type="button" aria-label={`${size[0].toUpperCase()+size.slice(1)} image size`} aria-pressed={(activeImagePresentations[selectedImage.src] ?? 'full') === size} onClick={() => void saveImagePresentation(selectedImage.src, size)} className={`min-h-10 rounded px-2 text-xs font-medium ${(activeImagePresentations[selectedImage.src] ?? 'full') === size ? 'border border-amber-500 bg-amber-400/15 text-amber-100' : 'border border-zinc-700 text-zinc-300 hover:bg-zinc-800'}`}>{size[0].toUpperCase()+size.slice(1)}</button>)}</div>
+            <ToolbarDivider /></>}
           <button type="button" title="View image" aria-label="View image" onClick={(event) => openImageViewer({ src: displayURL(selectedImage.src), alt: selectedImage.alt }, event.currentTarget)} className="h-8 shrink-0 rounded border border-transparent px-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white">View image</button>
           <ToolbarButton label="Alt text" disabled={false} onClick={() => setEditingAlt(selectedImage.alt)}>Alt text</ToolbarButton>
           <ToolbarButton label="Replace image" disabled={uploadState === 'uploading'} onClick={() => replacementInput.current?.click()}>{uploadState === 'uploading' ? 'Replacing…' : 'Replace image'}</ToolbarButton>
@@ -1418,7 +1536,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
 
       {tablePickerOpen && !readOnly && <TablePicker size={tableSize} onPreview={setTableSize} onSelect={insertTable} onClose={() => setTablePickerOpen(false)} />}
       {linkPicker && !readOnly && <LinkPicker notePath={notePath} notePaths={notePaths} draft={linkPicker} onApply={applyLink} onClose={() => setLinkPicker(undefined)} />}
-      {markdownPaste && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setMarkdownPaste(undefined) }}><form onSubmit={(event) => { event.preventDefault(); applyMarkdownPaste() }} role="dialog" aria-modal="true" aria-labelledby="markdown-paste-title" className="w-full max-w-2xl rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="markdown-paste-title" className="text-lg font-semibold text-zinc-100">Paste as Markdown</h2><p className="mt-1 text-sm text-zinc-400">Headings, lists, tasks, quotes, code, links, tables, and dividers become editable note content.</p><label className="mt-4 block text-sm text-zinc-300">Markdown<textarea autoFocus rows={12} value={markdownPaste.text} onChange={(event) => setMarkdownPaste({ text: event.target.value, clipboardHint: markdownPaste.clipboardHint })} className="mt-2 w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder="# Heading&#10;&#10;- First item&#10;- Second item" /></label><p className="mt-2 text-xs text-zinc-500">{markdownPaste.clipboardHint} External image URLs and raw HTML are kept from becoming active content.</p>{markdownPaste.error && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{markdownPaste.error}</p>}<div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setMarkdownPaste(undefined)} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => applyMarkdownPaste(true)} disabled={!markdownPaste.text} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40">Insert as plain text</button><button type="submit" disabled={!markdownPaste.text} className="min-h-10 rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">Insert Markdown</button></div></form></div>}
+      {markdownPaste && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setMarkdownPaste(undefined) }}><form onSubmit={(event) => { event.preventDefault(); applyMarkdownPaste() }} role="dialog" aria-modal="true" aria-labelledby="markdown-paste-title" className="w-full max-w-2xl rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="markdown-paste-title" className="text-lg font-semibold text-zinc-100">Paste as Markdown</h2><p className="mt-1 text-sm text-zinc-400">Headings, lists, tasks, quotes, code, links, tables, and dividers become editable note content.</p><label className="mt-4 block text-sm text-zinc-300">Markdown<textarea autoFocus rows={12} value={markdownPaste.text} onChange={(event) => setMarkdownPaste({ text: event.target.value, clipboardHint: markdownPaste.clipboardHint })} className="mt-2 w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder="# Heading&#10;&#10;- First item&#10;- Second item" /></label><p className="mt-2 text-xs text-zinc-500">{markdownPaste.clipboardHint} External images stay blocked until you load them. Raw HTML is not inserted.</p>{markdownPaste.error && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{markdownPaste.error}</p>}<div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setMarkdownPaste(undefined)} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => applyMarkdownPaste(true)} disabled={!markdownPaste.text} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40">Insert as plain text</button><button type="submit" disabled={!markdownPaste.text} className="min-h-10 rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">Insert Markdown</button></div></form></div>}
       {editingAlt !== undefined && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingAlt(undefined) }}><form onSubmit={(event) => { event.preventDefault(); saveImageMetadata() }} role="dialog" aria-modal="true" aria-labelledby="image-metadata-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="image-metadata-title" className="text-lg font-semibold text-zinc-100">Edit image</h2><label className="mt-4 block text-sm text-zinc-300">Alt text<input autoFocus value={editingAlt} onChange={(event) => setEditingAlt(event.target.value)} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-amber-500" placeholder="Leave empty for a decorative image" /></label><p className="mt-2 text-xs text-zinc-500">Describe meaningful content briefly, or leave this empty for a decorative image.</p><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setEditingAlt(undefined)} className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="submit" className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">Save</button></div></form></div>}
       <div ref={outlineDock} className="repoquill-outline-dock" data-positioned="false">
         <div className="repoquill-outline-rail">
