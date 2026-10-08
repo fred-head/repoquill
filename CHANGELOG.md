@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Removed the redundant backend-connected indicator; offline notices and
+  synchronization status continue to report connection problems.
 - Moved the running RepoQuill version into the Settings header, right-aligned
   beside the heading.
 - Made the Paste as Markdown toolbar action more compact with a paste icon and
