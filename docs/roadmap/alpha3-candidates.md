@@ -585,7 +585,8 @@ Required behavior:
   operation and keep the existing autosave/status behavior,
 - retain the current clipboard screenshot/image upload workflow and never
   download or upload arbitrary URLs merely because pasted Markdown references
-  an image,
+  an image; preserve external HTTP(S) image references as Markdown and render
+  them behind an explicit per-image load action,
 - keep HTML handling schema-constrained and do not introduce unsafe raw-HTML
   insertion or `dangerouslySetInnerHTML`,
 - keep Read only mode non-mutating and provide touch-accessible behavior that
@@ -601,15 +602,17 @@ Completion criteria:
 - normal plain-text, rich HTML, image, code, and Read only paste paths retain
   their intended behavior,
 - relative links and image references remain portable Markdown and no external
-  asset is fetched implicitly,
+  asset is fetched implicitly; external images load only after an explicit
+  user action,
 - conversion, selection replacement, undo/redo, autosave serialization,
   mobile/PWA access, and ambiguous clipboard inputs have focused tests.
 
 Status: completed on 2026-09-29. RepoQuill now provides an explicit
 touch-accessible Paste as Markdown dialog, handles unambiguous `text/markdown`
 clipboard data, preserves ordinary paste paths, inserts conversions as one
-undoable transaction, and refuses active raw HTML or external image references
-without discarding their source text.
+undoable transaction, refuses active raw HTML without discarding its source,
+and keeps external HTTP(S) image references as Markdown behind a blocked
+placeholder until the user explicitly loads each image.
 
 ## Milestone 39 - Unambiguous internal-note link trigger
 

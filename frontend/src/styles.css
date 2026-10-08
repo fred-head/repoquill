@@ -188,6 +188,13 @@ milkdown-image-inline { display: inline-block; max-width: 100%; vertical-align: 
 .repoquill-editor .milkdown-image-inline[data-presentation-size="large"] { max-width: 75%; }
 .repoquill-editor .milkdown-image-inline[data-presentation-size="full"] { max-width: 100%; }
 .repoquill-editor .milkdown-image-inline[data-presentation-size] img { width: auto; max-width: 100%; }
+.repoquill-editor .repoquill-external-image-placeholder { display: inline-flex; max-width: 100%; align-items: center; gap: 0.75rem; flex-wrap: wrap; vertical-align: middle; border: 1px dashed #52525b; border-radius: 0.65rem; background: #18181b; padding: 0.55rem 0.75rem; color: #d4d4d8; line-height: 1.25; }
+.repoquill-external-image-details { display: grid; gap: 0.2rem; }
+.repoquill-external-image-label { overflow-wrap: anywhere; font-size: 0.8rem; font-weight: 600; }
+.repoquill-external-image-note { color: #a1a1aa; font-size: 0.7rem; }
+.repoquill-external-image-load { min-height: 2.25rem; flex-shrink: 0; border: 1px solid #52525b; border-radius: 0.375rem; padding: 0.35rem 0.65rem; color: #fcd34d; font-size: 0.75rem; font-weight: 600; }
+.repoquill-external-image-load:hover { background: #27272a; }
+.repoquill-external-image-load:focus-visible { outline: 2px solid #f59e0b; outline-offset: 2px; }
 @media (max-width: 480px) {
   .repoquill-editor .milkdown-image-inline[data-presentation-size="small"] { max-width: 50%; }
   .repoquill-editor .milkdown-image-inline[data-presentation-size="medium"] { max-width: 66.667%; }
@@ -199,6 +206,10 @@ milkdown-image-inline { display: inline-block; max-width: 100%; vertical-align: 
 .theme-light .repoquill-editor blockquote { color: #52525b; }
 .theme-light .repoquill-editor code { background: #e4e4e7; color: #92400e; }
 .theme-light .repoquill-editor pre { border-color: #d4d4d8; background: #f4f4f5; }
+.theme-light .repoquill-editor .repoquill-external-image-placeholder { border-color: #a1a1aa; background: #f4f4f5; color: #3f3f46; }
+.theme-light .repoquill-editor .repoquill-external-image-note { color: #71717a; }
+.theme-light .repoquill-editor .repoquill-external-image-load { border-color: #a1a1aa; color: #92400e; }
+.theme-light .repoquill-editor .repoquill-external-image-load:hover { background: #e4e4e7; }
 .theme-light .repoquill-editor pre code { background: transparent; color: #27272a; }
 .theme-light .repoquill-editor .repoquill-code-block { border-color: #d4d4d8; background: #f4f4f5; }
 .theme-light .repoquill-editor .repoquill-code-block-language { color: #52525b; }
