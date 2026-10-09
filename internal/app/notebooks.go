@@ -10,6 +10,12 @@ import (
 
 var notebookRegistryMu sync.Mutex
 
+var (
+	errNotebookSSHKeyChanged = errors.New("notebook SSH key assignment changed")
+	errNotebookNotManagedSSH = errors.New("notebook does not use a managed SSH key")
+	errManagedSSHKeyAssigned = errors.New("managed SSH key is assigned to another notebook")
+)
+
 type notebookRecord struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -122,6 +128,8 @@ func registerNotebookWithoutActivation(metadataPath string, record notebookRecor
 }
 
 func findNotebook(metadataPath, notebookID string) (notebookRecord, error) {
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
 	registry, err := loadNotebookRegistry(metadataPath)
 	if err != nil {
 		return notebookRecord{}, err
@@ -132,6 +140,53 @@ func findNotebook(metadataPath, notebookID string) (notebookRecord, error) {
 		}
 	}
 	return notebookRecord{}, os.ErrNotExist
+}
+
+// replaceNotebookManagedSSHKey serializes key assignment changes with key
+// deletion. The caller's validation runs under the same lock, so a key cannot
+// be deleted between its final availability check and registry update.
+func replaceNotebookManagedSSHKey(metadataPath, notebookID, expectedKeyID, nextKeyID string, validateKey func() error) (notebookRecord, error) {
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
+	registry, err := loadNotebookRegistry(metadataPath)
+	if err != nil {
+		return notebookRecord{}, err
+	}
+	index := -1
+	for i := range registry.Entries {
+		if registry.Entries[i].ID == notebookID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return notebookRecord{}, os.ErrNotExist
+	}
+	record := registry.Entries[index]
+	if record.AuthType != "managed-ssh" || record.RemoteURL == "" || record.KeyID == "" {
+		return notebookRecord{}, errNotebookNotManagedSSH
+	}
+	if record.KeyID != expectedKeyID {
+		return notebookRecord{}, errNotebookSSHKeyChanged
+	}
+	if nextKeyID == expectedKeyID {
+		return notebookRecord{}, errNotebookSSHKeyChanged
+	}
+	for i, entry := range registry.Entries {
+		if i != index && entry.AuthType == "managed-ssh" && entry.KeyID == nextKeyID {
+			return notebookRecord{}, errManagedSSHKeyAssigned
+		}
+	}
+	if validateKey != nil {
+		if err := validateKey(); err != nil {
+			return notebookRecord{}, err
+		}
+	}
+	registry.Entries[index].KeyID = nextKeyID
+	if err := writeNotebookRegistry(metadataPath, registry); err != nil {
+		return notebookRecord{}, err
+	}
+	return registry.Entries[index], nil
 }
 
 func setActiveNotebook(metadataPath, notebookID string) error {

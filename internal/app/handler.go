@@ -99,6 +99,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		gitService.RestoreLastSyncedAt(activeRecord.LastSyncedAt)
 	}
 	var activeMu sync.RWMutex
+	var notebookSwitchMu sync.Mutex
 	currentRepository := func() *files.Repository {
 		activeMu.RLock()
 		defer activeMu.RUnlock()
@@ -618,6 +619,8 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		writeJSON(w, http.StatusOK, map[string]any{"activeId": registry.ActiveID, "notebooks": items})
 	})
 	mux.HandleFunc("POST /api/notebooks/{notebookID}/activate", func(w http.ResponseWriter, r *http.Request) {
+		notebookSwitchMu.Lock()
+		defer notebookSwitchMu.Unlock()
 		record, err := findNotebook(metadataPath, r.PathValue("notebookID"))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -1304,12 +1307,14 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cloned notebook could not be registered"})
 			return
 		}
+		notebookSwitchMu.Lock()
 		activeMu.Lock()
 		repository = clonedRepository
 		gitService = gitrepo.NewManagedService(cloned.Path, sshCommand, logger)
 		activeRecord = record
 		activeNotebookName = record.Name
 		activeMu.Unlock()
+		notebookSwitchMu.Unlock()
 		writeJSON(w, http.StatusCreated, record)
 	})
 	mux.HandleFunc("POST /api/notebooks/ssh-key", func(w http.ResponseWriter, _ *http.Request) {
@@ -1331,37 +1336,142 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "managed SSH keys are not available"})
 			return
 		}
-		assignments := make(map[string]string)
-		if registry, registryErr := loadNotebookRegistry(metadataPath); registryErr == nil {
-			for _, notebook := range registry.Entries {
-				if notebook.AuthType == "managed-ssh" && notebook.KeyID != "" {
-					assignments[notebook.KeyID] = notebook.Name
-				}
+		type keyAssignment struct {
+			NotebookID   string `json:"notebookId"`
+			NotebookName string `json:"notebookName"`
+		}
+		notebookRegistryMu.Lock()
+		registry, registryErr := loadNotebookRegistry(metadataPath)
+		notebookRegistryMu.Unlock()
+		if registryErr != nil && !errors.Is(registryErr, os.ErrNotExist) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "managed SSH key assignments could not be verified"})
+			return
+		}
+		assignments := make(map[string][]keyAssignment)
+		for _, notebook := range registry.Entries {
+			if notebook.AuthType == "managed-ssh" && notebook.KeyID != "" {
+				assignments[notebook.KeyID] = append(assignments[notebook.KeyID], keyAssignment{NotebookID: notebook.ID, NotebookName: notebook.Name})
 			}
 		}
 		items := make([]map[string]any, 0, len(keys))
 		for _, key := range keys {
-			notebookName, assigned := assignments[key.ID]
-			items = append(items, map[string]any{"keyId": key.ID, "publicKey": key.PublicKey, "createdAt": key.CreatedAt, "fingerprint": key.Fingerprint, "assigned": assigned, "notebookName": notebookName})
+			keyAssignments := assignments[key.ID]
+			if keyAssignments == nil {
+				keyAssignments = []keyAssignment{}
+			}
+			notebookName := ""
+			if len(keyAssignments) > 0 {
+				notebookName = keyAssignments[0].NotebookName
+			}
+			items = append(items, map[string]any{"keyId": key.ID, "publicKey": key.PublicKey, "createdAt": key.CreatedAt, "fingerprint": key.Fingerprint, "assigned": len(keyAssignments) > 0, "notebookName": notebookName, "assignments": keyAssignments})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"keys": items})
 	})
+	mux.HandleFunc("PATCH /api/notebooks/{notebookID}/ssh-key", func(w http.ResponseWriter, r *http.Request) {
+		notebookID := r.PathValue("notebookID")
+		if notebookID == "" || strings.ContainsAny(notebookID, "/\\\x00") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid notebook ID"})
+			return
+		}
+		var input struct {
+			ExpectedKeyID string `json:"expectedKeyId"`
+			KeyID         string `json:"keyId"`
+		}
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		record, err := findNotebook(metadataPath, notebookID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
+			} else {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook key assignment could not be verified"})
+			}
+			return
+		}
+		if record.AuthType != "managed-ssh" || record.RemoteURL == "" || record.KeyID == "" {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "notebook does not use a managed SSH key"})
+			return
+		}
+		if input.ExpectedKeyID != record.KeyID {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "notebook SSH key assignment changed; refresh and retry"})
+			return
+		}
+		if input.KeyID == "" || input.KeyID == input.ExpectedKeyID {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "choose a different managed SSH key"})
+			return
+		}
+		_, sshCommand, err := gitrepo.ResolveManagedSSH(keysDirectory, input.KeyID, knownHostsPath)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "replacement managed SSH key is unavailable"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		connection := gitrepo.TestConnection(ctx, record.RemoteURL, record.Branch, sshCommand, logger)
+		cancel()
+		if connection.State != "success" {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": connection.Message, "state": connection.State, "message": connection.Message})
+			return
+		}
+		updated, err := replaceNotebookManagedSSHKey(metadataPath, notebookID, input.ExpectedKeyID, input.KeyID, func() error {
+			_, _, resolveErr := gitrepo.ResolveManagedSSH(keysDirectory, input.KeyID, knownHostsPath)
+			return resolveErr
+		})
+		if err != nil {
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook or replacement SSH key not found"})
+			case errors.Is(err, errNotebookSSHKeyChanged), errors.Is(err, errManagedSSHKeyAssigned):
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "notebook key assignment changed or replacement key is already assigned; refresh and retry"})
+			case errors.Is(err, errNotebookNotManagedSSH):
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "notebook does not use a managed SSH key"})
+			default:
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook key assignment could not be saved"})
+			}
+			return
+		}
+		notebookSwitchMu.Lock()
+		activeMu.Lock()
+		if activeRecord.ID == updated.ID {
+			activeRecord = updated
+			gitService.SetSSHCommand(sshCommand)
+		}
+		activeMu.Unlock()
+		notebookSwitchMu.Unlock()
+		logger.Info("managed SSH key assignment updated", "keyId", input.KeyID, "notebook", notebookID, "operation", "rotate-managed-ssh-key")
+		writeJSON(w, http.StatusOK, map[string]string{"notebookId": updated.ID, "notebookName": updated.Name, "keyId": updated.KeyID})
+	})
 	mux.HandleFunc("DELETE /api/notebooks/ssh-keys/{keyID}", func(w http.ResponseWriter, r *http.Request) {
 		keyID := r.PathValue("keyID")
+		notebookRegistryMu.Lock()
 		registry, registryErr := loadNotebookRegistry(metadataPath)
+		assignedNotebook := ""
+		assigned := false
 		if registryErr != nil && !errors.Is(registryErr, os.ErrNotExist) {
+			notebookRegistryMu.Unlock()
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook assignments could not be verified; key was not deleted"})
 			return
 		}
 		if registryErr == nil {
 			for _, notebook := range registry.Entries {
 				if notebook.AuthType == "managed-ssh" && notebook.KeyID == keyID {
-					writeJSON(w, http.StatusConflict, map[string]string{"error": "managed SSH key is assigned to notebook " + notebook.Name})
-					return
+					assigned = true
+					assignedNotebook = notebook.Name
+					break
 				}
 			}
 		}
-		if err := gitrepo.DeleteManagedSSHKey(keysDirectory, keyID); err != nil {
+		if assigned {
+			notebookRegistryMu.Unlock()
+			if assignedNotebook == "" {
+				assignedNotebook = "a notebook"
+			}
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "managed SSH key is assigned to " + assignedNotebook})
+			return
+		}
+		err := gitrepo.DeleteManagedSSHKey(keysDirectory, keyID)
+		notebookRegistryMu.Unlock()
+		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "managed SSH key not found"})
 			} else {
