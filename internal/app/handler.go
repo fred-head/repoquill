@@ -1438,7 +1438,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		activeMu.Unlock()
 		notebookSwitchMu.Unlock()
-		logger.Info("managed SSH key assignment updated", "keyId", input.KeyID, "notebook", notebookID, "operation", "rotate-managed-ssh-key")
+		logger.Info("managed SSH key assignment updated", "operation", "rotate-managed-ssh-key")
 		writeJSON(w, http.StatusOK, map[string]string{"notebookId": updated.ID, "notebookName": updated.Name, "keyId": updated.KeyID})
 	})
 	mux.HandleFunc("DELETE /api/notebooks/ssh-keys/{keyID}", func(w http.ResponseWriter, r *http.Request) {
