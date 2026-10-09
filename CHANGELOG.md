@@ -49,6 +49,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Align the document outline with the editor toolbar and keep the note
   scrollbar visible while the outline is open.
 
+### Security
+
+- Pin CI and security scans to Go 1.26.9, require that toolchain for local Go
+  builds, and use Go 1.27.2 for container builds to include the standard
+  library security fixes in both supported toolchain lines.
+
 ## [0.1.0-alpha.2.security.5] - 2026-10-06
 
 ### Security

@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GO_VERSION: 1.26.x
+  GO_VERSION: 1.26.9
   NODE_VERSION: "24"
   IMAGE_NAME: ghcr.io/fred-head/repoquill
   LATEST_ALPHA_VERSION: ${{ vars.REPOQUILL_LATEST_ALPHA_VERSION }}
