@@ -21,8 +21,9 @@ import (
 )
 
 type SSHKey struct {
-	ID        string `json:"keyId"`
-	PublicKey string `json:"publicKey"`
+	ID          string `json:"keyId"`
+	PublicKey   string `json:"publicKey"`
+	Fingerprint string `json:"fingerprint"`
 }
 
 type ManagedSSHKey struct {
@@ -131,7 +132,8 @@ func GenerateSSHKey(keysDirectory string, logger *slog.Logger) (SSHKey, error) {
 	if err != nil {
 		return SSHKey{}, err
 	}
-	return SSHKey{ID: id, PublicKey: strings.TrimSpace(string(public))}, nil
+	publicKey := strings.TrimSpace(string(public))
+	return SSHKey{ID: id, PublicKey: publicKey, Fingerprint: sshFingerprint(publicKey)}, nil
 }
 
 func ListManagedSSHKeys(keysDirectory string) ([]ManagedSSHKey, error) {
@@ -159,18 +161,23 @@ func ListManagedSSHKeys(keysDirectory string) ([]ManagedSSHKey, error) {
 			continue
 		}
 		publicKey := strings.TrimSpace(string(public))
-		fields := strings.Fields(publicKey)
-		fingerprint := ""
-		if len(fields) >= 2 {
-			if decoded, decodeErr := base64.StdEncoding.DecodeString(fields[1]); decodeErr == nil {
-				digest := sha256.Sum256(decoded)
-				fingerprint = "SHA256:" + base64.RawStdEncoding.EncodeToString(digest[:])
-			}
-		}
-		keys = append(keys, ManagedSSHKey{ID: entry.Name(), PublicKey: publicKey, CreatedAt: info.ModTime().UTC().Format(time.RFC3339), Fingerprint: fingerprint})
+		keys = append(keys, ManagedSSHKey{ID: entry.Name(), PublicKey: publicKey, CreatedAt: info.ModTime().UTC().Format(time.RFC3339), Fingerprint: sshFingerprint(publicKey)})
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i].CreatedAt > keys[j].CreatedAt })
 	return keys, nil
+}
+
+func sshFingerprint(publicKey string) string {
+	fields := strings.Fields(publicKey)
+	if len(fields) < 2 {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(fields[1])
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(decoded)
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(digest[:])
 }
 
 func DeleteManagedSSHKey(keysDirectory, keyID string) error {

@@ -74,6 +74,15 @@ func NewManagedService(root, sshCommand string, logger *slog.Logger) *Service {
 	return service
 }
 
+// SetSSHCommand changes the credentials used by future Git operations. The
+// service lock lets any in-flight operation finish with its existing command
+// before a replacement is installed.
+func (s *Service) SetSSHCommand(sshCommand string) {
+	s.mu.Lock()
+	s.sshCommand = sshCommand
+	s.mu.Unlock()
+}
+
 func NewService(root string, logger *slog.Logger) *Service {
 	if absolute, err := filepath.Abs(root); err == nil {
 		root = absolute

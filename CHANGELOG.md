@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added guided, per-notebook managed SSH key rotation with a separate
+  replacement key, explicit host trust and repository access checks, a confirmed
+  assignment switch, and visibility into remaining old-key assignments.
 - Added an optional document outline as a collapsible right-edge heading tree
   that uses the available margin without reducing the note editor's width.
 - Added portable fenced-code language selection and controlled syntax

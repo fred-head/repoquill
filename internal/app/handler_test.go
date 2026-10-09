@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fred-head/repoquill/internal/auth"
+	gitrepo "github.com/fred-head/repoquill/internal/git"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -1114,15 +1115,184 @@ func TestManagedSSHKeyAPINeverReturnsPrivateMaterial(t *testing.T) {
 		t.Fatalf("API exposed private material: %s", response.Body.String())
 	}
 	var key struct {
-		KeyID     string `json:"keyId"`
-		PublicKey string `json:"publicKey"`
+		KeyID       string `json:"keyId"`
+		PublicKey   string `json:"publicKey"`
+		Fingerprint string `json:"fingerprint"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&key); err != nil {
 		t.Fatal(err)
 	}
 	private, err := os.Stat(filepath.Join(base, "keys", key.KeyID, "id_ed25519"))
-	if err != nil || private.Mode().Perm() != 0o600 || !strings.HasPrefix(key.PublicKey, "ssh-ed25519 ") {
+	if err != nil || private.Mode().Perm() != 0o600 || !strings.HasPrefix(key.PublicKey, "ssh-ed25519 ") || !strings.HasPrefix(key.Fingerprint, "SHA256:") {
 		t.Fatalf("unexpected persisted key: %v, %v", private, err)
+	}
+}
+
+type managedKeyRotationFixture struct {
+	handler     http.Handler
+	metadata    string
+	keys        string
+	root        string
+	oldKeyID    string
+	newKeyID    string
+	logPath     string
+	failurePath string
+}
+
+func newManagedKeyRotationFixture(t *testing.T) managedKeyRotationFixture {
+	t.Helper()
+	base := t.TempDir()
+	keysDirectory := filepath.Join(base, "keys")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	oldKey, err := gitrepo.GenerateSSHKey(keysDirectory, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newKey, err := gitrepo.GenerateSSHKey(keysDirectory, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(base, "notebook")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, "-C", root, "init", "--initial-branch=main")
+	metadata := filepath.Join(base, "app", "notebooks.json")
+	if err := registerActiveNotebook(metadata, notebookRecord{ID: "notebook-1", Name: "Private", LocalPath: root, RemoteURL: "git@example.test:owner/notes.git", Branch: "main", AuthType: "managed-ssh", KeyID: oldKey.ID}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REPOQUILL_KEYS_DIR", keysDirectory)
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	t.Setenv("REPOQUILL_SSH_KNOWN_HOSTS", filepath.Join(keysDirectory, "known_hosts"))
+	handler, err := NewHandler(logger, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDirectory := filepath.Join(base, "fake-bin")
+	if err := os.MkdirAll(binDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(base, "git-commands.log")
+	failurePath := filepath.Join(base, "fail-connection-test")
+	fakeGit := "#!/bin/sh\nprintf '%s\\n' \"${GIT_SSH_COMMAND-}\" >> \"$REPOQUILL_FAKE_GIT_LOG\"\nif [ \"$1\" = \"ls-remote\" ]; then\n  if [ -f \"$REPOQUILL_FAKE_GIT_FAILURE\" ]; then\n    printf 'Permission denied (publickey).\\n' >&2\n    exit 128\n  fi\n  exit 0\nfi\nexec \"$REPOQUILL_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDirectory, "git"), []byte(fakeGit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REPOQUILL_FAKE_GIT_LOG", logPath)
+	t.Setenv("REPOQUILL_FAKE_GIT_FAILURE", failurePath)
+	t.Setenv("REPOQUILL_REAL_GIT", actualGit)
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return managedKeyRotationFixture{handler: handler, metadata: metadata, keys: keysDirectory, root: root, oldKeyID: oldKey.ID, newKeyID: newKey.ID, logPath: logPath, failurePath: failurePath}
+}
+
+func (fixture managedKeyRotationFixture) rotateRequest(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	body := `{"expectedKeyId":"` + fixture.oldKeyID + `","keyId":"` + fixture.newKeyID + `"}`
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPatch, "/api/notebooks/notebook-1/ssh-key", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	fixture.handler.ServeHTTP(response, request)
+	return response
+}
+
+func TestManagedSSHKeyRotationUpdatesNotebookAndActiveGitService(t *testing.T) {
+	fixture := newManagedKeyRotationFixture(t)
+	response := fixture.rotateRequest(t)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "PRIVATE KEY") {
+		t.Fatalf("rotate managed SSH key: %d %s", response.Code, response.Body.String())
+	}
+	registry, err := loadNotebookRegistry(fixture.metadata)
+	if err != nil || len(registry.Entries) != 1 || registry.Entries[0].KeyID != fixture.newKeyID {
+		t.Fatalf("replacement assignment was not persisted: %#v, %v", registry, err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.keys, fixture.oldKeyID, "id_ed25519")); err != nil {
+		t.Fatalf("old private key was removed during rotation: %v", err)
+	}
+	list := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/notebooks/ssh-keys", nil))
+	var listed struct {
+		Keys []struct {
+			KeyID       string `json:"keyId"`
+			Assigned    bool   `json:"assigned"`
+			Assignments []struct {
+				NotebookID string `json:"notebookId"`
+			} `json:"assignments"`
+		} `json:"keys"`
+	}
+	if list.Code != http.StatusOK || json.NewDecoder(list.Body).Decode(&listed) != nil {
+		t.Fatalf("list managed SSH key assignments: %d %s", list.Code, list.Body.String())
+	}
+	for _, key := range listed.Keys {
+		if key.KeyID == fixture.newKeyID && (!key.Assigned || len(key.Assignments) != 1 || key.Assignments[0].NotebookID != "notebook-1") {
+			t.Fatalf("replacement assignment is not visible: %#v", key)
+		}
+		if key.KeyID == fixture.oldKeyID && key.Assigned {
+			t.Fatalf("old key should be unassigned after rotation: %#v", key)
+		}
+	}
+	if strings.Contains(list.Body.String(), "PRIVATE KEY") {
+		t.Fatalf("key listing exposed private material: %s", list.Body.String())
+	}
+
+	if err := os.WriteFile(fixture.logPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/repository/git/status", nil))
+	if status.Code != http.StatusOK {
+		t.Fatalf("active notebook status failed: %d %s", status.Code, status.Body.String())
+	}
+	commands, err := os.ReadFile(fixture.logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(commands), filepath.Join(fixture.keys, fixture.newKeyID, "id_ed25519")) || strings.Contains(string(commands), filepath.Join(fixture.keys, fixture.oldKeyID, "id_ed25519")) {
+		t.Fatalf("active Git service did not switch to the replacement key: %s", commands)
+	}
+}
+
+func TestManagedSSHKeyRotationFailurePreservesPreviousAssignment(t *testing.T) {
+	fixture := newManagedKeyRotationFixture(t)
+	if err := os.WriteFile(fixture.failurePath, []byte("fail"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response := fixture.rotateRequest(t)
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"state":"authentication_failed"`) {
+		t.Fatalf("failed replacement test response: %d %s", response.Code, response.Body.String())
+	}
+	registry, err := loadNotebookRegistry(fixture.metadata)
+	if err != nil || len(registry.Entries) != 1 || registry.Entries[0].KeyID != fixture.oldKeyID {
+		t.Fatalf("failed test changed the active assignment: %#v, %v", registry, err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.keys, fixture.oldKeyID, "id_ed25519")); err != nil {
+		t.Fatalf("failed test removed the current private key: %v", err)
+	}
+}
+
+func TestManagedSSHKeyRotationRejectsAssignedReplacementAndStaleAssignment(t *testing.T) {
+	fixture := newManagedKeyRotationFixture(t)
+	if err := registerNotebookWithoutActivation(fixture.metadata, notebookRecord{ID: "notebook-2", Name: "Work", LocalPath: fixture.root, RemoteURL: "git@example.test:owner/work.git", Branch: "main", AuthType: "managed-ssh", KeyID: fixture.newKeyID}); err != nil {
+		t.Fatal(err)
+	}
+	response := fixture.rotateRequest(t)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("already assigned replacement status = %d: %s", response.Code, response.Body.String())
+	}
+	staleBody := `{"expectedKeyId":"cccccccccccccccccccccccccccccccc","keyId":"` + fixture.newKeyID + `"}`
+	staleResponse := httptest.NewRecorder()
+	staleRequest := httptest.NewRequest(http.MethodPatch, "/api/notebooks/notebook-1/ssh-key", strings.NewReader(staleBody))
+	staleRequest.Header.Set("Content-Type", "application/json")
+	fixture.handler.ServeHTTP(staleResponse, staleRequest)
+	if staleResponse.Code != http.StatusConflict {
+		t.Fatalf("stale assignment status = %d: %s", staleResponse.Code, staleResponse.Body.String())
+	}
+	registry, err := loadNotebookRegistry(fixture.metadata)
+	if err != nil || len(registry.Entries) != 2 || registry.Entries[0].KeyID != fixture.oldKeyID {
+		t.Fatalf("rejected rotations changed assignments: %#v, %v", registry, err)
 	}
 }
 
@@ -1440,6 +1610,7 @@ func TestEveryApplicationAPIRouteDeniesUnauthenticatedAccess(t *testing.T) {
 		{http.MethodGet, "/api/notebooks"},
 		{http.MethodPost, "/api/notebooks/example/activate"},
 		{http.MethodPatch, "/api/notebooks/example"},
+		{http.MethodPatch, "/api/notebooks/example/ssh-key"},
 		{http.MethodGet, "/api/notebooks/example/health"},
 		{http.MethodDelete, "/api/notebooks/example"},
 		{http.MethodGet, "/api/repository/tree"},

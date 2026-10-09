@@ -121,6 +121,14 @@ The private key never leaves the RepoQuill server. GitHub is the guided beginner
 path, but normal SSH repositories on GitLab, Forgejo, Gitea, and compatible Git
 services are supported too. RepoQuill does not create the remote repository.
 
+To rotate a managed key, open **Settings → Advanced → Managed SSH keys** and
+choose **Rotate** for its assigned notebook. Register the new public key at the
+Git provider, review any untrusted host fingerprint, and test access before
+confirming the switch. RepoQuill keeps the previous key until the notebook has
+successfully changed keys. Remove the old public key at the provider only after
+all notebooks assigned to it have been rotated; the now-unused local key can
+then be deleted from Settings.
+
 `REPOQUILL_SESSION_COOKIE_SECURE=true` is the safe default for an HTTPS reverse
 proxy. For deliberate plain-HTTP localhost testing only, set it to `false`.
 Internet-facing deployments must use TLS and explicitly configure only their
