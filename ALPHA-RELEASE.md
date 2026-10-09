@@ -1,7 +1,8 @@
-# RepoQuill 0.1.0-alpha.2.security.5
+# RepoQuill 0.1.0-alpha.2.security.6
 
 This document is the operator and maintainer checklist for the RepoQuill
-0.1.0-alpha.2.security.5 release.
+0.1.0-alpha.2.security.6 release. Security 6 carries forward the Security 5
+Alpha 2 application and updates its Go toolchain to the patched 1.26.9 release.
 
 Alpha 2 keeps canonical notes as ordinary Markdown and assets in ordinary Git
 repositories while adding single-owner authentication, optional TOTP MFA,

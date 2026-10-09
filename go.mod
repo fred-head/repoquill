@@ -2,6 +2,8 @@ module github.com/fred-head/repoquill
 
 go 1.25.0
 
+toolchain go1.26.9
+
 require (
 	github.com/alexedwards/scs/v2 v2.9.0
 	github.com/pquerna/otp v1.5.0

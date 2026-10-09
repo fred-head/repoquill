@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2.security.6] - 2026-10-09
+
+### Security
+
+- Pin Go builds and security scans to Go 1.26.9 and use its patched standard
+  library and Go command in the container image.
+
 ## [0.1.0-alpha.2.security.5] - 2026-10-06
 
 ### Security

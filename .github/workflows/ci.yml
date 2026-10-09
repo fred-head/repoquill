@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: 1.26.x
+  GO_VERSION: 1.26.9
   NODE_VERSION: "24"
-  RELEASE_VERSION: 0.1.0-alpha.2.security.5
+  RELEASE_VERSION: 0.1.0-alpha.2.security.6
 
 jobs:
   backend:
