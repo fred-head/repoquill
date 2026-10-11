@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added local-only Git notebooks with automatic local commits, clear versioning
+  status, later connection to empty or history-compatible remotes, and an
+  explicit workflow to return a connected notebook to local-only mode.
 - Added guided, per-notebook managed SSH key rotation with a separate
   replacement key, explicit host trust and repository access checks, a confirmed
   assignment switch, and visibility into remaining old-key assignments.

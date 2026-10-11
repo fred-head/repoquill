@@ -111,12 +111,12 @@ func TestExistingServerConnectionModeRemainsFunctional(t *testing.T) {
 
 func TestConnectionAcceptsEmptyRepositoryWithoutConfiguredBranch(t *testing.T) {
 	remote := filepath.Join(t.TempDir(), "empty.git")
-	command := exec.Command("git", "init", "--bare", remote)
+	command := exec.Command("git", "init", "--bare", "--initial-branch=release", remote)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("create empty remote: %v: %s", err, output)
 	}
 	result := TestConnection(context.Background(), remote, "", "", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if result.State != "success" {
+	if result.State != "success" || result.Branch != "main" {
 		t.Fatalf("empty repository connection failed: %#v", result)
 	}
 }

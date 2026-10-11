@@ -245,6 +245,41 @@ describe('App auto-lock integration', () => {
     expect(view.getByRole('heading', { name: 'Add Notebook' })).toBeTruthy()
   })
 
+  it('creates a local-only notebook and labels automatic commits as local versions', async () => {
+    let created = false
+    const notebook = { id: 'local-git', name: 'My notes', branch: 'main' }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/health') return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (url === '/api/notebook') return Response.json({ name: created ? notebook.name : 'Notebook', configured: created })
+      if (url === '/api/notebooks') return Response.json({ activeId: created ? notebook.id : '', notebooks: created ? [notebook] : [] })
+      if (url === '/api/notebooks/local' && init?.method === 'POST') { created = true; return Response.json(notebook, { status: 201 }) }
+      if (url === '/api/repository/tree') return Response.json({ entries: [] })
+      if (url === '/api/repository/git/status') return Response.json({ state: created ? 'local_only' : 'invalid', branch: 'main', localChanges: false })
+      if (url === '/api/repository/git/sync' && init?.method === 'POST') return Response.json({ state: 'local_only', branch: 'main', localChanges: false })
+      if (url === '/api/repository/git/sync-background' && init?.method === 'POST') return Response.json({ status: 'accepted' }, { status: 202 })
+      if (url === `/api/notebooks/${notebook.id}/health`) return Response.json({ localFiles: { state: 'ok' }, writeAccess: { state: 'ok' }, connection: { state: 'local_only' }, pendingWork: { state: 'local_only' } })
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }))
+
+    const view = render(<App />)
+    fireEvent.click((await view.findAllByRole('button', { name: 'Add Notebook' }))[0])
+    fireEvent.click(view.getByRole('button', { name: /Create a local-only notebook/ }))
+    fireEvent.change(view.getByLabelText('Notebook name'), { target: { value: notebook.name } })
+    fireEvent.click(view.getByRole('button', { name: 'Create local-only notebook' }))
+
+    await waitFor(() => expect(created).toBe(true))
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([url, init]) => String(url) === '/api/notebooks/local' && init?.method === 'POST' && JSON.parse(String(init.body)).name === notebook.name)).toBe(true)
+    await view.findByRole('heading', { name: 'Manage Notebooks' })
+    fireEvent.click(view.getByRole('button', { name: 'Done' }))
+    expect(await view.findByRole('button', { name: 'Create version' })).toBeTruthy()
+
+    fireEvent.click(view.getByRole('button', { name: 'Settings' }))
+    expect(await view.findByRole('heading', { name: 'Local versioning' })).toBeTruthy()
+    expect(view.getByLabelText('Scheduled local versions')).toBeTruthy()
+    expect(view.getByLabelText('Create a local version after editing inactivity')).toBeTruthy()
+  })
+
   it('unregisters an inactive legacy notebook without presenting file deletion', async () => {
     const view = render(<App />)
     const switcher = view.container.querySelector('[aria-haspopup="menu"]') as HTMLButtonElement

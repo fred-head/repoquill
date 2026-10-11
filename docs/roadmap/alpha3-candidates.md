@@ -142,11 +142,17 @@ Requirements:
 
 - initialize a normal repository and branch inside the managed notebook root,
 - keep notes and assets fully portable and visible as regular Git content,
+- create local commits automatically using the notebook's configured sync
+  triggers, without making a network connection,
 - retain local commits, History, Trash/Restore, and recovery behavior,
 - describe the notebook as local-only rather than reporting missing remote sync
   as a failure,
 - hide or adapt remote-only synchronization actions and scheduling clearly,
-- provide a deliberate later workflow for adding and validating a remote,
+- provide a deliberate later workflow for adding and validating an empty remote
+  or one that shares Git history; reject unrelated histories without changing
+  either repository,
+- allow a connected notebook to return to local-only mode while preserving its
+  local history and leaving the remote untouched,
 - never require provider APIs or silently create a hosted repository,
 - preserve all path-safety, concurrency, and data-safety rules.
 
@@ -156,7 +162,9 @@ Completion criteria:
   backed up, and removed from RepoQuill safely,
 - absence of `origin` never produces a misleading synchronization error,
 - adding a compatible remote later preserves existing history and never force
-  pushes or discards either side silently.
+  pushes or discards either side silently,
+- switching to local-only removes the local remote configuration without
+  deleting or changing the hosted repository.
 
 ## Milestone 29 - Managed SSH key rotation
 

@@ -36,6 +36,7 @@ type ManagedSSHKey struct {
 type ConnectionResult struct {
 	State   string `json:"state"`
 	Message string `json:"message"`
+	Branch  string `json:"branch,omitempty"`
 }
 
 var keyIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -254,29 +255,69 @@ func TestConnection(ctx context.Context, remoteURL, branch, sshCommand string, l
 	if err := validateRemoteURL(remoteURL, sshCommand != ""); err != nil {
 		return ConnectionResult{State: "invalid_url", Message: err.Error()}
 	}
-	arguments := []string{"ls-remote"}
-	if branch != "" {
-		arguments = append(arguments, "--exit-code")
-	}
-	arguments = append(arguments, "--", remoteURL)
-	if branch != "" {
-		arguments = append(arguments, "refs/heads/"+branch)
-	}
+	arguments := []string{"ls-remote", "--heads", "--", remoteURL}
+	// #nosec G204 -- remoteURL passed validateRemoteURL above and is a single argument after "--"; exec does not invoke a shell.
 	command := exec.CommandContext(ctx, "git", arguments...)
 	command.Env = gitEnvironment(sshCommand)
 	started := time.Now()
 	output, err := command.CombinedOutput()
 	logger.Info("git operation", "operation", "ssh-test", "success", err == nil, "duration", time.Since(started).String())
-	if err == nil {
-		return ConnectionResult{State: "success", Message: "Repository connection successful. Write access will be verified when RepoQuill pushes."}
+	if err != nil {
+		result := classifyConnectionFailure(string(output))
+		logger.Warn("git connection test failed", "state", result.State, "diagnostic", safeConnectionDiagnostic(string(output)))
+		return result
 	}
-	var exitError *exec.ExitError
-	if branch != "" && errors.As(err, &exitError) && exitError.ExitCode() == 2 && len(output) == 0 {
-		return ConnectionResult{State: "branch_not_found", Message: "The configured branch was not found in the repository."}
+	branches := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.HasPrefix(fields[1], "refs/heads/") {
+			branches[strings.TrimPrefix(fields[1], "refs/heads/")] = true
+		}
 	}
-	result := classifyConnectionFailure(string(output))
-	logger.Warn("git connection test failed", "state", result.State, "diagnostic", safeConnectionDiagnostic(string(output)))
-	return result
+	resolvedBranch := branch
+	if len(branches) > 0 {
+		if branch != "" && !branches[branch] {
+			return ConnectionResult{State: "branch_not_found", Message: "The configured branch was not found in the repository."}
+		}
+		if resolvedBranch == "" {
+			defaultBranch := remoteDefaultBranch(ctx, remoteURL, sshCommand)
+			if branches[defaultBranch] {
+				resolvedBranch = defaultBranch
+			} else if len(branches) == 1 {
+				for candidate := range branches {
+					resolvedBranch = candidate
+				}
+			}
+		}
+	} else if resolvedBranch == "" {
+		resolvedBranch = remoteDefaultBranch(ctx, remoteURL, sshCommand)
+		if resolvedBranch == "" {
+			resolvedBranch = "main"
+		}
+	}
+	return ConnectionResult{State: "success", Message: "Repository connection successful. Write access will be verified when RepoQuill pushes.", Branch: resolvedBranch}
+}
+
+func remoteDefaultBranch(ctx context.Context, remoteURL, sshCommand string) string {
+	if err := validateRemoteURL(remoteURL, sshCommand != ""); err != nil {
+		return ""
+	}
+	// #nosec G204 -- remoteURL passed validateRemoteURL above and is a single argument after "--"; exec does not invoke a shell.
+	command := exec.CommandContext(ctx, "git", "ls-remote", "--symref", "--", remoteURL, "HEAD")
+	command.Env = gitEnvironment(sshCommand)
+	output, err := command.Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "ref: refs/heads/") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 {
+				return strings.TrimPrefix(fields[1], "refs/heads/")
+			}
+		}
+	}
+	return ""
 }
 
 func classifyConnectionFailure(output string) ConnectionResult {

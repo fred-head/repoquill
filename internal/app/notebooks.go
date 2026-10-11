@@ -1,10 +1,12 @@
 package app
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -125,6 +127,64 @@ func registerNotebookWithoutActivation(metadataPath string, record notebookRecor
 	}
 	registry.Entries = append(registry.Entries, record)
 	return writeNotebookRegistry(metadataPath, registry)
+}
+
+func removeManagedNotebookDirectory(baseDirectory, notebookID, localPath string) {
+	if !isManagedNotebookID(notebookID) {
+		return
+	}
+	base, err := filepath.EvalSymlinks(baseDirectory)
+	if err != nil {
+		return
+	}
+	target := filepath.Join(base, notebookID)
+	providedPath, err := filepath.Abs(localPath)
+	if err != nil {
+		return
+	}
+	expectedPath, err := filepath.Abs(target)
+	if err != nil || filepath.Clean(providedPath) != filepath.Clean(expectedPath) {
+		return
+	}
+	// #nosec G703 -- notebookID must be a generated 128-bit hex ID and localPath must equal its direct child of the canonical managed root.
+	info, err := os.Lstat(expectedPath)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return
+	}
+	// #nosec G703 -- notebookID must be a generated 128-bit hex ID and localPath must equal its direct child of the canonical managed root.
+	_ = os.RemoveAll(expectedPath)
+}
+
+func isManagedNotebookID(notebookID string) bool {
+	if len(notebookID) != 32 || notebookID != strings.ToLower(notebookID) {
+		return false
+	}
+	_, err := hex.DecodeString(notebookID)
+	return err == nil
+}
+
+func replaceNotebookRemote(metadataPath, notebookID, remoteURL, branch, authType, keyID string) (notebookRecord, error) {
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
+	registry, err := loadNotebookRegistry(metadataPath)
+	if err != nil {
+		return notebookRecord{}, err
+	}
+	for index := range registry.Entries {
+		if registry.Entries[index].ID != notebookID {
+			continue
+		}
+		registry.Entries[index].RemoteURL = remoteURL
+		registry.Entries[index].Branch = branch
+		registry.Entries[index].AuthType = authType
+		registry.Entries[index].KeyID = keyID
+		registry.Entries[index].LastSyncedAt = ""
+		if err := writeNotebookRegistry(metadataPath, registry); err != nil {
+			return notebookRecord{}, err
+		}
+		return registry.Entries[index], nil
+	}
+	return notebookRecord{}, os.ErrNotExist
 }
 
 func findNotebook(metadataPath, notebookID string) (notebookRecord, error) {

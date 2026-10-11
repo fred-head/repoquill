@@ -19,6 +19,49 @@ type CloneResult struct {
 	Branch string
 }
 
+func InitializeLocal(ctx context.Context, baseDirectory string, logger *slog.Logger) (CloneResult, error) {
+	base, err := filepath.Abs(baseDirectory)
+	if err != nil {
+		return CloneResult{}, err
+	}
+	// #nosec G301 -- notebook working trees contain intentionally portable Git files.
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return CloneResult{}, err
+	}
+	base, err = filepath.EvalSymlinks(base)
+	if err != nil {
+		return CloneResult{}, err
+	}
+	identifier := make([]byte, 16)
+	if _, err := rand.Read(identifier); err != nil {
+		return CloneResult{}, err
+	}
+	id := hex.EncodeToString(identifier)
+	target := filepath.Join(base, id)
+	if !isChildPath(base, target) {
+		return CloneResult{}, errors.New("invalid notebook destination")
+	}
+	started := time.Now()
+	// #nosec G204 -- target is a direct child of the canonical base with a random hex ID; "--" ends Git option parsing.
+	command := exec.CommandContext(ctx, "git", "init", "--initial-branch=main", "--", target)
+	command.Env = gitEnvironment("")
+	output, commandErr := command.CombinedOutput()
+	exitCode := 0
+	if commandErr != nil {
+		exitCode = -1
+		var exitError *exec.ExitError
+		if errors.As(commandErr, &exitError) {
+			exitCode = exitError.ExitCode()
+		}
+	}
+	logger.Info("git operation", "notebook", id, "operation", "init-local", "success", commandErr == nil, "duration", time.Since(started).String(), "exitCode", exitCode)
+	if commandErr != nil {
+		_ = os.RemoveAll(target)
+		return CloneResult{}, &commandError{operation: "initialize", exitCode: exitCode, output: sanitizeOutput(string(output))}
+	}
+	return CloneResult{ID: id, Path: target, Branch: "main"}, nil
+}
+
 func Clone(ctx context.Context, baseDirectory, remoteURL, branch string, logger *slog.Logger) (CloneResult, error) {
 	return clone(ctx, baseDirectory, remoteURL, branch, "", logger)
 }

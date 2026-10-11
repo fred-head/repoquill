@@ -1099,6 +1099,147 @@ func TestCloneAndActivateNotebookAPI(t *testing.T) {
 	}
 }
 
+func TestLocalNotebookAPIConnectsEmptyRemoteAndSwitchesBack(t *testing.T) {
+	t.Setenv("REPOQUILL_ALLOW_LOCAL_REMOTES", "true")
+	base := t.TempDir()
+	notebookBase := filepath.Join(base, "notebooks")
+	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", notebookBase)
+	metadata := filepath.Join(base, "app", "notebooks.json")
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := httptest.NewRecorder()
+	handler.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/notebooks/local", strings.NewReader(`{"name":"Local"}`)))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("local notebook creation failed: %d %s", create.Code, create.Body.String())
+	}
+	var record notebookRecord
+	if err := json.Unmarshal(create.Body.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.RemoteURL != "" || record.Branch != "main" {
+		t.Fatalf("new local notebook has unexpected Git settings: %#v", record)
+	}
+	if remotes := strings.TrimSpace(runGitTest(t, "-C", record.LocalPath, "remote")); remotes != "" {
+		t.Fatalf("new local notebook unexpectedly has remotes: %q", remotes)
+	}
+	if err := os.WriteFile(filepath.Join(record.LocalPath, "Note.md"), []byte("local version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status := httptest.NewRecorder()
+	handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/repository/git/status", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"state":"local_only"`) || !strings.Contains(status.Body.String(), `"localChanges":true`) {
+		t.Fatalf("local-only status was misleading: %d %s", status.Code, status.Body.String())
+	}
+	syncResponse := httptest.NewRecorder()
+	handler.ServeHTTP(syncResponse, httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil))
+	if syncResponse.Code != http.StatusOK || !strings.Contains(syncResponse.Body.String(), `"state":"local_only"`) {
+		t.Fatalf("local commit was reported as a sync failure: %d %s", syncResponse.Code, syncResponse.Body.String())
+	}
+
+	remote := filepath.Join(base, "empty.git")
+	runGitTest(t, "init", "--bare", "--initial-branch=main", remote)
+	connectBody := `{"repositoryUrl":"` + remote + `","branch":"main","authType":"existing-server-ssh"}`
+	connect := httptest.NewRecorder()
+	handler.ServeHTTP(connect, httptest.NewRequest(http.MethodPost, "/api/notebooks/"+record.ID+"/remote", strings.NewReader(connectBody)))
+	if connect.Code != http.StatusOK || !strings.Contains(connect.Body.String(), remote) {
+		t.Fatalf("empty remote was not connected: %d %s", connect.Code, connect.Body.String())
+	}
+	push := httptest.NewRecorder()
+	handler.ServeHTTP(push, httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil))
+	if push.Code != http.StatusOK || !strings.Contains(push.Body.String(), `"state":"synced"`) {
+		t.Fatalf("first sync to empty remote failed: %d %s", push.Code, push.Body.String())
+	}
+	if count := strings.TrimSpace(runGitTest(t, "-C", remote, "rev-list", "--count", "main")); count != "1" {
+		t.Fatalf("local commit did not reach remote: %s commits", count)
+	}
+	remoteHeadBeforeDisconnect := strings.TrimSpace(runGitTest(t, "-C", remote, "rev-parse", "main"))
+	if err := os.WriteFile(filepath.Join(record.LocalPath, "After.md"), []byte("keep after disconnect"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	disconnect := httptest.NewRecorder()
+	handler.ServeHTTP(disconnect, httptest.NewRequest(http.MethodPost, "/api/notebooks/"+record.ID+"/remote/disconnect", strings.NewReader(`{"confirmed":true}`)))
+	if disconnect.Code != http.StatusOK || strings.Contains(disconnect.Body.String(), remote) {
+		t.Fatalf("remote was not disconnected cleanly: %d %s", disconnect.Code, disconnect.Body.String())
+	}
+	if remotes := strings.TrimSpace(runGitTest(t, "-C", record.LocalPath, "remote")); remotes != "" {
+		t.Fatalf("origin remained after switching to local-only: %q", remotes)
+	}
+	status = httptest.NewRecorder()
+	handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/repository/git/status", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"state":"local_only"`) {
+		t.Fatalf("disconnected notebook status is wrong: %d %s", status.Code, status.Body.String())
+	}
+	registry, err := loadNotebookRegistry(metadata)
+	if err != nil || len(registry.Entries) != 1 || registry.Entries[0].RemoteURL != "" || registry.Entries[0].AuthType != "" {
+		t.Fatalf("local-only registration retained remote settings: %#v %v", registry, err)
+	}
+	if remoteHead := strings.TrimSpace(runGitTest(t, "-C", remote, "rev-parse", "main")); remoteHead != remoteHeadBeforeDisconnect {
+		t.Fatal("disconnect altered the remote repository")
+	}
+	if count := strings.TrimSpace(runGitTest(t, "-C", record.LocalPath, "rev-list", "--count", "main")); count != "2" {
+		t.Fatalf("disconnect did not commit local-only changes: %s commits", count)
+	}
+	restarted, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartStatus := httptest.NewRecorder()
+	restarted.ServeHTTP(restartStatus, httptest.NewRequest(http.MethodGet, "/api/repository/git/status", nil))
+	if restartStatus.Code != http.StatusOK || !strings.Contains(restartStatus.Body.String(), `"state":"local_only"`) {
+		t.Fatalf("local-only notebook did not recover after restart: %d %s", restartStatus.Code, restartStatus.Body.String())
+	}
+}
+
+func TestConnectLocalNotebookRejectsUnrelatedRemoteHistory(t *testing.T) {
+	t.Setenv("REPOQUILL_ALLOW_LOCAL_REMOTES", "true")
+	base := t.TempDir()
+	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", filepath.Join(base, "notebooks"))
+	metadata := filepath.Join(base, "app", "notebooks.json")
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := httptest.NewRecorder()
+	handler.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/notebooks/local", strings.NewReader(`{"name":"Local"}`)))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("local notebook creation failed: %d %s", create.Code, create.Body.String())
+	}
+	var record notebookRecord
+	if err := json.Unmarshal(create.Body.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(record.LocalPath, "Local.md"), []byte("keep local history"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit := httptest.NewRecorder()
+	handler.ServeHTTP(commit, httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil))
+	if !strings.Contains(commit.Body.String(), `"state":"local_only"`) {
+		t.Fatalf("local history was not committed: %s", commit.Body.String())
+	}
+	_, unrelated := createTestRemoteWithNote(t, base, "Remote.md", "different history")
+	body := `{"repositoryUrl":"` + unrelated + `","branch":"main","authType":"existing-server-ssh"}`
+	connect := httptest.NewRecorder()
+	handler.ServeHTTP(connect, httptest.NewRequest(http.MethodPost, "/api/notebooks/"+record.ID+"/remote", strings.NewReader(body)))
+	if connect.Code != http.StatusConflict || !strings.Contains(connect.Body.String(), "unrelated Git histories") {
+		t.Fatalf("unrelated remote history was accepted: %d %s", connect.Code, connect.Body.String())
+	}
+	if remotes := strings.TrimSpace(runGitTest(t, "-C", record.LocalPath, "remote")); remotes != "" {
+		t.Fatalf("rejected remote remained configured: %q", remotes)
+	}
+	if content, err := os.ReadFile(filepath.Join(record.LocalPath, "Local.md")); err != nil || string(content) != "keep local history" {
+		t.Fatalf("local content changed after rejection: %q %v", content, err)
+	}
+	registry, err := loadNotebookRegistry(metadata)
+	if err != nil || registry.Entries[0].RemoteURL != "" {
+		t.Fatalf("rejected connection changed notebook registration: %#v %v", registry, err)
+	}
+}
+
 func TestManagedSSHKeyAPINeverReturnsPrivateMaterial(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv("REPOQUILL_KEYS_DIR", filepath.Join(base, "keys"))
@@ -1413,12 +1554,32 @@ func TestManagedSSHKeyManagementProtectsAssignedKeys(t *testing.T) {
 	}
 }
 
-func runGitTest(t *testing.T, arguments ...string) {
+func runGitTest(t *testing.T, arguments ...string) string {
 	t.Helper()
 	command := exec.Command("git", arguments...)
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := command.CombinedOutput()
+	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", arguments, err, output)
 	}
+	return string(output)
+}
+
+func createTestRemoteWithNote(t *testing.T, base, filename, content string) (string, string) {
+	t.Helper()
+	remote := filepath.Join(base, "unrelated.git")
+	seed := filepath.Join(base, "unrelated-seed")
+	runGitTest(t, "init", "--bare", "--initial-branch=main", remote)
+	runGitTest(t, "init", "--initial-branch=main", seed)
+	runGitTest(t, "-C", seed, "config", "user.name", "Test")
+	runGitTest(t, "-C", seed, "config", "user.email", "test@example.test")
+	if err := os.WriteFile(filepath.Join(seed, filename), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, "-C", seed, "add", "--all")
+	runGitTest(t, "-C", seed, "commit", "-m", "Initial remote note")
+	runGitTest(t, "-C", seed, "remote", "add", "origin", remote)
+	runGitTest(t, "-C", seed, "push", "origin", "main")
+	return seed, remote
 }
 
 func TestNoteHistoryAPIViewsAndRestoresWithoutRewritingHistory(t *testing.T) {
@@ -1639,6 +1800,9 @@ func TestEveryApplicationAPIRouteDeniesUnauthenticatedAccess(t *testing.T) {
 		{http.MethodPost, "/api/repository/git/sync"},
 		{http.MethodPost, "/api/repository/git/sync-background"},
 		{http.MethodPost, "/api/notebooks"},
+		{http.MethodPost, "/api/notebooks/local"},
+		{http.MethodPost, "/api/notebooks/example/remote"},
+		{http.MethodPost, "/api/notebooks/example/remote/disconnect"},
 		{http.MethodPost, "/api/notebooks/ssh-key"},
 		{http.MethodGet, "/api/notebooks/ssh-keys"},
 		{http.MethodDelete, "/api/notebooks/ssh-keys/example"},
