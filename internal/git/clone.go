@@ -42,6 +42,7 @@ func InitializeLocal(ctx context.Context, baseDirectory string, logger *slog.Log
 		return CloneResult{}, errors.New("invalid notebook destination")
 	}
 	started := time.Now()
+	// #nosec G204 -- target is a direct child of the canonical base with a random hex ID; "--" ends Git option parsing.
 	command := exec.CommandContext(ctx, "git", "init", "--initial-branch=main", "--", target)
 	command.Env = gitEnvironment("")
 	output, commandErr := command.CombinedOutput()

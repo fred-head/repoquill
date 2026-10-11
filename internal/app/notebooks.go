@@ -1,10 +1,12 @@
 package app
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -128,7 +130,7 @@ func registerNotebookWithoutActivation(metadataPath string, record notebookRecor
 }
 
 func removeManagedNotebookDirectory(baseDirectory, notebookID, localPath string) {
-	if notebookID == "" || filepath.Base(notebookID) != notebookID {
+	if !isManagedNotebookID(notebookID) {
 		return
 	}
 	base, err := filepath.EvalSymlinks(baseDirectory)
@@ -144,11 +146,21 @@ func removeManagedNotebookDirectory(baseDirectory, notebookID, localPath string)
 	if err != nil || filepath.Clean(providedPath) != filepath.Clean(expectedPath) {
 		return
 	}
+	// #nosec G703 -- notebookID must be a generated 128-bit hex ID and localPath must equal its direct child of the canonical managed root.
 	info, err := os.Lstat(expectedPath)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return
 	}
+	// #nosec G703 -- notebookID must be a generated 128-bit hex ID and localPath must equal its direct child of the canonical managed root.
 	_ = os.RemoveAll(expectedPath)
+}
+
+func isManagedNotebookID(notebookID string) bool {
+	if len(notebookID) != 32 || notebookID != strings.ToLower(notebookID) {
+		return false
+	}
+	_, err := hex.DecodeString(notebookID)
+	return err == nil
 }
 
 func replaceNotebookRemote(metadataPath, notebookID, remoteURL, branch, authType, keyID string) (notebookRecord, error) {

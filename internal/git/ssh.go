@@ -256,6 +256,7 @@ func TestConnection(ctx context.Context, remoteURL, branch, sshCommand string, l
 		return ConnectionResult{State: "invalid_url", Message: err.Error()}
 	}
 	arguments := []string{"ls-remote", "--heads", "--", remoteURL}
+	// #nosec G204 -- remoteURL passed validateRemoteURL above and is a single argument after "--"; exec does not invoke a shell.
 	command := exec.CommandContext(ctx, "git", arguments...)
 	command.Env = gitEnvironment(sshCommand)
 	started := time.Now()
@@ -298,6 +299,10 @@ func TestConnection(ctx context.Context, remoteURL, branch, sshCommand string, l
 }
 
 func remoteDefaultBranch(ctx context.Context, remoteURL, sshCommand string) string {
+	if err := validateRemoteURL(remoteURL, sshCommand != ""); err != nil {
+		return ""
+	}
+	// #nosec G204 -- remoteURL passed validateRemoteURL above and is a single argument after "--"; exec does not invoke a shell.
 	command := exec.CommandContext(ctx, "git", "ls-remote", "--symref", "--", remoteURL, "HEAD")
 	command.Env = gitEnvironment(sshCommand)
 	output, err := command.Output()
