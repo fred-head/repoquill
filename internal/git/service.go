@@ -26,6 +26,7 @@ type State string
 const (
 	StateClean         State = "clean"
 	StateLocalChanges  State = "local_changes"
+	StateLocalOnly     State = "local_only"
 	StateRemoteChanges State = "remote_changes"
 	StateDiverged      State = "diverged"
 	StateSynced        State = "synced"
@@ -37,6 +38,7 @@ const (
 type Status struct {
 	State           State            `json:"state"`
 	Branch          string           `json:"branch,omitempty"`
+	LocalChanges    bool             `json:"localChanges,omitempty"`
 	Ahead           int              `json:"ahead,omitempty"`
 	Behind          int              `json:"behind,omitempty"`
 	ConflictFiles   []string         `json:"conflictFiles,omitempty"`
@@ -66,6 +68,7 @@ type Service struct {
 	lastFailure  string
 	lastSyncedAt time.Time
 	sshCommand   string
+	remoteBranch string
 }
 
 func NewManagedService(root, sshCommand string, logger *slog.Logger) *Service {
@@ -80,6 +83,12 @@ func NewManagedService(root, sshCommand string, logger *slog.Logger) *Service {
 func (s *Service) SetSSHCommand(sshCommand string) {
 	s.mu.Lock()
 	s.sshCommand = sshCommand
+	s.mu.Unlock()
+}
+
+func (s *Service) SetRemoteBranch(branch string) {
+	s.mu.Lock()
+	s.remoteBranch = strings.TrimSpace(branch)
 	s.mu.Unlock()
 }
 
@@ -144,24 +153,34 @@ func (s *Service) Sync(ctx context.Context) Status {
 		return s.fail(err)
 	}
 	if dirty {
-		if _, err := s.run(ctx, "stage", "add", "--all"); err != nil {
-			return s.fail(err)
-		}
-		if _, err := s.run(ctx, "commit", "-c", "user.name=RepoQuill", "-c", "user.email=repoquill@localhost", "commit", "-m", "Update notes"); err != nil {
+		if err := s.commitWorkingTree(ctx); err != nil {
 			return s.fail(err)
 		}
 	}
-	if _, err := s.run(ctx, "inspect remote", "remote", "get-url", "origin"); err != nil {
-		return s.fail(ErrNoRemote)
+	hasRemote, err := s.hasOrigin(ctx)
+	if err != nil {
+		return s.fail(err)
+	}
+	if !hasRemote {
+		s.lastFailure = ""
+		status, err := s.status(ctx)
+		if err != nil {
+			return s.fail(err)
+		}
+		return status
 	}
 	if _, err := s.run(ctx, "fetch", "fetch", "--prune", "origin"); err != nil {
 		return s.fail(err)
 	}
 
-	remoteRef := "refs/remotes/origin/" + branch
+	remoteBranch := s.remoteBranch
+	if remoteBranch == "" {
+		remoteBranch = branch
+	}
+	remoteRef := "refs/remotes/origin/" + remoteBranch
 	beforeIntegration, _ := s.revision(ctx, "HEAD")
 	if _, err := s.run(ctx, "inspect remote branch", "show-ref", "--verify", "--quiet", remoteRef); err == nil {
-		if _, err := s.run(ctx, "rebase", "rebase", "origin/"+branch); err != nil {
+		if _, err := s.run(ctx, "rebase", "rebase", "origin/"+remoteBranch); err != nil {
 			conflicts := s.conflictFiles(ctx)
 			if len(conflicts) > 0 {
 				s.lastFailure = "Automatic synchronization paused because Git found conflicts."
@@ -172,12 +191,187 @@ func (s *Service) Sync(ctx context.Context) Status {
 	}
 	afterIntegration, _ := s.revision(ctx, "HEAD")
 	receivedChanges := s.receivedChanges(ctx, beforeIntegration, afterIntegration)
-	if _, err := s.run(ctx, "push", "push", "--set-upstream", "origin", "HEAD:"+branch); err != nil {
+	if _, err := s.run(ctx, "push", "push", "--set-upstream", "origin", "HEAD:"+remoteBranch); err != nil {
 		return s.fail(err)
 	}
 	s.lastFailure = ""
 	s.lastSyncedAt = time.Now()
 	return Status{State: StateSynced, Branch: branch, LastSyncedAt: s.lastSyncedAt.UTC().Format(time.RFC3339), ReceivedChanges: receivedChanges}
+}
+
+func (s *Service) commitWorkingTree(ctx context.Context) error {
+	if _, err := s.run(ctx, "stage", "add", "--all"); err != nil {
+		return err
+	}
+	if _, err := s.run(ctx, "commit", "-c", "user.name=RepoQuill", "-c", "user.email=repoquill@localhost", "commit", "-m", "Update notes"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Service) hasOrigin(ctx context.Context) (bool, error) {
+	output, err := s.run(ctx, "inspect remotes", "remote")
+	if err != nil {
+		return false, err
+	}
+	for _, name := range strings.Fields(output) {
+		if name == "origin" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ConnectRemote validates that an existing remote is empty or shares history
+// with this notebook before making it the active origin.
+func (s *Service) ConnectRemote(ctx context.Context, remoteURL, branch, sshCommand string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := validateRemoteURL(remoteURL, sshCommand != ""); err != nil {
+		return "", err
+	}
+	if err := ValidateBranch(branch); err != nil {
+		return "", err
+	}
+	if err := s.validateRoot(ctx); err != nil {
+		return "", err
+	}
+	hasRemote, err := s.hasOrigin(ctx)
+	if err != nil {
+		return "", err
+	}
+	if hasRemote {
+		return "", errors.New("this notebook already has a connected remote")
+	}
+	localBranch, err := s.branch(ctx)
+	if err != nil {
+		return "", err
+	}
+	if dirty, dirtyErr := s.dirty(ctx); dirtyErr != nil {
+		return "", dirtyErr
+	} else if dirty {
+		if err := s.commitWorkingTree(ctx); err != nil {
+			return "", err
+		}
+	}
+	previousSSH := s.sshCommand
+	s.sshCommand = sshCommand
+	added := false
+	defer func() {
+		if !added {
+			_, _ = s.run(context.Background(), "remove rejected remote", "remote", "remove", "origin")
+			s.sshCommand = previousSSH
+		}
+	}()
+	if _, err := s.run(ctx, "add remote", "remote", "add", "origin", strings.TrimSpace(remoteURL)); err != nil {
+		return "", err
+	}
+	if _, err := s.run(ctx, "fetch remote for verification", "fetch", "--prune", "origin"); err != nil {
+		return "", err
+	}
+	remoteBranch, hasRemoteHeads, err := s.resolveRemoteBranch(ctx, branch, localBranch)
+	if err != nil {
+		return "", err
+	}
+	remoteRef := "refs/remotes/origin/" + remoteBranch
+	if hasRemoteHeads {
+		if _, err := s.run(ctx, "verify remote branch", "show-ref", "--verify", "--quiet", remoteRef); err != nil {
+			return "", errors.New("the selected branch was not found on the remote")
+		}
+		localHead, localErr := s.revision(ctx, "HEAD")
+		if localErr != nil {
+			if _, err := s.run(ctx, "adopt remote history", "checkout", "--force", "-B", localBranch, "--track", "origin/"+remoteBranch); err != nil {
+				return "", err
+			}
+		} else {
+			if _, err := s.run(ctx, "verify shared history", "merge-base", localHead, remoteRef); err != nil {
+				return "", errors.New("the local notebook and selected remote branch have unrelated Git histories")
+			}
+			if _, err := s.run(ctx, "set remote upstream", "branch", "--set-upstream-to=origin/"+remoteBranch, localBranch); err != nil {
+				return "", err
+			}
+		}
+	}
+	s.remoteBranch = remoteBranch
+	s.lastFailure = ""
+	s.lastSyncedAt = time.Time{}
+	added = true
+	return remoteBranch, nil
+}
+
+func (s *Service) resolveRemoteBranch(ctx context.Context, requested, localBranch string) (string, bool, error) {
+	output, err := s.run(ctx, "inspect fetched branches", "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/origin")
+	if err != nil {
+		return "", false, err
+	}
+	branches := strings.Fields(output)
+	if requested != "" {
+		for _, branch := range branches {
+			if branch == requested {
+				return requested, true, nil
+			}
+		}
+		if len(branches) == 0 {
+			return requested, false, nil
+		}
+		return "", true, errors.New("the selected branch was not found on the remote")
+	}
+	if len(branches) == 0 {
+		return localBranch, false, nil
+	}
+	if len(branches) == 1 {
+		return branches[0], true, nil
+	}
+	defaultRef, err := s.run(ctx, "inspect remote default branch", "ls-remote", "--symref", "origin", "HEAD")
+	if err == nil {
+		for _, line := range strings.Split(defaultRef, "\n") {
+			if strings.HasPrefix(line, "ref: refs/heads/") {
+				fields := strings.Fields(line)
+				if len(fields) == 2 {
+					return strings.TrimPrefix(fields[1], "refs/heads/"), true, nil
+				}
+			}
+		}
+	}
+	return "", true, errors.New("the remote has multiple branches and no discoverable default branch")
+}
+
+// DisconnectRemote leaves all notebook files and local commits in place.
+func (s *Service) DisconnectRemote(ctx context.Context) (Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.validateRoot(ctx); err != nil {
+		return Status{}, err
+	}
+	if conflicts := s.conflictFiles(ctx); len(conflicts) > 0 || s.rebaseInProgress() {
+		return Status{}, errors.New("resolve the existing Git conflict before switching to local-only")
+	}
+	if _, err := s.branch(ctx); err != nil {
+		return Status{}, err
+	}
+	if dirty, dirtyErr := s.dirty(ctx); dirtyErr != nil {
+		return Status{}, dirtyErr
+	} else if dirty {
+		if err := s.commitWorkingTree(ctx); err != nil {
+			return Status{}, err
+		}
+	}
+	hasRemote, err := s.hasOrigin(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	if !hasRemote {
+		return Status{}, ErrNoRemote
+	}
+	_, _ = s.run(ctx, "remove branch upstream", "branch", "--unset-upstream")
+	if _, err := s.run(ctx, "disconnect remote", "remote", "remove", "origin"); err != nil {
+		return Status{}, err
+	}
+	s.remoteBranch = ""
+	s.sshCommand = ""
+	s.lastFailure = ""
+	s.lastSyncedAt = time.Time{}
+	return s.status(ctx)
 }
 
 var revisionPattern = regexp.MustCompile(`^[0-9a-fA-F]{40,64}$`)
@@ -256,7 +450,28 @@ func (s *Service) status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	hasRemote, err := s.hasOrigin(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	if !hasRemote {
+		return Status{State: StateLocalOnly, Branch: branch, LocalChanges: dirty}, nil
+	}
 	ahead, behind := s.aheadBehind(ctx)
+	if ahead == 0 && behind == 0 {
+		remoteBranch := s.remoteBranch
+		if remoteBranch == "" {
+			remoteBranch = branch
+		}
+		remoteRef := "refs/remotes/origin/" + remoteBranch
+		if _, err := s.run(ctx, "inspect remote branch", "show-ref", "--verify", "--quiet", remoteRef); err != nil {
+			if output, err := s.run(ctx, "inspect local commit count", "rev-list", "--count", "HEAD"); err == nil {
+				if count, countErr := strconv.Atoi(strings.TrimSpace(output)); countErr == nil {
+					ahead = count
+				}
+			}
+		}
+	}
 	state := StateClean
 	switch {
 	case dirty || ahead > 0 && behind == 0:
@@ -266,7 +481,7 @@ func (s *Service) status(ctx context.Context) (Status, error) {
 	case behind > 0:
 		state = StateRemoteChanges
 	}
-	return Status{State: state, Branch: branch, Ahead: ahead, Behind: behind}, nil
+	return Status{State: state, Branch: branch, LocalChanges: dirty, Ahead: ahead, Behind: behind}, nil
 }
 
 func (s *Service) validateRoot(ctx context.Context) error {

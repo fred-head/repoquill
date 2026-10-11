@@ -121,6 +121,16 @@ The private key never leaves the RepoQuill server. GitHub is the guided beginner
 path, but normal SSH repositories on GitLab, Forgejo, Gitea, and compatible Git
 services are supported too. RepoQuill does not create the remote repository.
 
+You can also create a **local-only notebook** from **Add Notebook**. RepoQuill
+initializes an ordinary Git repository on the server and automatically commits
+saved changes on the same schedule and safe transitions used for remote sync.
+History, Trash, and Restore continue to work, and notes and assets remain
+ordinary files. From **Manage Notebooks**, you can later connect an empty remote
+or one that shares Git history with the local notebook. Independent histories
+are rejected without changing either repository. A connected notebook can be
+switched back to local-only; this removes its local remote configuration and
+leaves the remote repository untouched.
+
 To rotate a managed key, open **Settings → Advanced → Managed SSH keys** and
 choose **Rotate** for its assigned notebook. Register the new public key at the
 Git provider, review any untrusted host fingerprint, and test access before
@@ -259,11 +269,15 @@ Saving and Git synchronization are deliberately separate:
 
 - **Saved** means the Markdown file is safely written to persistent storage.
 - **Synced** means changes were committed and pushed to the configured remote.
+- **Local-only** means changes were committed in the notebook's local Git
+  repository, with no remote connection configured.
 
 RepoQuill can synchronize manually, on a schedule, after inactivity, during
-navigation, at startup/focus, and best-effort when a browser tab closes. It
-fetches remote changes before pushing and never force-pushes through conflicts.
-Note switching waits only for a required local save, not background Git work.
+navigation, at startup/focus, and best-effort when a browser tab closes. For a
+local-only notebook, those same triggers create local commits without contacting
+a remote. Connected notebooks fetch remote changes before pushing and never
+force-push through conflicts. Note switching waits only for a required local
+save, not background Git work.
 
 If edits from GitHub, VS Code, another Git client, or another editor overlap
 with RepoQuill changes, synchronization pauses. Guided review preserves and

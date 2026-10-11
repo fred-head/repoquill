@@ -37,6 +37,128 @@ func TestStatusCommitPushAndNoChangeSync(t *testing.T) {
 	}
 }
 
+func TestLocalNotebookInitializesAndCommitsWithoutRemote(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "notebooks")
+	created, err := InitializeLocal(context.Background(), root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Branch != "main" || strings.TrimSpace(runGit(t, created.Path, "branch", "--show-current")) != "main" {
+		t.Fatalf("local notebook branch was not initialized: %#v", created)
+	}
+	if strings.TrimSpace(runGit(t, created.Path, "remote")) != "" {
+		t.Fatal("new local notebook unexpectedly has a remote")
+	}
+	service := NewService(created.Path, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	writeFile(t, filepath.Join(created.Path, "Note.md"), "saved locally")
+	if status := service.Status(context.Background()); status.State != StateLocalOnly || !status.LocalChanges {
+		t.Fatalf("local changes were reported as a sync failure: %#v", status)
+	}
+	status := service.Sync(context.Background())
+	if status.State != StateLocalOnly || status.LocalChanges || status.LastSyncedAt != "" {
+		t.Fatalf("local-only commit did not complete cleanly: %#v", status)
+	}
+	if count := strings.TrimSpace(runGit(t, created.Path, "rev-list", "--count", "main")); count != "1" {
+		t.Fatalf("local-only sync should create one commit, got %s", count)
+	}
+}
+
+func TestConnectRemoteAcceptsEmptyRepositoryAndPreservesLocalHistory(t *testing.T) {
+	created, err := InitializeLocal(context.Background(), filepath.Join(t.TempDir(), "notebooks"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(created.Path, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	writeFile(t, filepath.Join(created.Path, "Note.md"), "local notes")
+	if result := service.Sync(context.Background()); result.State != StateLocalOnly {
+		t.Fatalf("initial local commit failed: %#v", result)
+	}
+	remote := filepath.Join(t.TempDir(), "empty.git")
+	run(t, "git", "init", "--bare", "--initial-branch=main", remote)
+	branch, err := service.ConnectRemote(context.Background(), remote, "main", "")
+	if err != nil || branch != "main" {
+		t.Fatalf("empty remote was not connected: branch=%q err=%v", branch, err)
+	}
+	if status := service.Status(context.Background()); status.State != StateLocalChanges {
+		t.Fatalf("local commits were not shown as pending for the empty remote: %#v", status)
+	}
+	if status := service.Sync(context.Background()); status.State != StateSynced {
+		t.Fatalf("first push to empty remote failed: %#v", status)
+	}
+	if count := strings.TrimSpace(runGit(t, remote, "rev-list", "--count", "main")); count != "1" {
+		t.Fatalf("local history was not pushed to the empty remote: %s commits", count)
+	}
+}
+
+func TestConnectRemoteAcceptsSharedHistory(t *testing.T) {
+	created, err := InitializeLocal(context.Background(), filepath.Join(t.TempDir(), "notebooks"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(created.Path, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	writeFile(t, filepath.Join(created.Path, "Note.md"), "shared notes")
+	if result := service.Sync(context.Background()); result.State != StateLocalOnly {
+		t.Fatalf("initial local commit failed: %#v", result)
+	}
+	remote := filepath.Join(t.TempDir(), "shared.git")
+	run(t, "git", "init", "--bare", "--initial-branch=main", remote)
+	seed := filepath.Join(t.TempDir(), "seed")
+	run(t, "git", "clone", created.Path, seed)
+	configureIdentity(t, seed)
+	runGit(t, seed, "remote", "remove", "origin")
+	runGit(t, seed, "remote", "add", "origin", remote)
+	runGit(t, seed, "push", "--set-upstream", "origin", "main")
+	if _, err := service.ConnectRemote(context.Background(), remote, "main", ""); err != nil {
+		t.Fatalf("remote with shared history was rejected: %v", err)
+	}
+	if status := service.Sync(context.Background()); status.State != StateSynced {
+		t.Fatalf("sync after connecting shared history failed: %#v", status)
+	}
+}
+
+func TestConnectRemoteRejectsUnrelatedHistoryWithoutChangingNotebook(t *testing.T) {
+	created, err := InitializeLocal(context.Background(), filepath.Join(t.TempDir(), "notebooks"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(created.Path, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	writeFile(t, filepath.Join(created.Path, "Local.md"), "local copy")
+	if result := service.Sync(context.Background()); result.State != StateLocalOnly {
+		t.Fatalf("initial local commit failed: %#v", result)
+	}
+	_, unrelated := testRepository(t)
+	if _, err := service.ConnectRemote(context.Background(), unrelated, "main", ""); err == nil || !strings.Contains(err.Error(), "unrelated") {
+		t.Fatalf("unrelated remote history was not rejected: %v", err)
+	}
+	if strings.TrimSpace(runGit(t, created.Path, "remote")) != "" {
+		t.Fatal("rejected remote remained configured")
+	}
+	if content, err := os.ReadFile(filepath.Join(created.Path, "Local.md")); err != nil || string(content) != "local copy" {
+		t.Fatalf("local note was changed by rejected connection: %q %v", content, err)
+	}
+	if count := strings.TrimSpace(runGit(t, created.Path, "rev-list", "--count", "main")); count != "1" {
+		t.Fatalf("local history changed after rejection: %s commits", count)
+	}
+}
+
+func TestDisconnectRemoteKeepsLocalHistoryAndRemoteRepository(t *testing.T) {
+	root, remote := testRepository(t)
+	service := NewService(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := service.DisconnectRemote(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := service.Status(context.Background())
+	if status.State != StateLocalOnly {
+		t.Fatalf("disconnected notebook was not marked local-only: %#v", status)
+	}
+	if strings.TrimSpace(runGit(t, root, "remote")) != "" {
+		t.Fatal("origin remained configured after disconnect")
+	}
+	if local, remoteHead := strings.TrimSpace(runGit(t, root, "rev-parse", "HEAD")), strings.TrimSpace(runGit(t, remote, "rev-parse", "main")); local != remoteHead {
+		t.Fatalf("disconnect changed repository history: local=%s remote=%s", local, remoteHead)
+	}
+}
+
 func TestSyncIntegratesRemoteOnlyChanges(t *testing.T) {
 	root, remote := testRepository(t)
 	other := filepath.Join(t.TempDir(), "other")

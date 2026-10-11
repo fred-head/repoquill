@@ -127,6 +127,54 @@ func registerNotebookWithoutActivation(metadataPath string, record notebookRecor
 	return writeNotebookRegistry(metadataPath, registry)
 }
 
+func removeManagedNotebookDirectory(baseDirectory, notebookID, localPath string) {
+	if notebookID == "" || filepath.Base(notebookID) != notebookID {
+		return
+	}
+	base, err := filepath.EvalSymlinks(baseDirectory)
+	if err != nil {
+		return
+	}
+	target := filepath.Join(base, notebookID)
+	providedPath, err := filepath.Abs(localPath)
+	if err != nil {
+		return
+	}
+	expectedPath, err := filepath.Abs(target)
+	if err != nil || filepath.Clean(providedPath) != filepath.Clean(expectedPath) {
+		return
+	}
+	info, err := os.Lstat(expectedPath)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return
+	}
+	_ = os.RemoveAll(expectedPath)
+}
+
+func replaceNotebookRemote(metadataPath, notebookID, remoteURL, branch, authType, keyID string) (notebookRecord, error) {
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
+	registry, err := loadNotebookRegistry(metadataPath)
+	if err != nil {
+		return notebookRecord{}, err
+	}
+	for index := range registry.Entries {
+		if registry.Entries[index].ID != notebookID {
+			continue
+		}
+		registry.Entries[index].RemoteURL = remoteURL
+		registry.Entries[index].Branch = branch
+		registry.Entries[index].AuthType = authType
+		registry.Entries[index].KeyID = keyID
+		registry.Entries[index].LastSyncedAt = ""
+		if err := writeNotebookRegistry(metadataPath, registry); err != nil {
+			return notebookRecord{}, err
+		}
+		return registry.Entries[index], nil
+	}
+	return notebookRecord{}, os.ErrNotExist
+}
+
 func findNotebook(metadataPath, notebookID string) (notebookRecord, error) {
 	notebookRegistryMu.Lock()
 	defer notebookRegistryMu.Unlock()
