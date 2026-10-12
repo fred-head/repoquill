@@ -1,53 +1,67 @@
-# Alpha 3 candidate ideas (archived plan)
+# Alpha 3 roadmap
 
-This file preserves roadmap material from the former root `AGENTS.md`. It is not a current commitment or reliable list of unfinished work: items may already be implemented, deferred, or dropped. Before planning from it, check the current `README.md`, `CHANGELOG.md`, `KNOWN-LIMITATIONS.md`, source, and tests.
+This is the complete Alpha 3 milestone set. The Git-free notebook reboot is
+inserted after Milestone 30 and before Milestone 31; it changes the product
+foundation without dropping the other Alpha 3 work. Statuses below distinguish
+shipped work from work that remains, is superseded by the reboot, or is
+explicitly deferred. Historical milestone requirements remain below so their
+decisions and acceptance criteria are not lost.
 
 ---
 
-# 46. Alpha 3 Roadmap
+# Alpha 3 implementation order
 
-Alpha 3 should extend deployment flexibility and maintainability without
-weakening RepoQuill's single-owner model, portable Git-backed data model, or
-existing local authentication modes.
+Alpha 3 continues the single-owner, self-hosted Markdown product. The approved
+Git-free reboot replaces the Git-backed storage and synchronization foundation
+between Milestones 30 and 31. See the [reboot roadbook](git-free-reboot.md) for
+its product contract and implementation phases.
 
-The recommended implementation order is:
+The original milestones and reboot have these current dispositions:
 
-1. split the oversized frontend application component,
-2. expose the running version clearly in the UI,
-3. establish expanded version-controlled user documentation,
-4. add direct OIDC authentication,
-5. add local-only notebooks,
-6. add managed SSH key rotation,
-7. add an optional document outline for long notes,
-8. improve code blocks with language selection, syntax highlighting, and copy,
-9. refresh safely opened notes after receiving external synchronized changes,
-10. correct document statistics so they reflect visible note content,
-11. keep the editor formatting toolbar visible while scrolling in the PWA,
-12. add a collapsible notebook sidebar for focused and narrow desktop layouts,
-13. make GFM task-list checkboxes directly operable with pointer, touch, and
-   keyboard input,
-14. design and, only after the portability and recovery gates pass, implement
-   optional encrypted notes and folders.
+| Work item | Status |
+| --- | --- |
+| M25 behavior-preserving frontend decomposition | Incomplete; continue as a focused maintainability task |
+| M26 expanded user documentation | Incomplete; complete as part of the reboot documentation phase |
+| M27 direct OIDC authentication | Deferred; retain as an Alpha 3 feature after the reboot |
+| M28 local-only Git notebooks | Shipped in the current Git-backed product; superseded by filesystem vaults in the reboot |
+| M29 managed SSH key rotation | Shipped in the current Git-backed product; removed with Git and SSH runtime support |
+| M30 visible application version | Shipped; keep |
+| Git-free notebook reboot | Inserted here, after M30 and before M31 |
+| M31 selective encryption | Deferred until the new storage, export, and recovery model is established |
+| M32 document outline | Shipped; keep |
+| M33 code block language and copy UX | Shipped; keep |
+| M34 collapsible notebook sidebar | Shipped; keep |
+| M35 accurate document statistics | Shipped; keep |
+| M36 refresh after external synchronization | Shipped for Git synchronization; obsolete after the reboot removes external sync |
+| M37 sticky editor toolbar | Shipped; keep |
+| M38 Markdown-aware paste UX | Shipped; keep |
+| M39 unambiguous internal-note link trigger | Shipped; keep |
+| M40 transient received-changes notification | Shipped for Git synchronization; obsolete after the reboot removes external sync |
+| M41 interactive task-list checkboxes | Shipped; keep |
+| M42 expired browser session cleanup | Shipped; keep |
 
-OIDC is the highest-priority user-facing Alpha 3 feature. The frontend split is
-listed first only as a risk-reducing prerequisite: it must remain a behavior-
-preserving refactor and must not delay OIDC through an architectural rewrite.
-Documentation may begin in parallel and must be updated as each feature lands.
+The reboot preserves all compatible shipped Alpha 3 features and keeps the
+uncompleted Alpha 3 work in the roadmap. Git-only milestones and sync-derived
+notifications are retained here as historical decisions, with their
+supersession stated explicitly. M31 requires a fresh threat-model review after
+the reboot; this roadmap does not authorize encryption implementation before
+that review.
 
 ## Milestone 25 - Behavior-preserving frontend decomposition
 
 Split the oversized `App.tsx` into focused components and hooks while retaining
-the existing React state and API architecture where practical.
+the existing React state and API architecture where practical. Re-scope
+remaining extractions to the Git-free vault product; workflows removed by the
+reboot are not extraction targets.
 
 Initial extraction candidates include:
 
-- notebook onboarding,
-- Manage Notebooks,
-- conflict resolution,
-- synchronization details,
+- vault creation/adoption and Manage Vaults,
+- version-checked save-conflict resolution,
 - Trash,
-- History,
-- Settings and authentication settings.
+- Settings and authentication settings,
+- search and navigation state where a small extraction reduces `App.tsx`
+  coupling.
 
 Requirements:
 
@@ -63,8 +77,8 @@ Completion criteria:
 - `App.tsx` primarily composes focused application areas instead of containing
   their complete implementations,
 - extracted areas remain independently understandable and testable,
-- existing frontend, end-to-end, mobile/PWA, authentication, and synchronization
-  behavior remains unchanged.
+- existing frontend, end-to-end, mobile/PWA, and authentication behavior remains
+  unchanged.
 
 ## Milestone 26 - Expanded user documentation
 
@@ -74,9 +88,10 @@ expanded documentation for users and self-hosting operators covering:
 - installation and upgrades,
 - first-time setup and everyday use,
 - local authentication, MFA, recovery, and disabled-auth mode,
-- notebook setup for GitHub, GitLab, Gitea, Forgejo, and generic Git servers,
-- synchronization states and conflict resolution,
+- vault creation, folder adoption, and migration from a Git-backed release,
+- version-checked save conflicts and their recovery choices,
 - backup, restore, and disaster recovery,
+- portable vault export and its distinction from a backup service,
 - PWA installation and limitations,
 - reverse proxy and troubleshooting guidance,
 - OIDC after Milestone 27 is implemented.
@@ -88,9 +103,9 @@ maintained copy of essential operational or recovery documentation.
 
 Completion criteria:
 
-- a new user can deploy, secure, connect, use, back up, and troubleshoot
+- a new user can deploy, secure, use, back up, and troubleshoot
   RepoQuill without reading milestone specifications,
-- documentation distinguishes saved, committed, and remotely synchronized data,
+- documentation distinguishes saved server state from unsaved browser text,
 - security-sensitive guidance matches the exact released behavior,
 - README links clearly to the expanded documentation.
 
@@ -225,36 +240,40 @@ Completion criteria:
 
 ## Milestone 31 - Optional encrypted notes and folders
 
-Investigate and add deliberate opt-in encryption for selected notes and folders.
-This milestone requires an explicit design and threat-model review before code
-is implemented because opaque ciphertext changes RepoQuill's ordinary-Markdown
-portability guarantee.
+This milestone remains deferred until the Git-free storage, export, and
+operator-recovery model is established. It requires an explicit design and
+threat-model review before code is implemented because opaque ciphertext
+changes RepoQuill's ordinary-Markdown portability guarantee. The goal is
+deliberate extra protection for selected notes or folders, independent of
+authentication and MFA.
 
 Design gates:
 
-- define whether encryption protects Git remotes and backups, the server's disk,
-  or also a compromised running RepoQuill server; do not claim protections the
-  chosen design cannot provide,
+- define whether encryption protects copied vault files and operator backups,
+  the server's disk, or also a compromised running RepoQuill server; server-side
+  decryption cannot protect plaintext from a compromised running server,
 - select a documented, interoperable encrypted file format that can be decrypted
   with maintained tools outside RepoQuill; recovery must never require the
   RepoQuill application itself,
 - document which metadata remains visible, including filenames, folder layout,
-  file sizes, modification patterns, Git history, and asset relationships,
+  file sizes, modification patterns, and asset relationships,
 - define password/key creation, unlocking, rotation, backup, export, and loss
-  recovery before encrypted content can be created,
-- decide how encrypted images/assets, search, History, Trash, conflict
-  resolution, PWA behavior, autosave, and Git synchronization work without
-  leaking plaintext,
-- obtain an explicit product decision for the limited portability exception:
-  encrypted content remains ordinary repository files but is not directly
-  readable as plain Markdown until decrypted with compatible external tooling.
+  recovery separately from the login password and MFA configuration,
+- decide whether protection is selected only at note/folder creation or can be
+  applied to existing files; conversion cannot retract plaintext copies already
+  retained in operator backups,
+- decide how encrypted images/assets, search, Trash, save conflicts, PWA
+  behavior, autosave, and ZIP export work without leaking plaintext,
+- obtain an explicit product decision for the portability exception: encrypted
+  content remains ordinary vault files but is not directly readable as plain
+  Markdown until decrypted with compatible external tooling.
 
 Security requirements:
 
 - use a focused, maintained cryptographic library and established authenticated
   encryption; never design custom cryptography or silently downgrade encryption,
-- never commit plaintext copies, keys, passwords, recovery material, editor
-  caches, previews, search indexes, temporary files, or logs to the notebook,
+- never save plaintext copies, keys, passwords, recovery material, editor
+  caches, previews, search indexes, temporary files, or logs into the vault,
 - keep encrypted and unencrypted content clearly distinguishable and require
   deliberate confirmation when changing protection state,
 - fail closed on corrupt data, missing keys, authentication failure, interrupted
@@ -263,20 +282,19 @@ Security requirements:
 - prevent sensitive plaintext from entering browser-persistent storage or the
   service-worker cache,
 - cover key handling, path confinement, tampering, rollback, mixed encrypted and
-  plain folders, backups, conflicts, and recovery with adversarial tests and an
-  independent security review.
+  plain folders, operator backups, conflicts, and recovery with adversarial
+  tests and an independent security review.
 
 Completion criteria:
 
 - selected notes and complete folder trees can be encrypted, unlocked, edited,
-  synchronized, backed up, restored, and deliberately decrypted without data
-  loss,
+  backed up, restored, and deliberately decrypted without data loss,
 - an external documented tool can recover the Markdown and assets without
   RepoQuill,
 - losing the encryption secret is clearly explained as unrecoverable and cannot
   silently damage unencrypted notebooks,
-- encrypted content never appears in plaintext in Git, application metadata,
-  logs, caches, recovery artifacts, or unencrypted assets,
+- encrypted content never appears in plaintext in application metadata, logs,
+  caches, recovery artifacts, or unencrypted assets,
 - the feature does not ship until its threat model, format, recovery procedure,
   migration behavior, and security review are complete.
 
@@ -397,8 +415,8 @@ Requirements:
   desktop sidebar as a replacement for mobile navigation,
 - use accessible labels, visible focus, suitable touch targets, and state
   semantics such as `aria-expanded`,
-- avoid hiding save, synchronization, authentication, or conflict status along
-  with the navigation.
+- avoid hiding save, server-availability, authentication, or conflict status
+  along with the navigation.
 
 Completion criteria:
 

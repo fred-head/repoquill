@@ -24,8 +24,6 @@ notebook_root="$(cd -- "${requested_notebook}" && pwd -P)"
 development_data="${project_root}/.repoquill-data"
 app_directory="${development_data}/app"
 notebooks_directory="${development_data}/notebooks"
-keys_directory="${development_data}/keys"
-known_hosts_file="${keys_directory}/known_hosts"
 go_build_cache="${GOCACHE:-${HOME}/.cache/go-build}"
 go_module_cache="${GOMODCACHE:-${HOME}/go/pkg/mod}"
 go_temp_directory="${GOTMPDIR:-${HOME}/.cache/repoquill/go-tmp}"
@@ -33,13 +31,9 @@ go_temp_directory="${GOTMPDIR:-${HOME}/.cache/repoquill/go-tmp}"
 mkdir -p -- \
   "${app_directory}" \
   "${notebooks_directory}" \
-  "${keys_directory}" \
   "${go_build_cache}" \
   "${go_module_cache}" \
   "${go_temp_directory}"
-touch -- "${known_hosts_file}"
-chmod 700 -- "${keys_directory}"
-chmod 600 -- "${known_hosts_file}"
 
 for command_name in go node npm; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
@@ -74,14 +68,12 @@ echo "Starting RepoQuill backend on http://localhost:8080"
 echo "Notebook: ${notebook_root}"
 (
   cd -- "${project_root}"
-  exec env REPOQUILL_REPOSITORY="${notebook_root}" \
+  exec env REPOQUILL_DEV_VAULT_PATH="${notebook_root}" \
   REPOQUILL_NOTEBOOKS_DIR="${notebooks_directory}" \
   REPOQUILL_NOTEBOOK_METADATA="${app_directory}/notebooks.json" \
   REPOQUILL_AUTH_MODE="${REPOQUILL_AUTH_MODE:-local}" \
   REPOQUILL_AUTH_METADATA="${app_directory}/auth.db" \
   REPOQUILL_SESSION_COOKIE_SECURE="false" \
-  REPOQUILL_KEYS_DIR="${keys_directory}" \
-  REPOQUILL_SSH_KNOWN_HOSTS="${known_hosts_file}" \
   GOCACHE="${go_build_cache}" \
   GOMODCACHE="${go_module_cache}" \
   GOTMPDIR="${go_temp_directory}" \

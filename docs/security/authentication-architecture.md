@@ -1,11 +1,10 @@
 # RepoQuill single-owner authentication architecture
 
-Status: Milestone 19 architecture decision. Password setup, persistent sessions,
-CSRF/throttling, browser/PWA reauthentication, and password/session
-administration, optional TOTP, and explicit disabled-mode migration are
-implemented through M19P9. The completed review and residual-risk record lives
-in [m19-security-review.md](m19-security-review.md). Alpha 2 must not be
-published unless the complete M19 CI and review gate passes for its exact tag.
+This document describes the current single-owner authentication boundary.
+Password setup, persistent sessions, CSRF/throttling, browser/PWA
+reauthentication, password/session administration, optional TOTP, and explicit
+disabled-mode configuration are implemented. The completed security review and
+residual-risk record lives in [m19-security-review.md](m19-security-review.md).
 
 ## Decision and scope
 
@@ -41,36 +40,36 @@ RepoQuill HTTP authentication boundary
        +------+------------------+
        |                         |
        v                         v
-authentication metadata      notebook/Git services
-/data/app/auth.db             /data/notebooks, /data/keys
+authentication metadata      vault filesystem APIs
+/data/app/auth.db             /data/notebooks
 ```
 
-The design protects notebook, Git, SSH, maintenance, and management APIs from
-unauthenticated network access. It assumes an attacker can send arbitrary HTTP
-requests, spoof forwarding headers, steal or replay submitted values, attempt
-brute force and setup takeover, trigger restarts, and cause interrupted writes.
-It does not protect a host administrator or an attacker with access to the
-persistent volume, process memory, container runtime, or TLS private keys.
+The design protects vault, maintenance, and management APIs from unauthenticated
+network access. It assumes an attacker can send arbitrary HTTP requests, spoof
+forwarding headers, steal or replay submitted values, attempt brute force and
+setup takeover, trigger restarts, and cause interrupted writes. It does not
+protect a host administrator or an attacker with access to the persistent
+volume, process memory, container runtime, or TLS private keys.
 
 HTTPS remains mandatory for Internet-facing deployments. Forwarded client IP
 and scheme information is untrusted unless the direct peer belongs to an
-explicit trusted-proxy allowlist introduced in M19P4.
+explicitly configured trusted-proxy allowlist.
 
 ## HTTP surface
 
-The Phase 3 deny-by-default boundary will classify routes as follows:
+The deny-by-default HTTP boundary classifies routes as follows:
 
 Public minimum:
 
 - `GET /api/health`, containing liveness and application version only,
 - static application-shell files required to render setup/login,
-- narrowly scoped setup, login, MFA challenge, and auth-status
-  routes; these must expose no notebook, Git, SSH, filesystem, or host metadata.
+- narrowly scoped setup, login, MFA challenge, and auth-status routes; these
+  expose no vault, filesystem, or host metadata.
 
 Protected:
 
-- every other `/api/` route, including notebooks, notes, tree, files, assets,
-  search, Git sync/status, SSH keys/trust, settings, cleanup, and maintenance.
+- every other `/api/` route, including vaults, notes, tree, files, assets,
+  search, settings, cleanup, and maintenance.
 
 GET and HEAD must not mutate authentication or application state. Missing or
 expired API authentication returns stable JSON `401`, never an HTML redirect.
@@ -90,10 +89,10 @@ The database is limited to:
 - security events that contain neither credentials nor note content,
 - versioned migration records.
 
-It must never contain Markdown, asset bytes, notebook trees, Git repositories,
+It must never contain Markdown, asset bytes, vault trees, Git repositories,
 SSH private keys, remote tokens, password plaintext, session plaintext, TOTP
 codes, or recovery-code plaintext. Deleting it can remove RepoQuill access
-configuration but cannot make the ordinary Git-backed notebooks unreadable.
+configuration but cannot make ordinary Markdown vaults unreadable.
 
 ## Migration and recovery model
 
@@ -109,6 +108,12 @@ and MFA recovery commands require filesystem/container administration. Recovery
 changes authentication metadata only; it never moves, encrypts, deletes, or
 rewrites notebook repositories.
 
+## Authentication implementation history
+
+The following M19 entries record how the current authentication boundary was
+introduced. Git-specific examples describe the former product and are not part
+of the current runtime API.
+
 M19P1 initializes and validates this metadata service. M19P2 adds the
 operator-controlled one-time bootstrap, versioned Argon2id credential, and a
 restricted first-run boundary that blocks all non-setup APIs. M19P3 uses SCS
@@ -121,7 +126,7 @@ development must explicitly set `REPOQUILL_SESSION_COOKIE_SECURE=false`.
 
 The public M19P3 surface is limited to the static shell, liveness, setup,
 login, and authentication status. Missing, expired, and revoked sessions receive
-`401` with `authentication_required`; they are not reported as Git failures.
+`401` with `authentication_required`.
 M19P4 adds a random synchronizer token bound to each server-side session,
 Origin/Referer enforcement, bounded progressive login throttling, hashed client
 references in security events, and explicit trusted-proxy CIDRs. Forwarded

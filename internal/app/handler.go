@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -24,7 +23,6 @@ import (
 
 	"github.com/fred-head/repoquill/internal/auth"
 	"github.com/fred-head/repoquill/internal/files"
-	gitrepo "github.com/fred-head/repoquill/internal/git"
 	frontend "github.com/fred-head/repoquill/web"
 )
 
@@ -53,9 +51,9 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		version = strings.TrimSpace(versions[0])
 	}
 	metadataPath := os.Getenv("REPOQUILL_NOTEBOOK_METADATA")
-	keysDirectory := os.Getenv("REPOQUILL_KEYS_DIR")
-	knownHostsPath := os.Getenv("REPOQUILL_SSH_KNOWN_HOSTS")
-	hostTrustService := gitrepo.NewHostTrustService(knownHostsPath, logger)
+	if err := migrateLegacyNotebookRegistry(metadataPath); err != nil {
+		return nil, fmt.Errorf("migrate legacy vault registry: %w", err)
+	}
 	requestIdentity := auth.NewRequestIdentity(nil)
 	var loginThrottle *auth.LoginThrottle
 	if authService != nil {
@@ -85,50 +83,12 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			activeLoadErr = nil
 		}
 	}
-	gitService := gitrepo.NewService(repositoryRoot, logger)
-	if activeLoadErr == nil && activeRecord.AuthType == "managed-ssh" {
-		_, sshCommand, resolveErr := gitrepo.ResolveManagedSSH(keysDirectory, activeRecord.KeyID, knownHostsPath)
-		if resolveErr != nil {
-			return nil, fmt.Errorf("configure managed notebook SSH key: %w", resolveErr)
-		}
-		gitService = gitrepo.NewManagedService(repositoryRoot, sshCommand, logger)
-	} else if activeLoadErr == nil && activeRecord.AuthType == "existing-server-ssh" {
-		gitService = gitrepo.NewManagedService(repositoryRoot, gitrepo.SSHCommand("", knownHostsPath), logger)
-	}
-	if activeLoadErr == nil {
-		gitService.RestoreLastSyncedAt(activeRecord.LastSyncedAt)
-		gitService.SetRemoteBranch(activeRecord.Branch)
-	}
 	var activeMu sync.RWMutex
 	var notebookSwitchMu sync.Mutex
 	currentRepository := func() *files.Repository {
 		activeMu.RLock()
 		defer activeMu.RUnlock()
 		return repository
-	}
-	currentGit := func() *gitrepo.Service {
-		activeMu.RLock()
-		defer activeMu.RUnlock()
-		return gitService
-	}
-	currentGitContext := func() (*gitrepo.Service, notebookRecord) {
-		activeMu.RLock()
-		defer activeMu.RUnlock()
-		return gitService, activeRecord
-	}
-	recordSuccessfulSync := func(record notebookRecord, status gitrepo.Status) {
-		if record.ID == "" || status.LastSyncedAt == "" {
-			return
-		}
-		if err := recordNotebookSync(metadataPath, record.ID, status.LastSyncedAt); err != nil {
-			logger.Warn("persist last successful synchronization failed", "notebook", record.ID, "error", err)
-			return
-		}
-		activeMu.Lock()
-		if activeRecord.ID == record.ID {
-			activeRecord.LastSyncedAt = status.LastSyncedAt
-		}
-		activeMu.Unlock()
 	}
 	currentNotebookName := func() string {
 		activeMu.RLock()
@@ -615,7 +575,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		items := make([]map[string]string, 0, len(registry.Entries))
 		for _, notebook := range registry.Entries {
-			items = append(items, map[string]string{"id": notebook.ID, "name": notebook.Name, "remoteUrl": notebook.RemoteURL, "branch": notebook.Branch, "authType": notebook.AuthType, "keyId": notebook.KeyID})
+			items = append(items, map[string]string{"id": notebook.ID, "name": notebook.Name})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"activeId": registry.ActiveID, "notebooks": items})
 	})
@@ -636,25 +596,12 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook files are unavailable"})
 			return
 		}
-		sshCommand := ""
-		if record.AuthType == "managed-ssh" {
-			_, sshCommand, err = gitrepo.ResolveManagedSSH(keysDirectory, record.KeyID, knownHostsPath)
-			if err != nil {
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook SSH key is unavailable"})
-				return
-			}
-		} else if record.AuthType == "existing-server-ssh" {
-			sshCommand = gitrepo.SSHCommand("", knownHostsPath)
-		}
 		if err := setActiveNotebook(metadataPath, record.ID); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook could not be activated"})
 			return
 		}
 		activeMu.Lock()
 		repository = nextRepository
-		gitService = gitrepo.NewManagedService(record.LocalPath, sshCommand, logger)
-		gitService.RestoreLastSyncedAt(record.LastSyncedAt)
-		gitService.SetRemoteBranch(record.Branch)
 		activeRecord = record
 		activeNotebookName = record.Name
 		activeMu.Unlock()
@@ -715,31 +662,39 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		} else {
 			writeState, writeMessage = "failed", "Write access cannot be checked until local files are available"
 		}
-		sshCommand := ""
-		if record.AuthType == "managed-ssh" {
-			_, sshCommand, err = gitrepo.ResolveManagedSSH(keysDirectory, record.KeyID, knownHostsPath)
-		} else if record.AuthType == "existing-server-ssh" {
-			sshCommand = gitrepo.SSHCommand("", knownHostsPath)
-		}
-		connectionState, connectionMessage := "local_only", "This notebook is stored and versioned locally"
+		writeJSON(w, http.StatusOK, map[string]any{"localFiles": map[string]string{"state": localState, "message": localMessage}, "writeAccess": map[string]string{"state": writeState, "message": writeMessage}})
+	})
+	mux.HandleFunc("GET /api/notebooks/{notebookID}/export", func(w http.ResponseWriter, r *http.Request) {
+		record, err := findNotebook(metadataPath, r.PathValue("notebookID"))
 		if err != nil {
-			connectionState, connectionMessage = "failed", "The assigned SSH key is unavailable"
-		} else if r.URL.Query().Get("remote") == "true" && record.RemoteURL != "" {
-			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-			defer cancel()
-			connection := gitrepo.TestConnection(ctx, record.RemoteURL, record.Branch, sshCommand, logger)
-			connectionState, connectionMessage = connection.State, connection.Message
+			if errors.Is(err, os.ErrNotExist) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
+			} else {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook could not be exported"})
+			}
+			return
 		}
-		statusContext, statusCancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer statusCancel()
-		service := gitrepo.NewManagedService(record.LocalPath, sshCommand, logger)
-		service.RestoreLastSyncedAt(record.LastSyncedAt)
-		service.SetRemoteBranch(record.Branch)
-		if active, activeErr := loadActiveNotebook(metadataPath); activeErr == nil && active.ID == record.ID {
-			service = currentGit()
+		repository, err := files.NewRepository(record.LocalPath)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook files are unavailable"})
+			return
 		}
-		status := service.Status(statusContext)
-		writeJSON(w, http.StatusOK, map[string]any{"localFiles": map[string]string{"state": localState, "message": localMessage}, "writeAccess": map[string]string{"state": writeState, "message": writeMessage}, "connection": map[string]string{"state": connectionState, "message": connectionMessage}, "pendingWork": map[string]string{"state": string(status.State), "message": status.Message}, "lastSyncedAt": record.LastSyncedAt})
+		if err := repository.ValidateArchive(); err != nil {
+			if errors.Is(err, files.ErrExportTooLarge) || errors.Is(err, files.ErrExportTooManyEntries) {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "vault is too large to export in one archive"})
+			} else {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "vault could not be inspected for export"})
+			}
+			return
+		}
+		filename := strings.TrimSpace(record.Name) + ".zip"
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if err := repository.WriteArchive(w); err != nil {
+			logger.Warn("notebook export stream failed", "notebook", record.ID, "error", err)
+		}
 	})
 	mux.HandleFunc("DELETE /api/notebooks/{notebookID}", func(w http.ResponseWriter, r *http.Request) {
 		notebookID := r.PathValue("notebookID")
@@ -785,10 +740,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			if baseErr == nil {
 				base, baseErr = filepath.EvalSymlinks(base)
 			}
-			resolvedTarget, resolveErr := filepath.EvalSymlinks(target)
-			relative, relErr := filepath.Rel(base, resolvedTarget)
-			info, statErr := os.Lstat(target)
-			if notebookBase == "" || baseErr != nil || targetErr != nil || resolveErr != nil || relErr != nil || relative != record.ID || statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			if notebookBase == "" || baseErr != nil || targetErr != nil || !isManagedNotebookDirectory(base, target) {
 				if wasActive {
 					_ = registerActiveNotebook(metadataPath, record)
 				} else {
@@ -811,7 +763,6 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			emptyRepository, _ := files.NewRepository("")
 			activeMu.Lock()
 			repository = emptyRepository
-			gitService = gitrepo.NewService("", logger)
 			activeRecord = notebookRecord{}
 			activeNotebookName = "Notebooks"
 			activeMu.Unlock()
@@ -872,57 +823,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		if !decodeJSON(w, r, &input) {
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		safetyPoint, err := currentGit().PreserveFileVersion(ctx, input.Path)
-		if err != nil {
-			writeGitConflictError(w, err)
-			return
-		}
 		markdown, err := currentRepository().WriteMarkdown(input.Path, input.Content, input.ExpectedVersion)
-		if err != nil {
-			writeRepositoryError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"file": map[string]string{"path": input.Path, "content": markdown.Content, "version": markdown.Version}, "safetyPoint": safetyPoint})
-	})
-	mux.HandleFunc("GET /api/repository/history", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
-		history, err := currentGit().NoteHistoryWithStatus(ctx, r.URL.Query().Get("path"))
-		if err != nil {
-			writeHistoryError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, history)
-	})
-	mux.HandleFunc("GET /api/repository/history/version", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
-		version, err := currentGit().NoteVersion(ctx, r.URL.Query().Get("path"), r.URL.Query().Get("version"))
-		if err != nil {
-			writeHistoryError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, version)
-	})
-	mux.HandleFunc("POST /api/repository/history/restore", func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			Path            string `json:"path"`
-			VersionID       string `json:"versionId"`
-			ExpectedVersion string `json:"expectedVersion"`
-		}
-		if !decodeJSON(w, r, &input) {
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
-		version, err := currentGit().NoteVersion(ctx, input.Path, input.VersionID)
-		if err != nil {
-			writeHistoryError(w, err)
-			return
-		}
-		markdown, err := currentRepository().WriteMarkdown(input.Path, version.Content, input.ExpectedVersion)
 		if err != nil {
 			writeRepositoryError(w, err)
 			return
@@ -1071,7 +972,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		w.Header().Set("Content-Type", asset.ContentType)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(asset.Content)
 	})
@@ -1155,74 +1056,6 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		writeJSON(w, http.StatusOK, result)
 	})
-	mux.HandleFunc("GET /api/repository/git/status", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
-		writeJSON(w, http.StatusOK, currentGit().Status(ctx))
-	})
-	mux.HandleFunc("POST /api/repository/git/sync", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-		defer cancel()
-		service, record := currentGitContext()
-		result := service.Sync(ctx)
-		if result.State == gitrepo.StateSynced {
-			recordSuccessfulSync(record, service.Status(ctx))
-		}
-		writeJSON(w, http.StatusOK, result)
-	})
-	mux.HandleFunc("POST /api/repository/git/sync-background", func(w http.ResponseWriter, _ *http.Request) {
-		service, record := currentGitContext()
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			result := service.Sync(ctx)
-			recordSuccessfulSync(record, result)
-			logger.Info("background Git sync completed", "state", result.State)
-		}()
-		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
-	})
-	mux.HandleFunc("GET /api/repository/git/conflicts", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		overview, err := currentGit().Conflicts(ctx)
-		if err != nil {
-			writeGitConflictError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, overview)
-	})
-	mux.HandleFunc("GET /api/repository/git/conflict-version", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		content, contentType, err := currentGit().ConflictBlob(ctx, r.URL.Query().Get("path"), r.URL.Query().Get("side"))
-		if err != nil {
-			writeGitConflictError(w, err)
-			return
-		}
-		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusOK)
-		// #nosec G705 -- conflictContentType permits images or application/octet-stream; global nosniff prevents HTML execution.
-		_, _ = w.Write(content)
-	})
-	mux.HandleFunc("POST /api/repository/git/conflicts/resolve", func(w http.ResponseWriter, r *http.Request) {
-		var input gitrepo.ConflictResolution
-		if !decodeJSON(w, r, &input) {
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-		defer cancel()
-		service, record := currentGitContext()
-		result, err := service.ResolveConflicts(ctx, input)
-		if err != nil {
-			writeGitConflictError(w, err)
-			return
-		}
-		if result.State == gitrepo.StateSynced {
-			recordSuccessfulSync(record, service.Status(ctx))
-		}
-		writeJSON(w, http.StatusOK, result)
-	})
 	mux.HandleFunc("POST /api/notebooks/local", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
 			Name string `json:"name"`
@@ -1237,533 +1070,94 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		notebookSwitchMu.Lock()
 		defer notebookSwitchMu.Unlock()
-		notebookBase := os.Getenv("REPOQUILL_NOTEBOOKS_DIR")
+		notebookBase := strings.TrimSpace(os.Getenv("REPOQUILL_NOTEBOOKS_DIR"))
 		if notebookBase == "" || metadataPath == "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "local notebook creation is not configured on this server"})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "vault creation is not configured on this server"})
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		created, createErr := gitrepo.InitializeLocal(ctx, notebookBase, logger)
-		if createErr != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "local Git notebook could not be initialized"})
+		id, localPath, err := createNotebookDirectory(notebookBase)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "vault folder could not be created"})
 			return
 		}
-		createdRepository, repositoryErr := files.NewRepository(created.Path)
-		if repositoryErr != nil {
-			removeManagedNotebookDirectory(notebookBase, created.ID, created.Path)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "local notebook could not be opened"})
+		record := notebookRecord{ID: id, Name: input.Name, LocalPath: localPath}
+		createdRepository, err := files.NewRepository(localPath)
+		if err != nil {
+			removeManagedNotebookDirectory(notebookBase, id, localPath)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "vault folder could not be opened"})
 			return
 		}
-		record := notebookRecord{ID: created.ID, Name: input.Name, LocalPath: created.Path, Branch: created.Branch}
 		if err := registerActiveNotebook(metadataPath, record); err != nil {
-			removeManagedNotebookDirectory(notebookBase, created.ID, created.Path)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "local notebook could not be registered"})
+			removeManagedNotebookDirectory(notebookBase, id, localPath)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "vault could not be registered"})
 			return
 		}
 		activeMu.Lock()
 		repository = createdRepository
-		gitService = gitrepo.NewManagedService(created.Path, "", logger)
-		gitService.SetRemoteBranch("")
 		activeRecord = record
 		activeNotebookName = record.Name
 		activeMu.Unlock()
 		writeJSON(w, http.StatusCreated, record)
 	})
-	mux.HandleFunc("POST /api/notebooks/{notebookID}/remote", func(w http.ResponseWriter, r *http.Request) {
-		notebookSwitchMu.Lock()
-		defer notebookSwitchMu.Unlock()
+	mux.HandleFunc("POST /api/notebooks/adopt", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
-			RepositoryURL string `json:"repositoryUrl"`
-			Branch        string `json:"branch"`
-			AuthType      string `json:"authType"`
-			KeyID         string `json:"keyId"`
-		}
-		if !decodeJSON(w, r, &input) {
-			return
-		}
-		input.RepositoryURL = strings.TrimSpace(input.RepositoryURL)
-		input.Branch = strings.TrimSpace(input.Branch)
-		if input.AuthType == "" {
-			input.AuthType = "existing-server-ssh"
-		}
-		if input.AuthType != "managed-ssh" && input.AuthType != "existing-server-ssh" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported Git authentication type"})
-			return
-		}
-		if err := validateNotebookRemoteURL(input.RepositoryURL); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		if err := gitrepo.ValidateBranch(input.Branch); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		record, findErr := findNotebook(metadataPath, r.PathValue("notebookID"))
-		if findErr != nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
-			return
-		}
-		if record.RemoteURL != "" {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "this notebook already has a connected remote"})
-			return
-		}
-		sshCommand := ""
-		if input.AuthType == "managed-ssh" {
-			registry, registryErr := loadNotebookRegistry(metadataPath)
-			if registryErr != nil {
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "managed SSH key assignments could not be verified"})
-				return
-			}
-			for _, notebook := range registry.Entries {
-				if notebook.ID != record.ID && notebook.AuthType == "managed-ssh" && notebook.KeyID == input.KeyID {
-					writeJSON(w, http.StatusConflict, map[string]string{"error": "managed SSH key is already assigned to notebook " + notebook.Name})
-					return
-				}
-			}
-			_, sshCommand, findErr = gitrepo.ResolveManagedSSH(keysDirectory, input.KeyID, knownHostsPath)
-			if findErr != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "managed SSH key is unavailable"})
-				return
-			}
-		} else {
-			sshCommand = gitrepo.SSHCommand("", knownHostsPath)
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-		defer cancel()
-		connection := gitrepo.TestConnection(ctx, input.RepositoryURL, input.Branch, sshCommand, logger)
-		if connection.State != "success" {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": connection.Message, "state": connection.State, "message": connection.Message})
-			return
-		}
-		branch := connection.Branch
-		service := gitrepo.NewManagedService(record.LocalPath, sshCommand, logger)
-		service.SetRemoteBranch(record.Branch)
-		if active, activeErr := loadActiveNotebook(metadataPath); activeErr == nil && active.ID == record.ID {
-			service = currentGit()
-		}
-		branch, connectErr := service.ConnectRemote(ctx, input.RepositoryURL, branch, sshCommand)
-		if connectErr != nil {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": connectErr.Error()})
-			return
-		}
-		updated, updateErr := replaceNotebookRemote(metadataPath, record.ID, input.RepositoryURL, branch, input.AuthType, input.KeyID)
-		if updateErr != nil {
-			if _, rollbackErr := service.DisconnectRemote(ctx); rollbackErr != nil {
-				logger.Error("remote connection rollback failed", "notebook", record.ID, "error", rollbackErr)
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "remote was connected but notebook settings could not be saved or rolled back"})
-				return
-			}
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "remote was connected but notebook settings could not be saved; the remote connection was rolled back"})
-			return
-		}
-		if active, activeErr := loadActiveNotebook(metadataPath); activeErr == nil && active.ID == updated.ID {
-			activeMu.Lock()
-			activeRecord = updated
-			activeMu.Unlock()
-		}
-		writeJSON(w, http.StatusOK, updated)
-	})
-	mux.HandleFunc("POST /api/notebooks/{notebookID}/remote/disconnect", func(w http.ResponseWriter, r *http.Request) {
-		notebookSwitchMu.Lock()
-		defer notebookSwitchMu.Unlock()
-		var input struct {
-			Confirmed bool `json:"confirmed"`
-		}
-		if !decodeJSON(w, r, &input) {
-			return
-		}
-		if !input.Confirmed {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "confirm that remote-only changes may remain on the remote"})
-			return
-		}
-		record, findErr := findNotebook(metadataPath, r.PathValue("notebookID"))
-		if findErr != nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
-			return
-		}
-		if record.RemoteURL == "" {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "this notebook is already local-only"})
-			return
-		}
-		service := gitrepo.NewManagedService(record.LocalPath, "", logger)
-		service.SetRemoteBranch(record.Branch)
-		if active, activeErr := loadActiveNotebook(metadataPath); activeErr == nil && active.ID == record.ID {
-			service = currentGit()
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-		defer cancel()
-		status, disconnectErr := service.DisconnectRemote(ctx)
-		if disconnectErr != nil {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": disconnectErr.Error()})
-			return
-		}
-		updated, updateErr := replaceNotebookRemote(metadataPath, record.ID, "", status.Branch, "", "")
-		if updateErr != nil {
-			restoreSSH := ""
-			var restoreCredentialErr error
-			if record.AuthType == "managed-ssh" {
-				_, restoreSSH, restoreCredentialErr = gitrepo.ResolveManagedSSH(keysDirectory, record.KeyID, knownHostsPath)
-			} else if record.AuthType == "existing-server-ssh" {
-				restoreSSH = gitrepo.SSHCommand("", knownHostsPath)
-			}
-			if restoreCredentialErr != nil {
-				logger.Error("remote connection restore credentials unavailable", "notebook", record.ID, "error", restoreCredentialErr)
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook settings could not be saved and the remote connection could not be restored"})
-				return
-			}
-			if _, restoreErr := service.ConnectRemote(ctx, record.RemoteURL, record.Branch, restoreSSH); restoreErr != nil {
-				logger.Error("remote connection restore failed", "notebook", record.ID, "error", restoreErr)
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook settings could not be saved and the remote connection could not be restored"})
-				return
-			}
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook settings could not be saved; the remote connection was restored"})
-			return
-		}
-		activeMu.Lock()
-		if activeRecord.ID == updated.ID {
-			activeRecord = updated
-			gitService.SetSSHCommand("")
-			gitService.SetRemoteBranch("")
-		}
-		activeMu.Unlock()
-		writeJSON(w, http.StatusOK, updated)
-	})
-	mux.HandleFunc("POST /api/notebooks", func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			Name          string `json:"name"`
-			RepositoryURL string `json:"repositoryUrl"`
-			Branch        string `json:"branch"`
-			AuthType      string `json:"authType"`
-			KeyID         string `json:"keyId"`
+			Name   string `json:"name"`
+			Folder string `json:"folder"`
 		}
 		if !decodeJSON(w, r, &input) {
 			return
 		}
 		input.Name = strings.TrimSpace(input.Name)
-		input.Branch = strings.TrimSpace(input.Branch)
-		if input.AuthType == "" {
-			input.AuthType = "existing-server-ssh"
-		}
-		if input.AuthType != "managed-ssh" && input.AuthType != "existing-server-ssh" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported Git authentication type"})
-			return
-		}
-		if err := validateNotebookRemoteURL(input.RepositoryURL); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		if err := gitrepo.ValidateBranch(input.Branch); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		if input.Name == "" || len(input.Name) > 100 || strings.ContainsAny(input.Name, "\r\n\x00") {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "notebook name is required"})
-			return
-		}
-		notebookBase := os.Getenv("REPOQUILL_NOTEBOOKS_DIR")
-		if notebookBase == "" || metadataPath == "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook cloning is not configured on this server"})
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-		defer cancel()
-		sshCommand := ""
-		if input.AuthType == "managed-ssh" {
-			if registry, registryErr := loadNotebookRegistry(metadataPath); registryErr == nil {
-				for _, notebook := range registry.Entries {
-					if notebook.KeyID == input.KeyID {
-						writeJSON(w, http.StatusConflict, map[string]string{"error": "managed SSH key is already assigned to notebook " + notebook.Name})
-						return
-					}
-				}
-			} else if !errors.Is(registryErr, os.ErrNotExist) {
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "managed SSH key assignments could not be verified"})
-				return
-			}
-			_, managedCommand, resolveErr := gitrepo.ResolveManagedSSH(keysDirectory, input.KeyID, knownHostsPath)
-			if resolveErr != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "managed SSH key is unavailable"})
-				return
-			}
-			sshCommand = managedCommand
-		} else {
-			sshCommand = gitrepo.SSHCommand("", knownHostsPath)
-		}
-		connection := gitrepo.TestConnection(ctx, input.RepositoryURL, input.Branch, sshCommand, logger)
-		if connection.State != "success" {
-			writeJSON(w, http.StatusBadGateway, map[string]string{
-				"error":   connection.Message,
-				"state":   connection.State,
-				"message": connection.Message,
-			})
-			return
-		}
-		cloned, cloneErr := gitrepo.CloneManaged(ctx, notebookBase, input.RepositoryURL, input.Branch, sshCommand, logger)
-		if cloneErr != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Git clone failed. Check the repository URL, branch, network, SSH host verification, and credentials."})
-			return
-		}
-		clonedRepository, repositoryErr := files.NewRepository(cloned.Path)
-		if repositoryErr != nil {
-			_ = os.RemoveAll(cloned.Path)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cloned notebook could not be opened"})
-			return
-		}
-		record := notebookRecord{ID: cloned.ID, Name: input.Name, LocalPath: cloned.Path, RemoteURL: strings.TrimSpace(input.RepositoryURL), Branch: cloned.Branch, AuthType: input.AuthType, KeyID: input.KeyID}
-		if err := registerActiveNotebook(metadataPath, record); err != nil {
-			base, _ := filepath.Abs(notebookBase)
-			target, _ := filepath.Abs(cloned.Path)
-			if relative, relErr := filepath.Rel(base, target); relErr == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-				_ = os.RemoveAll(target)
-			}
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cloned notebook could not be registered"})
+		input.Folder = strings.TrimSpace(input.Folder)
+		if input.Name == "" || len(input.Name) > 100 || strings.ContainsAny(input.Name, "\r\n\x00") || input.Folder == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a valid vault name and folder are required"})
 			return
 		}
 		notebookSwitchMu.Lock()
+		defer notebookSwitchMu.Unlock()
+		notebookBase := strings.TrimSpace(os.Getenv("REPOQUILL_NOTEBOOKS_DIR"))
+		if notebookBase == "" || metadataPath == "" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "vault adoption is not configured on this server"})
+			return
+		}
+		localPath, err := adoptNotebookDirectory(notebookBase, input.Folder)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "choose an existing direct child folder inside the configured vault directory"})
+			return
+		}
+		registry, err := loadNotebookRegistry(metadataPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "vault registry is unavailable"})
+			return
+		}
+		for _, existing := range registry.Entries {
+			if filepath.Clean(existing.LocalPath) == filepath.Clean(localPath) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "this folder is already registered as a vault"})
+				return
+			}
+		}
+		id, err := newNotebookID()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "vault could not be registered"})
+			return
+		}
+		repositoryForVault, err := files.NewRepository(localPath)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "the selected folder cannot be opened as a vault"})
+			return
+		}
+		record := notebookRecord{ID: id, Name: input.Name, LocalPath: localPath}
+		if err := registerActiveNotebook(metadataPath, record); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "vault could not be registered"})
+			return
+		}
 		activeMu.Lock()
-		repository = clonedRepository
-		gitService = gitrepo.NewManagedService(cloned.Path, sshCommand, logger)
+		repository = repositoryForVault
 		activeRecord = record
 		activeNotebookName = record.Name
 		activeMu.Unlock()
-		notebookSwitchMu.Unlock()
 		writeJSON(w, http.StatusCreated, record)
 	})
-	mux.HandleFunc("POST /api/notebooks/ssh-key", func(w http.ResponseWriter, _ *http.Request) {
-		if strings.TrimSpace(keysDirectory) == "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "managed SSH keys are not configured on this server; set REPOQUILL_KEYS_DIR and restart RepoQuill"})
-			return
-		}
-		key, err := gitrepo.GenerateSSHKey(keysDirectory, logger)
-		if err != nil {
-			logger.Error("managed SSH key generation failed", "error", err)
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "managed SSH key generation failed; check the configured key directory and server logs"})
-			return
-		}
-		writeJSON(w, http.StatusCreated, key)
-	})
-	mux.HandleFunc("GET /api/notebooks/ssh-keys", func(w http.ResponseWriter, _ *http.Request) {
-		keys, err := gitrepo.ListManagedSSHKeys(keysDirectory)
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "managed SSH keys are not available"})
-			return
-		}
-		type keyAssignment struct {
-			NotebookID   string `json:"notebookId"`
-			NotebookName string `json:"notebookName"`
-		}
-		notebookRegistryMu.Lock()
-		registry, registryErr := loadNotebookRegistry(metadataPath)
-		notebookRegistryMu.Unlock()
-		if registryErr != nil && !errors.Is(registryErr, os.ErrNotExist) {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "managed SSH key assignments could not be verified"})
-			return
-		}
-		assignments := make(map[string][]keyAssignment)
-		for _, notebook := range registry.Entries {
-			if notebook.AuthType == "managed-ssh" && notebook.KeyID != "" {
-				assignments[notebook.KeyID] = append(assignments[notebook.KeyID], keyAssignment{NotebookID: notebook.ID, NotebookName: notebook.Name})
-			}
-		}
-		items := make([]map[string]any, 0, len(keys))
-		for _, key := range keys {
-			keyAssignments := assignments[key.ID]
-			if keyAssignments == nil {
-				keyAssignments = []keyAssignment{}
-			}
-			notebookName := ""
-			if len(keyAssignments) > 0 {
-				notebookName = keyAssignments[0].NotebookName
-			}
-			items = append(items, map[string]any{"keyId": key.ID, "publicKey": key.PublicKey, "createdAt": key.CreatedAt, "fingerprint": key.Fingerprint, "assigned": len(keyAssignments) > 0, "notebookName": notebookName, "assignments": keyAssignments})
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"keys": items})
-	})
-	mux.HandleFunc("PATCH /api/notebooks/{notebookID}/ssh-key", func(w http.ResponseWriter, r *http.Request) {
-		notebookID := r.PathValue("notebookID")
-		if notebookID == "" || strings.ContainsAny(notebookID, "/\\\x00") {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid notebook ID"})
-			return
-		}
-		var input struct {
-			ExpectedKeyID string `json:"expectedKeyId"`
-			KeyID         string `json:"keyId"`
-		}
-		if !decodeJSON(w, r, &input) {
-			return
-		}
-		record, err := findNotebook(metadataPath, notebookID)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook not found"})
-			} else {
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook key assignment could not be verified"})
-			}
-			return
-		}
-		if record.AuthType != "managed-ssh" || record.RemoteURL == "" || record.KeyID == "" {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "notebook does not use a managed SSH key"})
-			return
-		}
-		if input.ExpectedKeyID != record.KeyID {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "notebook SSH key assignment changed; refresh and retry"})
-			return
-		}
-		if input.KeyID == "" || input.KeyID == input.ExpectedKeyID {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "choose a different managed SSH key"})
-			return
-		}
-		_, sshCommand, err := gitrepo.ResolveManagedSSH(keysDirectory, input.KeyID, knownHostsPath)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "replacement managed SSH key is unavailable"})
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		connection := gitrepo.TestConnection(ctx, record.RemoteURL, record.Branch, sshCommand, logger)
-		cancel()
-		if connection.State != "success" {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": connection.Message, "state": connection.State, "message": connection.Message})
-			return
-		}
-		updated, err := replaceNotebookManagedSSHKey(metadataPath, notebookID, input.ExpectedKeyID, input.KeyID, func() error {
-			_, _, resolveErr := gitrepo.ResolveManagedSSH(keysDirectory, input.KeyID, knownHostsPath)
-			return resolveErr
-		})
-		if err != nil {
-			switch {
-			case errors.Is(err, os.ErrNotExist):
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "notebook or replacement SSH key not found"})
-			case errors.Is(err, errNotebookSSHKeyChanged), errors.Is(err, errManagedSSHKeyAssigned):
-				writeJSON(w, http.StatusConflict, map[string]string{"error": "notebook key assignment changed or replacement key is already assigned; refresh and retry"})
-			case errors.Is(err, errNotebookNotManagedSSH):
-				writeJSON(w, http.StatusConflict, map[string]string{"error": "notebook does not use a managed SSH key"})
-			default:
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook key assignment could not be saved"})
-			}
-			return
-		}
-		notebookSwitchMu.Lock()
-		activeMu.Lock()
-		if activeRecord.ID == updated.ID {
-			activeRecord = updated
-			gitService.SetSSHCommand(sshCommand)
-		}
-		activeMu.Unlock()
-		notebookSwitchMu.Unlock()
-		logger.Info("managed SSH key assignment updated", "operation", "rotate-managed-ssh-key")
-		writeJSON(w, http.StatusOK, map[string]string{"notebookId": updated.ID, "notebookName": updated.Name, "keyId": updated.KeyID})
-	})
-	mux.HandleFunc("DELETE /api/notebooks/ssh-keys/{keyID}", func(w http.ResponseWriter, r *http.Request) {
-		keyID := r.PathValue("keyID")
-		notebookRegistryMu.Lock()
-		registry, registryErr := loadNotebookRegistry(metadataPath)
-		assignedNotebook := ""
-		assigned := false
-		if registryErr != nil && !errors.Is(registryErr, os.ErrNotExist) {
-			notebookRegistryMu.Unlock()
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notebook assignments could not be verified; key was not deleted"})
-			return
-		}
-		if registryErr == nil {
-			for _, notebook := range registry.Entries {
-				if notebook.AuthType == "managed-ssh" && notebook.KeyID == keyID {
-					assigned = true
-					assignedNotebook = notebook.Name
-					break
-				}
-			}
-		}
-		if assigned {
-			notebookRegistryMu.Unlock()
-			if assignedNotebook == "" {
-				assignedNotebook = "a notebook"
-			}
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "managed SSH key is assigned to " + assignedNotebook})
-			return
-		}
-		err := gitrepo.DeleteManagedSSHKey(keysDirectory, keyID)
-		notebookRegistryMu.Unlock()
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "managed SSH key not found"})
-			} else {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "managed SSH key could not be deleted"})
-			}
-			return
-		}
-		logger.Info("managed SSH key deleted", "keyId", keyID, "operation", "delete-managed-ssh-key")
-		writeJSON(w, http.StatusOK, map[string]string{"deleted": keyID})
-	})
-	mux.HandleFunc("POST /api/notebooks/test-connection", func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			RepositoryURL string `json:"repositoryUrl"`
-			Branch        string `json:"branch"`
-			AuthType      string `json:"authType"`
-			KeyID         string `json:"keyId"`
-		}
-		if !decodeJSON(w, r, &input) {
-			return
-		}
-		if err := validateNotebookRemoteURL(input.RepositoryURL); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"state": "invalid_url", "message": err.Error()})
-			return
-		}
-		if err := gitrepo.ValidateBranch(input.Branch); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"state": "invalid_branch", "message": err.Error()})
-			return
-		}
-		sshCommand := ""
-		if input.AuthType == "managed-ssh" {
-			_, managedCommand, err := gitrepo.ResolveManagedSSH(keysDirectory, input.KeyID, knownHostsPath)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"state": "key_unavailable", "message": "Generate a RepoQuill SSH key before testing the connection."})
-				return
-			}
-			sshCommand = managedCommand
-		} else if input.AuthType != "existing-server-ssh" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"state": "invalid_auth", "message": "Choose a supported authentication method."})
-			return
-		} else {
-			sshCommand = gitrepo.SSHCommand("", knownHostsPath)
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		writeJSON(w, http.StatusOK, gitrepo.TestConnection(ctx, strings.TrimSpace(input.RepositoryURL), strings.TrimSpace(input.Branch), sshCommand, logger))
-	})
-	mux.HandleFunc("POST /api/notebooks/ssh-host/discover", func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			RepositoryURL string `json:"repositoryUrl"`
-		}
-		if !decodeJSON(w, r, &input) {
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
-		discovery, err := hostTrustService.Discover(ctx, strings.TrimSpace(input.RepositoryURL))
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "SSH host-key discovery failed; check the repository URL, host, port, and network"})
-			return
-		}
-		writeJSON(w, http.StatusOK, discovery)
-	})
-	mux.HandleFunc("POST /api/notebooks/ssh-host/trust", func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			RequestID string `json:"requestId"`
-		}
-		if !decodeJSON(w, r, &input) {
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
-		result, err := hostTrustService.Approve(ctx, strings.TrimSpace(input.RequestID))
-		if err != nil {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, result)
-	})
-
 	assets, err := fs.Sub(frontend.Files, "dist")
 	if err != nil {
 		panic(err)
@@ -1835,36 +1229,6 @@ func writeRepositoryError(w http.ResponseWriter, err error) {
 		status, message = http.StatusNotFound, "Markdown file not found"
 	case errors.Is(err, os.ErrPermission):
 		status, message = http.StatusForbidden, "repository path is not readable"
-	}
-	writeJSON(w, status, map[string]string{"error": message})
-}
-
-func writeGitConflictError(w http.ResponseWriter, err error) {
-	status := http.StatusInternalServerError
-	message := "The changes could not be reviewed safely. Both versions remain preserved."
-	switch {
-	case errors.Is(err, gitrepo.ErrNoConflict):
-		status, message = http.StatusNotFound, err.Error()
-	case errors.Is(err, gitrepo.ErrConflictChanged):
-		status, message = http.StatusConflict, err.Error()
-	case errors.Is(err, gitrepo.ErrInvalidDecision), errors.Is(err, os.ErrNotExist):
-		status, message = http.StatusBadRequest, err.Error()
-	}
-	writeJSON(w, status, map[string]string{"error": message})
-}
-
-func writeHistoryError(w http.ResponseWriter, err error) {
-	status := http.StatusServiceUnavailable
-	message := "Version history is not available for this notebook."
-	switch {
-	case errors.Is(err, gitrepo.ErrInvalidNotePath):
-		status, message = http.StatusBadRequest, "invalid note history path"
-	case errors.Is(err, gitrepo.ErrHistoryVersionMissing):
-		status, message = http.StatusNotFound, "This note version is no longer available."
-	case errors.Is(err, gitrepo.ErrHistoryFileTooLarge):
-		status, message = http.StatusRequestEntityTooLarge, "This historical note is too large to display."
-	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-		status, message = http.StatusServiceUnavailable, "Version history took too long to load. Try again."
 	}
 	writeJSON(w, status, map[string]string{"error": message})
 }
@@ -2012,13 +1376,6 @@ func sameOriginProtection(identity *auth.RequestIdentity, next http.Handler) htt
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func validateNotebookRemoteURL(remoteURL string) error {
-	if os.Getenv("REPOQUILL_ALLOW_LOCAL_REMOTES") == "true" {
-		return nil
-	}
-	return gitrepo.ValidateRemoteURL(remoteURL, true)
 }
 
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {

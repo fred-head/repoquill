@@ -11,16 +11,18 @@ describe('authenticated API client',()=>{
     setCSRFToken('session-csrf')
     await apiFetch('/api/read')
     await apiFetch('/api/write',{method:'POST'})
+    expect(fetchMock.mock.calls[0][1]?.cache).toBe('no-store')
+    expect(fetchMock.mock.calls[1][1]?.cache).toBe('no-store')
     expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get('X-CSRF-Token')).toBeNull()
     expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get('X-CSRF-Token')).toBe('session-csrf')
     expect(localStorage.length).toBe(0)
     expect(sessionStorage.length).toBe(0)
   })
 
-  it('announces session expiry without turning it into a Git error',async()=>{
+  it('announces session expiry for authenticated API requests',async()=>{
     vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({code:'authentication_required'},{status:401}))
     const listener=vi.fn();window.addEventListener('repoquill:auth-required',listener)
-    await apiFetch('/api/repository/git/status')
+    await apiFetch('/api/repository/tree')
     expect(listener).toHaveBeenCalledOnce()
     window.removeEventListener('repoquill:auth-required',listener)
   })

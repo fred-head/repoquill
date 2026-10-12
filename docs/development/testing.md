@@ -15,7 +15,6 @@ The authoritative targets are in [`../../Makefile`](../../Makefile),
 | --- | --- | --- |
 | Go package behavior | e.g. `go test ./internal/app` | `go test ./...`; `go vet ./...` |
 | Note paths, writes, assets, trash, links, or cleanup | `go test ./internal/files` | `go test ./...` for cross-package effects |
-| Git commands, sync, SSH, or conflict flow | `go test ./internal/git` | `go test ./...` for API/integration effects |
 | Auth/session/MFA or auth route boundary | `go test -count=1 ./internal/auth ./internal/app ./cmd/repoquill` | Follow security/release policy for broad changes |
 | One frontend behavior | `cd frontend && npm test -- src/components/editor/MarkdownEditor.test.tsx` (substitute the affected test file) | `npm test` |
 | Frontend code or production/PWA integration | `cd frontend && npm run lint` or `npm run build` as relevant | Run all frontend checks for cross-cutting changes |
@@ -30,9 +29,9 @@ or narrowly scoped work.
 
 ## Risk triggers
 
-Expand validation for filesystem/persistence, Git synchronization/conflicts,
-authentication/security, cross-component behavior, dependency/configuration,
-or release changes. Preserve specific security gates: CI runs uncached auth
+Expand validation for filesystem/persistence, authentication/security,
+cross-component behavior, dependency/configuration, or release changes.
+Preserve specific security gates: CI runs uncached auth
 and route-boundary tests, race detection, static analysis, vulnerability and
 secret scanning, frontend checks, and hardened-container persistence checks.
 Dependency and release procedures may require the complete gate even when a

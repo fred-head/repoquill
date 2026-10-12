@@ -22,6 +22,8 @@ var (
 	ErrNotMarkdown   = errors.New("file is not Markdown")
 	ErrFileTooLarge  = errors.New("Markdown file is too large")
 	ErrConflict      = errors.New("Markdown file changed since it was loaded")
+	ErrExportTooLarge = errors.New("vault archive exceeds the export size limit")
+	ErrExportTooManyEntries = errors.New("vault archive exceeds the entry limit")
 )
 
 type Node struct {
