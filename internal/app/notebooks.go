@@ -268,6 +268,7 @@ func createNotebookDirectory(baseDirectory string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	// #nosec G703 -- baseDirectory is operator-configured server storage, never a request path.
 	if err := os.MkdirAll(base, 0o750); err != nil {
 		return "", "", err
 	}
@@ -281,6 +282,7 @@ func createNotebookDirectory(baseDirectory string) (string, string, error) {
 			return "", "", err
 		}
 		target := filepath.Join(base, id)
+		// #nosec G703 -- id is a generated 128-bit hex identifier and base is the canonical configured notebook root.
 		if err := os.Mkdir(target, 0o750); err != nil {
 			if errors.Is(err, os.ErrExist) {
 				continue
@@ -316,6 +318,7 @@ func adoptNotebookDirectory(baseDirectory, folderName string) (string, error) {
 		return "", err
 	}
 	target := filepath.Join(base, folderName)
+	// #nosec G703 -- folderName is validated as one path component, and base is the canonical configured notebook root.
 	info, err := os.Lstat(target)
 	if err != nil {
 		return "", err
