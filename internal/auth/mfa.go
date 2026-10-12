@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	mfaIssuer             = "RepoQuill"
+	mfaIssuer             = "VariaNotes"
 	mfaRecoveryCodeCount  = 10
 	mfaEnrollmentLifetime = 15 * time.Minute
 )
@@ -118,7 +118,7 @@ func (s *Service) encryptMFASecret(secret string) ([]byte, []byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, nil, err
 	}
-	return nonce, gcm.Seal(nil, nonce, []byte(secret), []byte("repoquill-totp-v1")), nil
+	return nonce, gcm.Seal(nil, nonce, []byte(secret), []byte("varianotes-totp-v1")), nil
 }
 
 func (s *Service) decryptMFASecret(ctx context.Context) (string, bool, error) {
@@ -150,7 +150,7 @@ func (s *Service) decryptSecret(nonce, ciphertext []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	plain, err := gcm.Open(nil, nonce, ciphertext, []byte("repoquill-totp-v1"))
+	plain, err := gcm.Open(nil, nonce, ciphertext, []byte("varianotes-totp-v1"))
 	if err != nil {
 		return "", errors.New("decrypt MFA secret: authentication encryption key is invalid")
 	}
@@ -319,7 +319,7 @@ func normalizeRecoveryCode(code string) string {
 	return strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(code), "-", ""))
 }
 func recoveryHash(code string) [32]byte {
-	return sha256.Sum256([]byte("repoquill-mfa-recovery-v1\x00" + normalizeRecoveryCode(code)))
+	return sha256.Sum256([]byte("varianotes-mfa-recovery-v1\x00" + normalizeRecoveryCode(code)))
 }
 
 func (s *Service) VerifySecondFactor(ctx context.Context, code string) error {

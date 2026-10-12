@@ -1,13 +1,13 @@
 # Known Alpha Limitations
 
-RepoQuill is single-owner evaluation software. Review these limitations before
+VariaNotes is single-owner evaluation software. Review these limitations before
 using it with important notes.
 
 ## Deployment and access
 
 - There is no multi-user authorization, roles, or collaborative editing. The
   owner account has access to every registered vault.
-- RepoQuill does not terminate TLS. Internet-facing deployments require an
+- VariaNotes does not terminate TLS. Internet-facing deployments require an
   HTTPS reverse proxy and carefully scoped trusted-proxy configuration.
 - OIDC and phishing-resistant authentication are not implemented. TOTP MFA is
   optional and does not protect a session that has already been stolen.
@@ -30,7 +30,7 @@ using it with important notes.
   schedule, retention, off-site storage, and restore testing. An export is a
   portable copy, not an automatic backup.
 - App-level permanent deletion does not erase copies held by operator backups.
-- External tools can change vault files. RepoQuill does not poll the filesystem
+- External tools can change vault files. VariaNotes does not poll the filesystem
   for external changes; a stale save is rejected when its version check detects
   the change.
 
@@ -50,9 +50,9 @@ using it with important notes.
   read or modified by the app. Its old commits may contain deleted notes or
   secrets.
 - Standard Markdown images can reference external HTTP(S) servers. Loading one
-  can disclose the client's IP address to that server. RepoQuill suppresses
+  can disclose the client's IP address to that server. VariaNotes suppresses
   the HTTP referrer but does not proxy the image.
-- Image presentation sizes are RepoQuill metadata and do not appear in other
+- Image presentation sizes are VariaNotes metadata and do not appear in other
   Markdown applications. Restoring a trashed note resets those sizes.
 
 ## Release expectations

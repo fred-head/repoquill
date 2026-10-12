@@ -1,5 +1,8 @@
 # Milestone 19 authentication security review
 
+This review records the product under its former RepoQuill name; that name is
+retained here to preserve the historical review context.
+
 Review date: 2026-08-27  
 Scope: Alpha 2 single-owner local authentication, optional TOTP MFA, explicit
 disabled mode, browser/PWA lifecycle, recovery, and the HTTP authorization

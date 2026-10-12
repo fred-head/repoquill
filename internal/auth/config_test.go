@@ -7,7 +7,7 @@ import (
 )
 
 func TestConfigFromEnvironmentDefaultsSafelyToLocal(t *testing.T) {
-	values := map[string]string{"REPOQUILL_NOTEBOOK_METADATA": "/srv/repoquill/notebooks.json"}
+	values := map[string]string{"VARIANOTES_NOTEBOOK_METADATA": "/srv/varianotes/notebooks.json"}
 	config, err := ConfigFromEnvironment(mapLookup(values))
 	if err != nil {
 		t.Fatal(err)
@@ -15,21 +15,21 @@ func TestConfigFromEnvironmentDefaultsSafelyToLocal(t *testing.T) {
 	if config.Mode != ModeLocal || config.ModeExplicit {
 		t.Fatalf("expected implicit local mode, got %#v", config)
 	}
-	if config.MetadataPath != "/srv/repoquill/auth.db" {
+	if config.MetadataPath != "/srv/varianotes/auth.db" {
 		t.Fatalf("unexpected metadata path %q", config.MetadataPath)
 	}
 	if !config.CookieSecure {
 		t.Fatal("secure session cookies must be the default")
 	}
-	if config.EncryptionKeyPath != "/srv/repoquill/auth.key" {
+	if config.EncryptionKeyPath != "/srv/varianotes/auth.key" {
 		t.Fatalf("unexpected encryption key path %q", config.EncryptionKeyPath)
 	}
 }
 
 func TestConfigFromEnvironmentAcceptsExplicitDisabledMode(t *testing.T) {
 	values := map[string]string{
-		"REPOQUILL_AUTH_MODE":     "disabled",
-		"REPOQUILL_AUTH_METADATA": filepath.Join(t.TempDir(), "auth.db"),
+		"VARIANOTES_AUTH_MODE":     "disabled",
+		"VARIANOTES_AUTH_METADATA": filepath.Join(t.TempDir(), "auth.db"),
 	}
 	config, err := ConfigFromEnvironment(mapLookup(values))
 	if err != nil {
@@ -40,10 +40,27 @@ func TestConfigFromEnvironmentAcceptsExplicitDisabledMode(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnvironmentUsesVariaNotesNamesAndRetainsPaths(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "varianotes-auth.db")
+	config, err := ConfigFromEnvironment(mapLookup(map[string]string{
+		"VARIANOTES_AUTH_MODE":     "local",
+		"VARIANOTES_AUTH_METADATA": metadataPath,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MetadataPath != metadataPath {
+		t.Fatalf("configured auth path changed: got %q, want %q", config.MetadataPath, metadataPath)
+	}
+	if config.EncryptionKeyPath != filepath.Join(filepath.Dir(metadataPath), "auth.key") {
+		t.Fatalf("unexpected encryption key path %q", config.EncryptionKeyPath)
+	}
+}
+
 func TestConfigFromEnvironmentParsesOnlyExplicitTrustedProxies(t *testing.T) {
 	config, err := ConfigFromEnvironment(mapLookup(map[string]string{
-		"REPOQUILL_AUTH_METADATA":   "/tmp/repoquill-auth.db",
-		"REPOQUILL_TRUSTED_PROXIES": "10.0.0.2, 2001:db8::/48",
+		"VARIANOTES_AUTH_METADATA":   "/tmp/varianotes-auth.db",
+		"VARIANOTES_TRUSTED_PROXIES": "10.0.0.2, 2001:db8::/48",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -61,12 +78,12 @@ func TestConfigFromEnvironmentParsesOnlyExplicitTrustedProxies(t *testing.T) {
 
 func TestConfigFromEnvironmentRejectsUnsafeValues(t *testing.T) {
 	tests := []map[string]string{
-		{"REPOQUILL_AUTH_MODE": "public"},
-		{"REPOQUILL_AUTH_MODE": "disabled", "REPOQUILL_AUTH_METADATA": "relative/auth.db"},
-		{"REPOQUILL_SESSION_COOKIE_SECURE": "sometimes"},
-		{"REPOQUILL_TRUSTED_PROXIES": "10.0.0.1,not-an-address"},
-		{"REPOQUILL_TRUSTED_PROXIES": "10.0.0.1,"},
-		{"REPOQUILL_AUTH_ENCRYPTION_KEY_FILE": "relative/auth.key"},
+		{"VARIANOTES_AUTH_MODE": "public"},
+		{"VARIANOTES_AUTH_MODE": "disabled", "VARIANOTES_AUTH_METADATA": "relative/auth.db"},
+		{"VARIANOTES_SESSION_COOKIE_SECURE": "sometimes"},
+		{"VARIANOTES_TRUSTED_PROXIES": "10.0.0.1,not-an-address"},
+		{"VARIANOTES_TRUSTED_PROXIES": "10.0.0.1,"},
+		{"VARIANOTES_AUTH_ENCRYPTION_KEY_FILE": "relative/auth.key"},
 	}
 	for _, values := range tests {
 		if _, err := ConfigFromEnvironment(mapLookup(values)); err == nil {

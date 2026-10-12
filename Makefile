@@ -2,7 +2,7 @@
 
 GOCACHE ?= $(HOME)/.cache/go-build
 GOMODCACHE ?= $(HOME)/go/pkg/mod
-GOTMPDIR ?= $(HOME)/.cache/repoquill/go-tmp
+GOTMPDIR ?= $(HOME)/.cache/varianotes/go-tmp
 
 export GOCACHE
 export GOMODCACHE
@@ -35,8 +35,8 @@ frontend:
 
 release-check: test vet test-race frontend audit
 	docker compose config --quiet
-	docker build --build-arg VERSION=0.1.0-alpha.1 --tag repoquill:release-check .
-	./scripts/ci-container-check.sh repoquill:release-check 0.1.0-alpha.1
+	docker build --build-arg VERSION=0.1.0-alpha.1 --tag varianotes:release-check .
+	./scripts/ci-container-check.sh varianotes:release-check 0.1.0-alpha.1
 
 dev:
 	./scripts/dev.sh

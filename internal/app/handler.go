@@ -21,9 +21,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/fred-head/repoquill/internal/auth"
-	"github.com/fred-head/repoquill/internal/files"
-	frontend "github.com/fred-head/repoquill/web"
+	"github.com/fred-head/varianotes/internal/auth"
+	"github.com/fred-head/varianotes/internal/files"
+	frontend "github.com/fred-head/varianotes/web"
 )
 
 func NewHandler(logger *slog.Logger, repositoryRoot string, versions ...string) (http.Handler, error) {
@@ -50,10 +50,9 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 	if len(versions) > 0 && strings.TrimSpace(versions[0]) != "" {
 		version = strings.TrimSpace(versions[0])
 	}
-	metadataPath := os.Getenv("REPOQUILL_NOTEBOOK_METADATA")
-	if err := migrateLegacyNotebookRegistry(metadataPath); err != nil {
-		return nil, fmt.Errorf("migrate legacy vault registry: %w", err)
-	}
+	metadataPath := os.Getenv("VARIANOTES_NOTEBOOK_METADATA")
+	notebooksDirectory := os.Getenv("VARIANOTES_NOTEBOOKS_DIR")
+	trustedOrigins := os.Getenv("VARIANOTES_TRUSTED_ORIGINS")
 	requestIdentity := auth.NewRequestIdentity(nil)
 	var loginThrottle *auth.LoginThrottle
 	if authService != nil {
@@ -61,7 +60,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		loginThrottle = auth.NewLoginThrottle(authService)
 	}
 	activeRecord, activeLoadErr := loadActiveNotebook(metadataPath)
-	activeNotebookName := strings.TrimSpace(os.Getenv("REPOQUILL_NOTEBOOK_NAME"))
+	activeNotebookName := ""
 	if activeLoadErr == nil {
 		repositoryRoot = activeRecord.LocalPath
 		activeNotebookName = activeRecord.Name
@@ -648,15 +647,15 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		writeState, writeMessage := "ok", "Local storage is writable"
 		if localState == "ok" {
-			probe, probeErr := os.CreateTemp(record.LocalPath, ".repoquill-health-*")
+			probe, probeErr := os.CreateTemp(record.LocalPath, ".varianotes-health-*")
 			if probeErr != nil {
-				writeState, writeMessage = "failed", "RepoQuill cannot write to this notebook"
+				writeState, writeMessage = "failed", "VariaNotes cannot write to this notebook"
 			} else {
 				probeName := probe.Name()
 				closeErr := probe.Close()
 				removeErr := os.Remove(probeName)
 				if closeErr != nil || removeErr != nil {
-					writeState, writeMessage = "failed", "RepoQuill cannot safely update this notebook"
+					writeState, writeMessage = "failed", "VariaNotes cannot safely update this notebook"
 				}
 			}
 		} else {
@@ -734,7 +733,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 			return
 		}
 		if deleteLocal {
-			notebookBase := strings.TrimSpace(os.Getenv("REPOQUILL_NOTEBOOKS_DIR"))
+			notebookBase := strings.TrimSpace(notebooksDirectory)
 			base, baseErr := filepath.Abs(notebookBase)
 			target, targetErr := filepath.Abs(record.LocalPath)
 			if baseErr == nil {
@@ -1070,7 +1069,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		notebookSwitchMu.Lock()
 		defer notebookSwitchMu.Unlock()
-		notebookBase := strings.TrimSpace(os.Getenv("REPOQUILL_NOTEBOOKS_DIR"))
+		notebookBase := strings.TrimSpace(notebooksDirectory)
 		if notebookBase == "" || metadataPath == "" {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "vault creation is not configured on this server"})
 			return
@@ -1115,7 +1114,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		}
 		notebookSwitchMu.Lock()
 		defer notebookSwitchMu.Unlock()
-		notebookBase := strings.TrimSpace(os.Getenv("REPOQUILL_NOTEBOOKS_DIR"))
+		notebookBase := strings.TrimSpace(notebooksDirectory)
 		if notebookBase == "" || metadataPath == "" {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "vault adoption is not configured on this server"})
 			return
@@ -1171,7 +1170,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 	if sessions != nil {
 		handler = sessions.LoadAndSave(authenticationBoundary(authService, sessions, csrfProtection(authService, sessions, requestIdentity, handler)))
 	}
-	return requestLogger(logger, securityHeaders(sameOriginProtection(requestIdentity, handler))), nil
+	return requestLogger(logger, securityHeaders(sameOriginProtection(requestIdentity, trustedOrigins, handler))), nil
 }
 
 const maxRequestBodySize = (10 << 20) + (64 << 10)
@@ -1338,9 +1337,9 @@ func csrfProtection(authService *auth.Service, sessions *auth.Sessions, identity
 	})
 }
 
-func sameOriginProtection(identity *auth.RequestIdentity, next http.Handler) http.Handler {
+func sameOriginProtection(identity *auth.RequestIdentity, configuredOrigins string, next http.Handler) http.Handler {
 	trusted := make(map[string]bool)
-	for _, value := range strings.Split(os.Getenv("REPOQUILL_TRUSTED_ORIGINS"), ",") {
+	for _, value := range strings.Split(configuredOrigins, ",") {
 		if origin := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "/")); origin != "" {
 			trusted[origin] = true
 		}

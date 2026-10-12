@@ -7,9 +7,9 @@ export type AuthStatus = {
 }
 
 let csrfToken = ''
-const authRequiredEvent = 'repoquill:auth-required'
-const authChangedEvent = 'repoquill:auth-changed'
-const channelName = 'repoquill-auth'
+const authRequiredEvent = 'varianotes:auth-required'
+const authChangedEvent = 'varianotes:auth-changed'
+const channelName = 'varianotes-auth'
 
 export function setCSRFToken(token?: string) {
   csrfToken = token ?? ''

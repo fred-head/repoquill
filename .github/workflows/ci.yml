@@ -33,7 +33,7 @@ jobs:
         run: go test ./...
 
       - name: Milestone 19 adversarial authentication gate
-        run: go test -count=1 ./internal/auth ./internal/app ./cmd/repoquill
+        run: go test -count=1 ./internal/auth ./internal/app ./cmd/varianotes
 
       - name: Static analysis
         run: go vet ./...
@@ -121,17 +121,17 @@ jobs:
           docker build
           --build-arg VERSION=${RELEASE_VERSION}
           --build-arg VCS_REF=${GITHUB_SHA}
-          --tag repoquill:ci
+          --tag varianotes:ci
           .
 
       - name: Scan image vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: repoquill:ci
+          image-ref: varianotes:ci
           format: table
           scanners: vuln,secret
           severity: HIGH,CRITICAL
           exit-code: "1"
 
       - name: Smoke-test security and persistence
-        run: ./scripts/ci-container-check.sh repoquill:ci "${RELEASE_VERSION}"
+        run: ./scripts/ci-container-check.sh varianotes:ci "${RELEASE_VERSION}"

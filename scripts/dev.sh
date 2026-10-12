@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 if [[ -z "${project_root}" || ! -d "${project_root}/frontend" || ! -f "${project_root}/go.mod" ]]; then
-  echo "Could not determine the RepoQuill project directory." >&2
+  echo "Could not determine the VariaNotes project directory." >&2
   exit 1
 fi
 
@@ -12,7 +12,7 @@ default_notebook="${project_root}/testdata/demo-notes"
 requested_notebook="${1:-${default_notebook}}"
 if [[ "${requested_notebook}" == "${default_notebook}" && ! -d "${requested_notebook}" ]]; then
   mkdir -p -- "${requested_notebook}"
-  printf '%s\n' '# Welcome to RepoQuill' '' 'This is a disposable local development notebook.' > "${requested_notebook}/Welcome.md"
+  printf '%s\n' '# Welcome to VariaNotes' '' 'This is a disposable local development notebook.' > "${requested_notebook}/Welcome.md"
 fi
 if [[ ! -d "${requested_notebook}" ]]; then
   echo "Notebook directory does not exist: ${requested_notebook}" >&2
@@ -21,12 +21,12 @@ if [[ ! -d "${requested_notebook}" ]]; then
 fi
 notebook_root="$(cd -- "${requested_notebook}" && pwd -P)"
 
-development_data="${project_root}/.repoquill-data"
+development_data="${project_root}/.varianotes-data"
 app_directory="${development_data}/app"
 notebooks_directory="${development_data}/notebooks"
 go_build_cache="${GOCACHE:-${HOME}/.cache/go-build}"
 go_module_cache="${GOMODCACHE:-${HOME}/go/pkg/mod}"
-go_temp_directory="${GOTMPDIR:-${HOME}/.cache/repoquill/go-tmp}"
+go_temp_directory="${GOTMPDIR:-${HOME}/.cache/varianotes/go-tmp}"
 
 mkdir -p -- \
   "${app_directory}" \
@@ -44,7 +44,7 @@ done
 
 node_major="$(node -p "Number(process.versions.node.split('.')[0])")"
 if [[ ! "${node_major}" =~ ^[0-9]+$ ]] || (( node_major < 24 )) || (( node_major == 25 )); then
-  echo "RepoQuill development requires Node.js 24 LTS or Node.js 26+. Found: $(node --version)" >&2
+  echo "VariaNotes development requires Node.js 24 LTS or Node.js 26+. Found: $(node --version)" >&2
   exit 1
 fi
 
@@ -64,20 +64,22 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Starting RepoQuill backend on http://localhost:8080"
+auth_mode="${VARIANOTES_AUTH_MODE:-local}"
+
+echo "Starting VariaNotes backend on http://localhost:8080"
 echo "Notebook: ${notebook_root}"
 (
   cd -- "${project_root}"
-  exec env REPOQUILL_DEV_VAULT_PATH="${notebook_root}" \
-  REPOQUILL_NOTEBOOKS_DIR="${notebooks_directory}" \
-  REPOQUILL_NOTEBOOK_METADATA="${app_directory}/notebooks.json" \
-  REPOQUILL_AUTH_MODE="${REPOQUILL_AUTH_MODE:-local}" \
-  REPOQUILL_AUTH_METADATA="${app_directory}/auth.db" \
-  REPOQUILL_SESSION_COOKIE_SECURE="false" \
+  exec env VARIANOTES_DEV_VAULT_PATH="${notebook_root}" \
+  VARIANOTES_NOTEBOOKS_DIR="${notebooks_directory}" \
+  VARIANOTES_NOTEBOOK_METADATA="${app_directory}/notebooks.json" \
+  VARIANOTES_AUTH_MODE="${auth_mode}" \
+  VARIANOTES_AUTH_METADATA="${app_directory}/auth.db" \
+  VARIANOTES_SESSION_COOKIE_SECURE="false" \
   GOCACHE="${go_build_cache}" \
   GOMODCACHE="${go_module_cache}" \
   GOTMPDIR="${go_temp_directory}" \
-  go run ./cmd/repoquill
+  go run ./cmd/varianotes
 ) &
 backend_pid="$!"
 

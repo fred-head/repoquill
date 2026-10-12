@@ -1,16 +1,16 @@
 {
-  "name": "repoquill-frontend",
+  "name": "varianotes-frontend",
   "private": true,
   "version": "0.1.0-alpha.2.security.4",
   "license": "Apache-2.0",
-  "description": "Browser frontend for RepoQuill's self-hosted Markdown vault",
-  "homepage": "https://github.com/fred-head/repoquill#readme",
+  "description": "Self-hosted Markdown notes with full control over your data",
+  "homepage": "https://github.com/fred-head/varianotes#readme",
   "bugs": {
-    "url": "https://github.com/fred-head/repoquill/issues"
+    "url": "https://github.com/fred-head/varianotes/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fred-head/repoquill.git"
+    "url": "git+https://github.com/fred-head/varianotes.git"
   },
   "type": "module",
   "scripts": {

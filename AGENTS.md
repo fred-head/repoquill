@@ -1,6 +1,6 @@
-# RepoQuill
+# VariaNotes
 
-RepoQuill is a self-hosted browser interface for ordinary Markdown vaults.
+VariaNotes is a self-hosted browser interface for ordinary Markdown vaults.
 Current behavior is documented in `README.md`; this file keeps only invariants
 and a map to task-specific context.
 
@@ -8,7 +8,7 @@ and a map to task-specific context.
 
 - One vault is one provider-independent directory. Notes stay ordinary
   Markdown; assets stay ordinary files. Both must remain usable without
-  RepoQuill, and core features must not depend on a proprietary cloud service.
+  VariaNotes, and core features must not depend on a proprietary cloud service.
 - Application metadata may describe configuration or UI/security state, but it
   must never become the only copy of a note or asset.
 - The server filesystem is the canonical vault. Online-only saves use version
@@ -49,7 +49,7 @@ for dependency work.
 For Go development, tests, vet, and security scans, use the persistent caches
 `GOCACHE=/home/fredmin/.cache/go-build`,
 `GOMODCACHE=/home/fredmin/go/pkg/mod`, and
-`GOTMPDIR=/home/fredmin/.cache/repoquill/go-tmp`. Do not put large Go caches in
+`GOTMPDIR=/home/fredmin/.cache/varianotes/go-tmp`. Do not put large Go caches in
 RAM-backed `/tmp`.
 
 ## Validation

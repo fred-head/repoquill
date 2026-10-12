@@ -15,8 +15,8 @@ if [[ ! "${check_id}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
   exit 2
 fi
 
-container_name="repoquill-check-${check_id}"
-volume_name="repoquill-check-${check_id}"
+container_name="varianotes-check-${check_id}"
+volume_name="varianotes-check-${check_id}"
 container_created=false
 volume_created=false
 cookie_jar=""
@@ -29,7 +29,7 @@ cleanup() {
   if [[ "${volume_created}" == true ]]; then
     docker volume rm "${volume_name}" >/dev/null 2>&1 || true
   fi
-  if [[ -n "${cookie_jar}" && "${cookie_jar}" == /tmp/repoquill-auth-cookies.* && -f "${cookie_jar}" && ! -L "${cookie_jar}" ]]; then
+  if [[ -n "${cookie_jar}" && "${cookie_jar}" == /tmp/varianotes-auth-cookies.* && -f "${cookie_jar}" && ! -L "${cookie_jar}" ]]; then
     rm -f -- "${cookie_jar}"
   fi
 }
@@ -45,7 +45,16 @@ if [[ -z "${configured_user}" || "${configured_user}" == "0" || "${configured_us
   echo "Image does not configure a non-root user" >&2
   exit 1
 fi
-
+configured_entrypoint="$(docker image inspect --format '{{json .Config.Entrypoint}}' "${image}")"
+if [[ "${configured_entrypoint}" != '["varianotes"]' ]]; then
+  echo "Image entrypoint is not the VariaNotes CLI: ${configured_entrypoint}" >&2
+  exit 1
+fi
+configured_title="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.title"}}' "${image}")"
+if [[ "${configured_title}" != "VariaNotes" ]]; then
+  echo "Image does not carry the VariaNotes OCI title: ${configured_title}" >&2
+  exit 1
+fi
 docker volume create "${volume_name}" >/dev/null
 volume_created=true
 
@@ -59,11 +68,11 @@ start_container() {
     --security-opt no-new-privileges:true \
     --publish 127.0.0.1::8080 \
     --volume "${volume_name}:/data" \
-    --env REPOQUILL_NOTEBOOKS_DIR=/data/notebooks \
-    --env REPOQUILL_NOTEBOOK_METADATA=/data/app/notebooks.json \
-    --env "REPOQUILL_AUTH_MODE=${auth_mode}" \
-    --env REPOQUILL_AUTH_METADATA=/data/app/auth.db \
-    --env REPOQUILL_SESSION_COOKIE_SECURE=false \
+    --env VARIANOTES_NOTEBOOKS_DIR=/data/notebooks \
+    --env VARIANOTES_NOTEBOOK_METADATA=/data/app/notebooks.json \
+    --env "VARIANOTES_AUTH_MODE=${auth_mode}" \
+    --env VARIANOTES_AUTH_METADATA=/data/app/auth.db \
+    --env VARIANOTES_SESSION_COOKIE_SECURE=false \
     "${image}" >/dev/null
   container_created=true
 }
@@ -92,6 +101,10 @@ wait_for_health() {
 }
 
 start_container local
+if [[ "$(docker exec "${container_name}" varianotes --version)" != "varianotes ${expected_version}" ]]; then
+  echo "Container CLI did not report the expected VariaNotes version" >&2
+  exit 1
+fi
 port="$(wait_for_health)"
 
 for retired_tool in git ssh; do
@@ -107,7 +120,7 @@ if [[ "${runtime_uid}" == "0" ]]; then
   exit 1
 fi
 
-bootstrap_output="$(docker exec "${container_name}" repoquill auth bootstrap-token)"
+bootstrap_output="$(docker exec "${container_name}" varianotes auth bootstrap-token)"
 mapfile -t bootstrap_token_lines < <(printf '%s\n' "${bootstrap_output}" | grep -E '^[A-Za-z0-9_-]{43}$' || true)
 unset bootstrap_output
 if [[ "${#bootstrap_token_lines[@]}" -ne 1 ]]; then
@@ -135,7 +148,7 @@ if [[ "${blocked_status}" != "403" ]]; then
   exit 1
 fi
 
-cookie_jar="$(mktemp /tmp/repoquill-auth-cookies.XXXXXX)"
+cookie_jar="$(mktemp /tmp/varianotes-auth-cookies.XXXXXX)"
 setup_response="$(curl --fail --silent --show-error \
   --cookie-jar "${cookie_jar}" \
   --request POST \
@@ -186,7 +199,7 @@ curl --fail --silent --show-error --cookie "${cookie_jar}" \
   | grep --fixed-strings '"path":"Release check.md"' >/dev/null
 
 # Operator MFA recovery revokes browser sessions but never changes notes.
-docker exec "${container_name}" repoquill auth reset-mfa >/dev/null
+docker exec "${container_name}" varianotes auth reset-mfa >/dev/null
 revoked_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --cookie "${cookie_jar}" \
   "http://127.0.0.1:${port}/api/repository/file?path=Release%20check.md")"

@@ -15,7 +15,7 @@ concurrency:
 env:
   GO_VERSION: 1.26.9
   NODE_VERSION: "24"
-  IMAGE_NAME: ghcr.io/fred-head/repoquill
+  IMAGE_NAME: ghcr.io/fred-head/varianotes
 
 jobs:
   verify:
@@ -213,12 +213,12 @@ jobs:
         run: |
           candidate="${IMAGE_NAME}@${{ needs.build-candidate.outputs.digest }}"
           docker pull --platform "${{ matrix.platform }}" "${candidate}"
-          docker tag "${candidate}" "repoquill:validate-${{ matrix.slug }}"
+          docker tag "${candidate}" "varianotes:validate-${{ matrix.slug }}"
 
       - name: Scan architecture image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: repoquill:validate-${{ matrix.slug }}
+          image-ref: varianotes:validate-${{ matrix.slug }}
           format: table
           scanners: vuln,secret
           severity: HIGH,CRITICAL
@@ -227,7 +227,7 @@ jobs:
       - name: Smoke-test architecture image
         run: >-
           ./scripts/ci-container-check.sh
-          repoquill:validate-${{ matrix.slug }}
+          varianotes:validate-${{ matrix.slug }}
           "${{ needs.verify.outputs.version }}"
 
   publish:
@@ -289,8 +289,8 @@ jobs:
       - name: Verify immutable aliases and architectures
         shell: bash
         run: |
-          version_manifest="${RUNNER_TEMP}/repoquill-version-manifest.json"
-          sha_manifest="${RUNNER_TEMP}/repoquill-sha-manifest.json"
+          version_manifest="${RUNNER_TEMP}/varianotes-version-manifest.json"
+          sha_manifest="${RUNNER_TEMP}/varianotes-sha-manifest.json"
           docker buildx imagetools inspect --raw \
             "${IMAGE_NAME}:${{ needs.verify.outputs.version }}" > "${version_manifest}"
           docker buildx imagetools inspect --raw \
@@ -322,8 +322,8 @@ jobs:
       - name: Move Alpha channel to verified immutable image
         shell: bash
         run: |
-          version_manifest="${RUNNER_TEMP}/repoquill-version-manifest.json"
-          channel_manifest="${RUNNER_TEMP}/repoquill-channel-manifest.json"
+          version_manifest="${RUNNER_TEMP}/varianotes-version-manifest.json"
+          channel_manifest="${RUNNER_TEMP}/varianotes-channel-manifest.json"
           docker buildx imagetools create \
             --tag "${IMAGE_NAME}:${{ needs.verify.outputs.channel }}" \
             "${IMAGE_NAME}:${{ needs.verify.outputs.version }}"
@@ -335,7 +335,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Published RepoQuill alpha"
+            echo "## Published VariaNotes alpha"
             echo
             echo "- Image: \`${IMAGE_NAME}\`"
             echo "- Version: \`${{ needs.verify.outputs.version }}\`"
@@ -365,11 +365,11 @@ jobs:
           DIGEST: ${{ needs.publish.outputs.digest }}
         shell: bash
         run: |
-          notes="${RUNNER_TEMP}/repoquill-release-notes.md"
+          notes="${RUNNER_TEMP}/varianotes-release-notes.md"
           {
-            echo "## RepoQuill ${VERSION}"
+            echo "## VariaNotes ${VERSION}"
             echo
-            echo "RepoQuill is Alpha software. Back up the complete persistent \`/data\` directory and review the linked limitations before upgrading important notebooks."
+            echo "VariaNotes is Alpha software. Back up the complete persistent \`/data\` directory and review the linked limitations before upgrading important notebooks."
             echo
             echo "### Container"
             echo
@@ -390,13 +390,13 @@ jobs:
             echo
             echo "### Rollback"
             echo
-            echo "Stop RepoQuill, preserve the failed-state volume for diagnosis, restore the pre-upgrade \`/data\` backup when metadata compatibility requires it, and deploy the previous immutable image tag. Never move or overwrite this release tag to perform a rollback."
+            echo "Stop VariaNotes, preserve the failed-state volume for diagnosis, restore the pre-upgrade \`/data\` backup when metadata compatibility requires it, and deploy the previous immutable image tag. Never move or overwrite this release tag to perform a rollback."
             echo
             echo "Security issues must be reported through [private vulnerability reporting](https://github.com/${GITHUB_REPOSITORY}/security/advisories/new), not a public issue."
           } > "${notes}"
           gh release create "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "RepoQuill ${VERSION}" \
+            --title "VariaNotes ${VERSION}" \
             --notes-file "${notes}" \
             --prerelease \
             --latest=false \

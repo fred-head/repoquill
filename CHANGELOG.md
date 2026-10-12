@@ -25,6 +25,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Completed the VariaNotes clean-slate identity across the Go module, CLI,
+  frontend, PWA, Docker deployment, and release workflows. Only the
+  `VARIANOTES_*` environment namespace and VariaNotes application identifiers
+  are supported.
+- Prepared the source tree for the independent `fred-head/varianotes` GitHub
+  repository and `ghcr.io/fred-head/varianotes` image. Repository creation and
+  first publication remain separate operator actions.
 - Replaced Git-backed notebooks and synchronization with online-only
   filesystem vaults. Saves write directly to the server; the operator owns
   backup and restore.
@@ -33,7 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Redesigned the Markdown editor toolbar with compact SVG icon buttons and a
   grouped Insert menu, keeping common formatting actions directly accessible.
 - Replaced synchronization status with direct server-save status.
-- Moved the running RepoQuill version into the Settings header, right-aligned
+- Moved the running VariaNotes version into the Settings header, right-aligned
   beside the heading.
 - Made the Paste as Markdown toolbar action more compact with a paste icon and
   visible MD label while retaining its full accessible name and hover tooltip.

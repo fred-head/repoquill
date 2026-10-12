@@ -30,15 +30,14 @@ type Config struct {
 
 type EnvironmentLookup func(string) (string, bool)
 
-// ConfigFromEnvironment defines fail-closed migration from an installation
-// without built-in authentication. An absent mode selects local authentication
-// and setup-required rather than silently retaining unauthenticated access.
+// ConfigFromEnvironment selects local authentication unless the operator
+// explicitly configures disabled mode.
 func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 	if lookup == nil {
 		return Config{}, errors.New("authentication environment lookup is required")
 	}
 
-	rawMode, explicit := lookup("REPOQUILL_AUTH_MODE")
+	rawMode, explicit := lookup("VARIANOTES_AUTH_MODE")
 	if strings.TrimSpace(rawMode) == "" {
 		rawMode = string(ModeLocal)
 		explicit = false
@@ -48,10 +47,11 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 		return Config{}, err
 	}
 
-	metadataPath, _ := lookup("REPOQUILL_AUTH_METADATA")
+	metadataPath, _ := lookup("VARIANOTES_AUTH_METADATA")
 	metadataPath = strings.TrimSpace(metadataPath)
 	if metadataPath == "" {
-		if notebookMetadata, ok := lookup("REPOQUILL_NOTEBOOK_METADATA"); ok && strings.TrimSpace(notebookMetadata) != "" {
+		notebookMetadata, ok := lookup("VARIANOTES_NOTEBOOK_METADATA")
+		if ok && strings.TrimSpace(notebookMetadata) != "" {
 			metadataPath = filepath.Join(filepath.Dir(strings.TrimSpace(notebookMetadata)), "auth.db")
 		} else {
 			metadataPath = "/data/app/auth.db"
@@ -60,7 +60,7 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 	if !filepath.IsAbs(metadataPath) {
 		return Config{}, errors.New("authentication metadata path must be absolute")
 	}
-	encryptionKeyPath, _ := lookup("REPOQUILL_AUTH_ENCRYPTION_KEY_FILE")
+	encryptionKeyPath, _ := lookup("VARIANOTES_AUTH_ENCRYPTION_KEY_FILE")
 	encryptionKeyPath = strings.TrimSpace(encryptionKeyPath)
 	if encryptionKeyPath == "" {
 		encryptionKeyPath = filepath.Join(filepath.Dir(metadataPath), "auth.key")
@@ -70,10 +70,10 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 	}
 
 	cookieSecure := true
-	if raw, ok := lookup("REPOQUILL_SESSION_COOKIE_SECURE"); ok && strings.TrimSpace(raw) != "" {
+	if raw, ok := lookup("VARIANOTES_SESSION_COOKIE_SECURE"); ok && strings.TrimSpace(raw) != "" {
 		cookieSecure, err = strconv.ParseBool(strings.TrimSpace(raw))
 		if err != nil {
-			return Config{}, errors.New("REPOQUILL_SESSION_COOKIE_SECURE must be true or false")
+			return Config{}, errors.New("VARIANOTES_SESSION_COOKIE_SECURE must be true or false")
 		}
 	}
 	trustedProxies, err := parseTrustedProxies(lookup)
@@ -84,7 +84,7 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 }
 
 func parseTrustedProxies(lookup EnvironmentLookup) ([]netip.Prefix, error) {
-	raw, _ := lookup("REPOQUILL_TRUSTED_PROXIES")
+	raw, _ := lookup("VARIANOTES_TRUSTED_PROXIES")
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}
@@ -93,7 +93,7 @@ func parseTrustedProxies(lookup EnvironmentLookup) ([]netip.Prefix, error) {
 	for _, part := range parts {
 		value := strings.TrimSpace(part)
 		if value == "" {
-			return nil, errors.New("REPOQUILL_TRUSTED_PROXIES contains an empty entry")
+			return nil, errors.New("VARIANOTES_TRUSTED_PROXIES contains an empty entry")
 		}
 		prefix, err := netip.ParsePrefix(value)
 		if err != nil {

@@ -16,11 +16,11 @@ export function parseAutoLockMinutes(value: string | null): AutoLockMinutes {
 type PreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 export function loadAutoLockPreference(storage: PreferenceStorage): AutoLockMinutes {
-  return parseAutoLockMinutes(storage.getItem('repoquill.auto-lock-minutes'))
+  return parseAutoLockMinutes(storage.getItem('varianotes.auto-lock-minutes'))
 }
 
 export function saveAutoLockPreference(storage: PreferenceStorage, value: AutoLockMinutes) {
-  storage.setItem('repoquill.auto-lock-minutes', String(value))
+  storage.setItem('varianotes.auto-lock-minutes', String(value))
 }
 
 export function isEditorEditable(readOnly: boolean) {

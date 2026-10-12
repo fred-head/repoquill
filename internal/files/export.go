@@ -31,7 +31,7 @@ func (r *Repository) ValidateArchive() error {
 	return err
 }
 
-// WriteArchive writes the current ordinary vault files as a ZIP archive. RepoQuill
+// WriteArchive writes the current ordinary vault files as a ZIP archive. VariaNotes
 // metadata, recoverable Trash, and legacy Git internals are intentionally omitted.
 func (r *Repository) WriteArchive(destination io.Writer) error {
 	if !r.Configured() {

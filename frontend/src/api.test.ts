@@ -21,10 +21,10 @@ describe('authenticated API client',()=>{
 
   it('announces session expiry for authenticated API requests',async()=>{
     vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({code:'authentication_required'},{status:401}))
-    const listener=vi.fn();window.addEventListener('repoquill:auth-required',listener)
+    const listener=vi.fn();window.addEventListener('varianotes:auth-required',listener)
     await apiFetch('/api/repository/tree')
     expect(listener).toHaveBeenCalledOnce()
-    window.removeEventListener('repoquill:auth-required',listener)
+    window.removeEventListener('varianotes:auth-required',listener)
   })
 
   it('broadcasts authentication changes to other tabs and PWA windows',()=>{
@@ -40,6 +40,7 @@ describe('authenticated API client',()=>{
     const stop=listenForAuthEvents(()=>undefined,otherContext)
     notifyAuthChanged()
     expect(otherContext).toHaveBeenCalledOnce()
+    expect(channels.every((channel)=>channel.name==='varianotes-auth')).toBe(true)
     stop()
     vi.unstubAllGlobals()
   })

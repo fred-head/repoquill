@@ -3,6 +3,8 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"errors"
 	"log/slog"
@@ -15,6 +17,38 @@ import (
 
 	"github.com/pquerna/otp/totp"
 )
+
+func TestMFACryptographicDomainsUseVariaNotesIdentity(t *testing.T) {
+	service := openTestService(t, Config{Mode: ModeLocal, MetadataPath: filepath.Join(t.TempDir(), "auth.db")})
+	defer service.Close()
+
+	const secret = "fresh-install-authenticator-secret"
+	nonce, ciphertext, err := service.encryptMFASecret(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(service.encryptionKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, []byte("varianotes-totp-v1"))
+	if err != nil || string(plaintext) != secret {
+		t.Fatalf("VariaNotes MFA context did not decrypt its secret: %v", err)
+	}
+	if _, err := gcm.Open(nil, nonce, ciphertext, []byte("other-product-totp-v1")); err == nil {
+		t.Fatal("MFA ciphertext was accepted under a different encryption context")
+	}
+
+	code := "ABCD-EFGH"
+	wantRecoveryHash := sha256.Sum256([]byte("varianotes-mfa-recovery-v1\x00" + normalizeRecoveryCode(code)))
+	if got := recoveryHash(code); got != wantRecoveryHash {
+		t.Fatal("recovery-code hash does not use the VariaNotes domain")
+	}
+}
 
 func TestMFAEnrollmentEncryptionRecoveryAndDisable(t *testing.T) {
 	ctx := context.Background()
@@ -316,6 +350,6 @@ func setupPassword(t *testing.T, service *Service, password string) {
 }
 
 func testMFASessionHash() []byte {
-	digest := sha256.Sum256([]byte("repoquill-test-mfa-session"))
+	digest := sha256.Sum256([]byte("varianotes-test-mfa-session"))
 	return digest[:]
 }

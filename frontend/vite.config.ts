@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { appIconPath, pwaManifestId, productDescription, productName } from './branding.ts'
 
 export default defineConfig({
   plugins: [
@@ -9,12 +10,12 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['repoquill.svg'],
+      includeAssets: [appIconPath.slice(1)],
       manifest: {
-        id: '/',
-        name: 'RepoQuill',
-        short_name: 'RepoQuill',
-        description: 'A self-hosted Markdown vault for the browser',
+        id: pwaManifestId,
+        name: productName,
+        short_name: productName,
+        description: productDescription,
         theme_color: '#18181b',
         background_color: '#09090b',
         display: 'standalone',
@@ -23,7 +24,7 @@ export default defineConfig({
         categories: ['productivity', 'utilities'],
         icons: [
           {
-            src: '/repoquill.svg',
+            src: appIconPath,
             sizes: 'any',
             type: 'image/svg+xml',
             purpose: 'any maskable',

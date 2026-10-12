@@ -12,8 +12,8 @@ import (
 )
 
 func TestBootstrapCommandReturnsSecretOnlyToOperatorOutput(t *testing.T) {
-	t.Setenv("REPOQUILL_AUTH_MODE", "local")
-	t.Setenv("REPOQUILL_AUTH_METADATA", filepath.Join(t.TempDir(), "auth.db"))
+	t.Setenv("VARIANOTES_AUTH_MODE", "local")
+	t.Setenv("VARIANOTES_AUTH_METADATA", filepath.Join(t.TempDir(), "auth.db"))
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 
@@ -46,12 +46,25 @@ func TestBootstrapCommandReturnsSecretOnlyToOperatorOutput(t *testing.T) {
 
 func TestAuthCommandRejectsUnknownAndDisabledBootstrap(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := runAuthCommand(context.Background(), logger, []string{"auth", "unknown"}); err == nil {
+	if err := runAuthCommand(context.Background(), logger, []string{"auth", "unknown"}); err == nil || !strings.Contains(err.Error(), "usage: varianotes auth") {
 		t.Fatal("unknown auth command was accepted")
 	}
-	t.Setenv("REPOQUILL_AUTH_MODE", "disabled")
-	t.Setenv("REPOQUILL_AUTH_METADATA", filepath.Join(t.TempDir(), "auth.db"))
+	t.Setenv("VARIANOTES_AUTH_MODE", "disabled")
+	t.Setenv("VARIANOTES_AUTH_METADATA", filepath.Join(t.TempDir(), "auth.db"))
 	if err := runAuthCommand(context.Background(), logger, []string{"auth", "bootstrap-token"}); err == nil {
 		t.Fatal("bootstrap token was generated with authentication disabled")
+	}
+}
+
+func TestHelpAndVersionOutputUseVariaNotesCLIName(t *testing.T) {
+	var usage bytes.Buffer
+	printUsage(&usage)
+	if !strings.Contains(usage.String(), "varianotes auth") || !strings.Contains(usage.String(), "VariaNotes") {
+		t.Fatalf("unexpected help output: %q", usage.String())
+	}
+	var currentVersion bytes.Buffer
+	printVersion(&currentVersion, "0.1.0-alpha.2.security.4")
+	if got, want := strings.TrimSpace(currentVersion.String()), "varianotes 0.1.0-alpha.2.security.4"; got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
 	}
 }

@@ -1,6 +1,6 @@
 # Third-party notices
 
-RepoQuill includes the following third-party software and notices.
+VariaNotes includes the following third-party software and notices.
 
 ## github.com/pquerna/otp
 

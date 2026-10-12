@@ -19,7 +19,7 @@ online-only for note content: every device sees the same server state, and
 there is no local replica queue to reconcile later.
 
 Markdown notes, folders, and ordinary asset files remain readable without the
-application. RepoQuill does not provide remote backup or promise recovery from
+application. VariaNotes does not provide remote backup or promise recovery from
 operator backup loss. The operator owns backup creation, retention, and restore.
 An on-demand archive export may provide a portable copy of a vault; it is not a
 backup service.
@@ -43,20 +43,18 @@ backup service.
   copies according to their own policy.
 - **Export:** provide a user-triggered archive of the active vault's ordinary
   files. The archive excludes application/authentication metadata, Trash, and
-  legacy `.git` internals. RepoQuill-only image presentation sizes remain in
+  legacy `.git` internals. VariaNotes-only image presentation sizes remain in
   server metadata and are not included. V1 does not import archives; existing
   vault folders are adopted from the operator-configured notebook directory.
 - **Git:** no runtime Git commands, remotes, SSH keys, Git-derived status,
   commits, Git history, or Git conflict workflow. A legacy `.git` directory is
-  left untouched during adoption; RepoQuill neither reads nor deletes it.
+  left untouched during adoption; VariaNotes neither reads nor deletes it.
 - **M31:** optional encrypted notes and folders are deferred. Do not introduce
   encryption state or secret handling as part of the Git removal.
 - **M32:** the document outline is already implemented. Keep it as part of the
   rebooted product and preserve its browser-local preference and responsive
   navigation behavior.
-- **Brand:** revisit the product name before publishing the reboot. Until a
-  name is selected, implementation and docs may continue to use RepoQuill as a
-  working name.
+- **Product identity:** VariaNotes is the sole active product identity.
 
 ## Feature disposition
 
@@ -88,30 +86,23 @@ creating a hidden permanent history.
 
 ## Implementation phases
 
-### Phase 0: lock the compatibility contract
+### Phase 0: lock the data and security contract
 
-- Specify local vault creation/adoption and a safe migration for existing
-  Git-backed working directories. Preserve notes and assets. Never silently
-  delete `.git`, configured remote contents, SSH keys, or operator data.
+- Specify local vault creation and adoption for folders containing ordinary
+  Markdown notes and assets. Preserve those files and do not invoke Git or SSH.
 - Define archive format, path/symlink handling, and the included ordinary files.
   V1 exports a vault and adopts folders already under the configured vault root;
   it does not import uploaded archives.
-- Record the rebranding decision or explicitly defer it to a separate release
-  task.
 
 ### Phase 1: filesystem-only notebook lifecycle
 
 - Keep notebook registration, activation, naming, health checks, and safe local
   deletion without remote/branch/SSH fields.
 - Create new empty vault directories without initializing Git.
-- Adopt existing vault directories by path within the operator-configured
-  notebook root; ignore legacy `.git` directories without modifying them.
-- Explain that a retained legacy `.git` directory still contains old committed
-  content. The app does not use it, and upgrade never deletes it implicitly.
-- Migrate notebook registry metadata while preserving IDs, names, paths, and the
-  active vault. Retire stale remote and SSH assignments without deleting key
-  files automatically. The application performs this metadata cleanup during
-  startup and fails to start if it cannot complete the safe registry rewrite.
+- Adopt vault directories by path within the operator-configured notebook root.
+  The app ignores any `.git` directory in an adopted folder and leaves it
+  untouched; exports omit it.
+- Store only current vault registration fields in the application registry.
 
 ### Phase 2: remove Git from the application
 
@@ -124,16 +115,17 @@ creating a hidden permanent history.
 - Define how the PWA reports an unreachable server and ensure it never presents
   an offline edit as saved.
 
-### Phase 3: portability, operations, and release transition
+### Phase 3: portability, operations, and release preparation
 
 - Add a bounded, safe archive export for a selected vault; preserve relative
   paths and ordinary file bytes.
-- Rewrite the setup, deployment, environment-variable, backup, recovery,
-  upgrade, limitations, and release documentation around the new product.
-- Provide an explicit migration guide for existing users and explain that
-  backups may retain content after app-level permanent deletion.
-- Update product metadata, container labels, and release notes after the name
-  and version transition are decided.
+- Rewrite setup, deployment, environment-variable, backup, recovery,
+  limitations, and release documentation for clean installations.
+- Explain that backups may retain content after app-level permanent deletion.
+- Prepare the independent VariaNotes GitHub repository and GHCR package. Start
+  with a fresh initial commit and do not transfer prior history, branches, pull
+  requests, or release tags. Configure the required GitHub settings before the
+  first release; do not publish a release as part of source preparation.
 
 ### Phase 4: post-reboot feature backlog
 

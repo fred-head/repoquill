@@ -55,8 +55,15 @@ func TestSessionCookieSecurityOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sessions.manager.Cookie.Secure || !sessions.manager.Cookie.HttpOnly || sessions.manager.Cookie.Path != "/api" || sessions.manager.Cookie.Name != "__Secure-repoquill_session" {
+	if !sessions.manager.Cookie.Secure || !sessions.manager.Cookie.HttpOnly || sessions.manager.Cookie.Path != "/api" || sessions.manager.Cookie.Name != "__Secure-varianotes_session" {
 		t.Fatalf("unsafe production cookie settings: %#v", sessions.manager.Cookie)
+	}
+	localSessions, err := NewSessions(service, DefaultSessionOptions(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if localSessions.manager.Cookie.Secure || !localSessions.manager.Cookie.HttpOnly || localSessions.manager.Cookie.Path != "/api" || localSessions.manager.Cookie.Name != "varianotes_session" {
+		t.Fatalf("unsafe local-development cookie settings: %#v", localSessions.manager.Cookie)
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,63 +22,6 @@ type notebookRecord struct {
 type notebookRegistry struct {
 	ActiveID string           `json:"activeId"`
 	Entries  []notebookRecord `json:"notebooks"`
-}
-
-// migrateLegacyNotebookRegistry removes Git and SSH assignments left by older
-// releases while preserving vault registration and any unrelated metadata.
-func migrateLegacyNotebookRegistry(metadataPath string) error {
-	if strings.TrimSpace(metadataPath) == "" {
-		return nil
-	}
-	notebookRegistryMu.Lock()
-	defer notebookRegistryMu.Unlock()
-
-	// #nosec G304,G703 -- this is an operator-configured server metadata path, never an HTTP/request path.
-	content, err := os.ReadFile(metadataPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var document map[string]json.RawMessage
-	if err := json.Unmarshal(content, &document); err != nil {
-		return fmt.Errorf("decode vault registry: %w", err)
-	}
-	if document == nil {
-		return nil
-	}
-	encodedEntries, exists := document["notebooks"]
-	if !exists {
-		return nil
-	}
-	var entries []map[string]json.RawMessage
-	if err := json.Unmarshal(encodedEntries, &entries); err != nil {
-		return fmt.Errorf("decode vault registrations: %w", err)
-	}
-	legacyFields := [...]string{"remoteUrl", "branch", "authType", "keyId", "lastSyncedAt"}
-	changed := false
-	for _, entry := range entries {
-		for _, field := range legacyFields {
-			if _, exists := entry[field]; exists {
-				delete(entry, field)
-				changed = true
-			}
-		}
-	}
-	if !changed {
-		return nil
-	}
-	updatedEntries, err := json.Marshal(entries)
-	if err != nil {
-		return err
-	}
-	document["notebooks"] = updatedEntries
-	updated, err := json.MarshalIndent(document, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeNotebookRegistryContent(metadataPath, updated)
 }
 
 func loadActiveNotebook(metadataPath string) (notebookRecord, error) {

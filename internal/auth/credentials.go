@@ -43,7 +43,7 @@ var commonPasswords = map[string]struct{}{
 	"adminadminadmin": {}, "administrator": {}, "changemechangeme": {},
 	"correcthorsebatterystaple": {}, "iloveyouiloveyou": {}, "letmeinletmeinletmein": {},
 	"passwordpassword": {}, "password123456": {}, "password123456789": {},
-	"qwertyqwertyqwerty": {}, "repoquillrepoquill": {}, "welcomewelcome": {},
+	"qwertyqwertyqwerty": {}, "varianotesvarianotes": {}, "welcomewelcome": {},
 }
 
 type PasswordParameters struct {
@@ -423,7 +423,7 @@ func validParameters(parameters PasswordParameters) bool {
 }
 
 func dummyPasswordCredential() passwordCredential {
-	salt := sha256.Sum256([]byte("RepoQuill fixed dummy credential salt"))
+	salt := sha256.Sum256([]byte("VariaNotes fixed dummy credential salt"))
 	hash := make([]byte, defaultPasswordParameters.KeyLength)
 	return passwordCredential{
 		AlgorithmVersion: argon2.Version,

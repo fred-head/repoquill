@@ -1,6 +1,6 @@
-# RepoQuill architecture
+# VariaNotes architecture
 
-RepoQuill serves a self-hosted, online-only Markdown vault through a browser
+VariaNotes serves a self-hosted, online-only Markdown vault through a browser
 and installable PWA. The operator-configured filesystem is canonical. The app
 does not keep a device replica, edit queue, Git repository, or in-app content
 history. For behavior and deployment, see [README](../README.md).
@@ -29,7 +29,7 @@ history. For behavior and deployment, see [README](../README.md).
 
 | Area | Responsibility | Start here |
 | --- | --- | --- |
-| `cmd/repoquill/` | Process startup, configuration, and operator auth commands | `main.go` |
+| `cmd/varianotes/` | Process startup, configuration, and operator auth commands | `main.go` |
 | `internal/app/` | HTTP routes, authentication middleware, vault registry and export | `handler.go`, `notebooks.go` |
 | `internal/files/` | Confined filesystem operations, Markdown, assets, links, search, Trash, export | `repository.go`, `root.go`, `export.go` |
 | `internal/auth/` | Local/disabled mode, credentials, sessions, MFA, proxy identity | `config.go`, `service.go` |
@@ -50,7 +50,7 @@ history. For behavior and deployment, see [README](../README.md).
   `internal/app/handler.go`. See the security guides for session, TLS, and
   trusted-proxy constraints.
 
-The Git-free product transition is described in the
-[reboot roadbook](roadmap/git-free-reboot.md). During upgrades, old `.git`
-directories are ignored and left in place; they may still contain earlier
-copies of deleted notes or secrets.
+The Git-free product direction is described in the
+[reboot roadbook](roadmap/git-free-reboot.md). When adopting a vault folder,
+VariaNotes ignores any `.git` directory and leaves it untouched; export omits
+that metadata.

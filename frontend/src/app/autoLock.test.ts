@@ -22,7 +22,7 @@ describe('auto-lock preference', () => {
     expect(loadAutoLockPreference(storage)).toBe(0)
     saveAutoLockPreference(storage, 15)
     expect(loadAutoLockPreference(storage)).toBe(15)
-    storage.setItem('repoquill.auto-lock-minutes', '2')
+    storage.setItem('varianotes.auto-lock-minutes', '2')
     expect(loadAutoLockPreference(storage)).toBe(0)
   })
 })
