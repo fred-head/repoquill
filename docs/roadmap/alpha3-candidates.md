@@ -7,6 +7,9 @@ shipped work from work that remains, is superseded by the reboot, or is
 explicitly deferred. Historical milestone requirements remain below so their
 decisions and acceptance criteria are not lost.
 
+The current product name is VariaNotes. `RepoQuill` references below are kept
+as written in historical milestone specifications and completion records.
+
 ---
 
 # Alpha 3 implementation order

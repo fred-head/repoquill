@@ -1,4 +1,4 @@
-# RepoQuill single-owner authentication architecture
+# VariaNotes single-owner authentication architecture
 
 This document describes the current single-owner authentication boundary.
 Password setup, persistent sessions, CSRF/throttling, browser/PWA
@@ -8,7 +8,7 @@ residual-risk record lives in [m19-security-review.md](m19-security-review.md).
 
 ## Decision and scope
 
-RepoQuill owns one authentication boundary for one fixed internal principal,
+VariaNotes owns one authentication boundary for one fixed internal principal,
 `owner`. It does not provide registration, usernames, multiple users, roles,
 email addresses, invitations, organizations, or email recovery.
 
@@ -17,7 +17,7 @@ Supported modes are:
 - `local`: recommended and fail-closed default. A new or migrated database has
   `setup_completed = false` until operator-authorized bootstrap setup.
 - `disabled`: accepted only when the operator explicitly sets
-  `REPOQUILL_AUTH_MODE=disabled`. The application shows a persistent warning
+  `VARIANOTES_AUTH_MODE=disabled`. The application shows a persistent warning
   and invalidates local authentication artifacts when modes change.
 
 An absent or empty mode never means public access. It resolves to `local`, so an
@@ -35,7 +35,7 @@ untrusted browser/PWA and network
 trusted TLS reverse proxy (optional forwarded headers only from configured IPs)
               |
               v
-RepoQuill HTTP authentication boundary
+VariaNotes HTTP authentication boundary
               |
        +------+------------------+
        |                         |
@@ -76,7 +76,13 @@ expired API authentication returns stable JSON `401`, never an HTML redirect.
 
 ## Persistent metadata boundary
 
-`REPOQUILL_AUTH_METADATA` defaults to `/data/app/auth.db` or to `auth.db` beside
+The `VARIANOTES_*` namespace is preferred. Matching `REPOQUILL_*` aliases
+remain accepted during the transition. If both non-empty names are configured
+with different values, startup fails and identifies the conflicting pair.
+Changing the prefix does not move or migrate the configured authentication
+database or encryption-key file.
+
+`VARIANOTES_AUTH_METADATA` defaults to `/data/app/auth.db` or to `auth.db` beside
 the configured notebook registry. The directory and database use modes `0700`
 and `0600`. SQLite runs in the Go process without an external database service.
 
@@ -91,7 +97,7 @@ The database is limited to:
 
 It must never contain Markdown, asset bytes, vault trees, Git repositories,
 SSH private keys, remote tokens, password plaintext, session plaintext, TOTP
-codes, or recovery-code plaintext. Deleting it can remove RepoQuill access
+codes, or recovery-code plaintext. Deleting it can remove VariaNotes access
 configuration but cannot make ordinary Markdown vaults unreadable.
 
 ## Migration and recovery model
@@ -99,7 +105,7 @@ configuration but cannot make ordinary Markdown vaults unreadable.
 Schema changes are ordered, recorded, transactional, and restart-safe. A
 future destructive migration must checkpoint SQLite and create a private,
 exclusive backup before its transaction begins. A failed migration rolls back
-and prevents startup. A database created by a newer RepoQuill version is never
+and prevents startup. A database created by a newer VariaNotes version is never
 downgraded implicitly.
 
 Changing `local`/`disabled` invalidates sessions, one-time artifacts, and
@@ -122,7 +128,7 @@ and server-side state in SQLite, and applies a deny-by-default API boundary.
 Normal sessions have a 12-hour absolute lifetime; remembered sessions have a
 30-day absolute lifetime, both with a seven-day idle ceiling. The cookie is
 HttpOnly, SameSite Strict, scoped to `/api`, and Secure by default. Plain HTTP
-development must explicitly set `REPOQUILL_SESSION_COOKIE_SECURE=false`.
+development must explicitly set `VARIANOTES_SESSION_COOKIE_SECURE=false`.
 
 The public M19P3 surface is limited to the static shell, liveness, setup,
 login, and authentication status. Missing, expired, and revoked sessions receive

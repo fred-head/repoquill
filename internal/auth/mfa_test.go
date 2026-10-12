@@ -316,6 +316,6 @@ func setupPassword(t *testing.T, service *Service, password string) {
 }
 
 func testMFASessionHash() []byte {
-	digest := sha256.Sum256([]byte("repoquill-test-mfa-session"))
+	digest := sha256.Sum256([]byte("varianotes-test-mfa-session"))
 	return digest[:]
 }

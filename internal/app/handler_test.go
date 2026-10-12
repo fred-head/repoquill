@@ -545,7 +545,7 @@ func TestSecurityHeadersAndSameOriginProtection(t *testing.T) {
 func TestSameOriginProtectionTrustsForwardedSchemeOnlyFromConfiguredProxy(t *testing.T) {
 	identity := auth.NewRequestIdentity([]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")})
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	handler := sameOriginProtection(identity, next)
+	handler := sameOriginProtection(identity, "", next)
 
 	trusted := httptest.NewRequest(http.MethodPost, "http://notes.example.test/api/action", nil)
 	trusted.Host = "notes.example.test"
@@ -1041,8 +1041,8 @@ func TestLocalNotebookCreatesFilesystemVaultAndGitRoutesAreGone(t *testing.T) {
 	base := t.TempDir()
 	notebookBase := filepath.Join(base, "notebooks")
 	metadata := filepath.Join(base, "app", "notebooks.json")
-	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", notebookBase)
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	t.Setenv("VARIANOTES_NOTEBOOKS_DIR", notebookBase)
+	t.Setenv("VARIANOTES_NOTEBOOK_METADATA", metadata)
 	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	if err != nil {
 		t.Fatal(err)
@@ -1325,7 +1325,7 @@ func TestFrontendFallback(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", recorder.Code)
 	}
-	if !strings.Contains(recorder.Body.String(), "RepoQuill") {
+	if !strings.Contains(recorder.Body.String(), "VariaNotes") {
 		t.Fatal("expected embedded frontend")
 	}
 }

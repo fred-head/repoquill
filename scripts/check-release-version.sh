@@ -17,9 +17,12 @@ const packageJson = JSON.parse(fs.readFileSync('frontend/package.json', 'utf8'))
 const packageLock = JSON.parse(fs.readFileSync('frontend/package-lock.json', 'utf8'))
 const dockerfile = fs.readFileSync('Dockerfile', 'utf8')
 const changelog = fs.readFileSync('CHANGELOG.md', 'utf8')
-const releaseNotes = fs.readFileSync('ALPHA-RELEASE.md', 'utf8')
+const releaseGuide = fs.readFileSync('ALPHA-RELEASE.md', 'utf8')
 
 const failures = []
+if (packageJson.name !== 'varianotes-frontend' || packageLock.name !== 'varianotes-frontend') {
+  failures.push('frontend package name is not varianotes-frontend')
+}
 if (packageJson.version !== version) {
   failures.push(`frontend/package.json is ${packageJson.version}`)
 }
@@ -33,6 +36,9 @@ if (dockerArgs.length !== 2 || dockerArgs.some((value) => value !== version)) {
 if (!dockerfile.includes('org.opencontainers.image.version="${VERSION}"')) {
   failures.push('Dockerfile OCI version label is not build-argument based')
 }
+if (!dockerfile.includes('/usr/local/bin/varianotes')) {
+  failures.push('Dockerfile does not install the varianotes CLI')
+}
 if (!changelog.includes(`## [${version}] - `)) {
   failures.push('CHANGELOG.md has no matching release section')
 }
@@ -40,8 +46,8 @@ const unreleased = changelog.match(/## \[Unreleased\][^\n]*\n([\s\S]*?)(?=\n## \
 if (unreleased) {
   failures.push('CHANGELOG.md Unreleased section is not empty')
 }
-if (!releaseNotes.startsWith(`# RepoQuill ${version}\n`)) {
-  failures.push('ALPHA-RELEASE.md heading does not match')
+if (!releaseGuide.startsWith('# VariaNotes alpha release and recovery guide\n')) {
+  failures.push('ALPHA-RELEASE.md does not identify the VariaNotes release guide')
 }
 
 if (failures.length > 0) {

@@ -134,7 +134,7 @@ function codeBlockDecorations(doc: ProseMirrorNode): DecorationSet {
   return DecorationSet.create(doc, decorations)
 }
 
-const codeHighlightKey = new PluginKey<DecorationSet>('repoquillCodeHighlight')
+const codeHighlightKey = new PluginKey<DecorationSet>('varianotesCodeHighlight')
 
 export const codeHighlightPlugin = $prose(() => new Plugin<DecorationSet>({
   key: codeHighlightKey,
@@ -151,14 +151,14 @@ export const codeHighlightPlugin = $prose(() => new Plugin<DecorationSet>({
 
 export const codeBlockView = $view(codeBlockSchema.node, () => (initialNode, editorView, getPos) => {
   const dom = document.createElement('div')
-  dom.className = 'repoquill-code-block'
+  dom.className = 'varianotes-code-block'
 
   const language = document.createElement('span')
-  language.className = 'repoquill-code-block-language'
+  language.className = 'varianotes-code-block-language'
   language.setAttribute('data-editable', String(editorView.editable))
 
   const languageSelect = document.createElement('select')
-  languageSelect.className = 'repoquill-code-block-language-select'
+  languageSelect.className = 'varianotes-code-block-language-select'
   languageSelect.setAttribute('aria-label', 'Code block language')
   languageSelect.setAttribute('contenteditable', 'false')
   languageSelect.append(new Option('Language', ''))
@@ -167,12 +167,12 @@ export const codeBlockView = $view(codeBlockSchema.node, () => (initialNode, edi
   }
 
   const languageLabel = document.createElement('span')
-  languageLabel.className = 'repoquill-code-block-language-label'
+  languageLabel.className = 'varianotes-code-block-language-label'
   language.append(languageSelect, languageLabel)
 
   const copyButton = document.createElement('button')
   copyButton.type = 'button'
-  copyButton.className = 'repoquill-code-block-copy'
+  copyButton.className = 'varianotes-code-block-copy'
   copyButton.setAttribute('aria-label', 'Copy code block')
   copyButton.title = 'Copy code block'
   copyButton.setAttribute('contenteditable', 'false')
@@ -203,15 +203,15 @@ export const codeBlockView = $view(codeBlockSchema.node, () => (initialNode, edi
   renderCopyIcon(false)
 
   const status = document.createElement('span')
-  status.className = 'repoquill-code-block-copy-status'
+  status.className = 'varianotes-code-block-copy-status'
   status.setAttribute('role', 'status')
   status.setAttribute('aria-live', 'polite')
   status.setAttribute('aria-atomic', 'true')
 
   const pre = document.createElement('pre')
-  pre.className = 'repoquill-code-block-pre'
+  pre.className = 'varianotes-code-block-pre'
   const contentDOM = document.createElement('code')
-  contentDOM.className = 'repoquill-code-block-content'
+  contentDOM.className = 'varianotes-code-block-content'
   pre.append(contentDOM)
   dom.append(language, copyButton, status, pre)
 

@@ -52,11 +52,11 @@ describe('MarkdownEditor read-only mode', () => {
   it('opens a semantic outline with heading levels and a compact empty state without changing Markdown', async () => {
     const onChange = vi.fn()
     const markdown = '# Main\n\n### Skipped level\n\n## Same label\n\n## Same label'
-    const view = render(<main className="repoquill-note-scroll"><MarkdownEditor documentKey="outline-hierarchy" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} /></main>)
-    const scroller = view.container.querySelector<HTMLElement>('.repoquill-note-scroll')!
+    const view = render(<main className="varianotes-note-scroll"><MarkdownEditor documentKey="outline-hierarchy" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} /></main>)
+    const scroller = view.container.querySelector<HTMLElement>('.varianotes-note-scroll')!
     Object.defineProperty(scroller, 'offsetWidth', { configurable: true, value: 800 })
     Object.defineProperty(scroller, 'clientWidth', { configurable: true, value: 785 })
-    const toolbar = view.container.querySelector<HTMLElement>('.repoquill-editor-toolbars')!
+    const toolbar = view.container.querySelector<HTMLElement>('.varianotes-editor-toolbars')!
     vi.spyOn(toolbar, 'getBoundingClientRect').mockReturnValue({ top: 128, bottom: 186 } as DOMRect)
     const toggle = view.getByRole('button', { name: 'Outline / Table of contents' })
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
@@ -69,11 +69,11 @@ describe('MarkdownEditor read-only mode', () => {
       'Heading 1: Main', 'Heading 3: Skipped level', 'Heading 2: Same label', 'Heading 2: Same label',
     ])
     expect(view.getByRole('button', { name: 'Close document outline' })).toBeTruthy()
-    const dock = view.container.querySelector<HTMLElement>('.repoquill-outline-dock')
+    const dock = view.container.querySelector<HTMLElement>('.varianotes-outline-dock')
     expect(dock?.dataset.positioned).toBe('true')
     expect(dock?.style.right).toBe('15px')
     expect(dock?.style.top).toBe('128px')
-    expect(view.container.querySelector('.repoquill-outline-backdrop')).toBeNull()
+    expect(view.container.querySelector('.varianotes-outline-backdrop')).toBeNull()
     expect(view.container.querySelector('[role="toolbar"][aria-label="Editor formatting"] [aria-label="Outline / Table of contents"]')).toBeNull()
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(onChange).not.toHaveBeenCalled()
@@ -126,9 +126,9 @@ describe('MarkdownEditor read-only mode', () => {
     const toggle = view.getByRole('button', { name: 'Outline / Table of contents' })
     await userEvent.click(toggle)
     const drawer = await view.findByRole('complementary', { name: 'Outline' })
-    expect(drawer.classList.contains('repoquill-outline-panel')).toBe(true)
-    expect(view.container.querySelector('.repoquill-outline-backdrop')).toBeNull()
-    expect(localStorage.getItem('repoquill:document-outline-open')).toBeNull()
+    expect(drawer.classList.contains('varianotes-outline-panel')).toBe(true)
+    expect(view.container.querySelector('.varianotes-outline-backdrop')).toBeNull()
+    expect(localStorage.getItem('varianotes:document-outline-open')).toBeNull()
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(view.queryByRole('complementary', { name: 'Outline' })).toBeNull())
     await waitFor(() => expect(document.activeElement).toBe(toggle))
@@ -150,7 +150,7 @@ describe('MarkdownEditor read-only mode', () => {
     await userEvent.click(view.getByRole('button', { name: 'Outline / Table of contents' }))
     const navigation = await view.findByRole('navigation', { name: 'Table of contents' })
     await waitFor(() => expect(navigation.querySelectorAll('li')).toHaveLength(300))
-    expect(view.container.querySelector('.repoquill-outline-panel')?.getAttribute('role')).toBeNull()
+    expect(view.container.querySelector('.varianotes-outline-panel')?.getAttribute('role')).toBeNull()
     view.unmount()
 
     const restored = render(<MarkdownEditor documentKey="outline-restored" readOnly={false} {...properties} />)
@@ -194,7 +194,7 @@ describe('MarkdownEditor read-only mode', () => {
 
     const toolbars = view.container.querySelector<HTMLElement>('[aria-label="Editor toolbars"]')
     expect(toolbars?.dataset.sticky).toBe('true')
-    expect(toolbars?.classList.contains('repoquill-editor-toolbars')).toBe(true)
+    expect(toolbars?.classList.contains('varianotes-editor-toolbars')).toBe(true)
     expect(toolbars?.contains(view.getByRole('toolbar', { name: 'Editor formatting' }))).toBe(true)
     expect(toolbars?.contains(await view.findByRole('toolbar', { name: 'Table editing' }))).toBe(true)
 
@@ -369,7 +369,7 @@ describe('MarkdownEditor read-only mode', () => {
     const markdown = '![Network diagram](<Note.assets/diagram.png>)'
     const view = render(<MarkdownEditor documentKey="image-view-edit" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} />)
     const inlineImage = await waitFor(() => {
-      const element = view.container.querySelector('.repoquill-editor img') as HTMLImageElement | null
+      const element = view.container.querySelector('.varianotes-editor img') as HTMLImageElement | null
       expect(element).toBeTruthy()
       return element!
     })
@@ -548,10 +548,10 @@ describe('MarkdownEditor read-only mode', () => {
     editor.focus()
     fireEvent.click(view.getByRole('button', { name: 'Link' }))
     expect(await view.findByRole('dialog', { name: 'Insert link' })).toBeTruthy()
-    fireEvent.change(view.getByLabelText('Link text'), { target: { value: 'RepoQuill' } })
+    fireEvent.change(view.getByLabelText('Link text'), { target: { value: 'VariaNotes' } })
     fireEvent.change(view.getByLabelText('External URL or custom Markdown destination'), { target: { value: 'https://example.com' } })
     fireEvent.click(view.getByRole('button', { name: 'Apply URL' }))
-    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('[RepoQuill](https://example.com)'))
+    await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('[VariaNotes](https://example.com)'))
   })
 
   it('inserts and opens portable relative internal note links', async () => {
@@ -798,12 +798,12 @@ describe('MarkdownEditor read-only mode', () => {
     const view = render(<MarkdownEditor documentKey="code-highlight" notePath="Note.md" markdown={markdown} readOnly={false} onChange={onChange} />)
 
     const codeBlocks = await waitFor(() => {
-      const elements = Array.from(view.container.querySelectorAll<HTMLElement>('.repoquill-code-block-content'))
+      const elements = Array.from(view.container.querySelectorAll<HTMLElement>('.varianotes-code-block-content'))
       expect(elements).toHaveLength(2)
-      expect(view.container.querySelector('.repoquill-code-block-content .hljs-keyword')).toBeTruthy()
+      expect(view.container.querySelector('.varianotes-code-block-content .hljs-keyword')).toBeTruthy()
       return elements
     })
-    const unknownLanguage = view.container.querySelector<HTMLSelectElement>('[data-language="future-language-v2"] .repoquill-code-block-language-select')
+    const unknownLanguage = view.container.querySelector<HTMLSelectElement>('[data-language="future-language-v2"] .varianotes-code-block-language-select')
     expect(unknownLanguage?.selectedOptions[0]?.textContent).toBe('future-language-v2')
     expect(codeBlocks[1].querySelector('.hljs-keyword')).toBeNull()
     expect(view.container.querySelector('img')).toBeNull()
@@ -829,12 +829,12 @@ describe('MarkdownEditor read-only mode', () => {
     const onChange = vi.fn()
     const view = render(<MarkdownEditor documentKey="code-language" notePath="Note.md" markdown={'```\nconsole.log("hello")\n```'} readOnly={false} onChange={onChange} />)
     await waitFor(() => {
-      const element = view.container.querySelector<HTMLElement>('.repoquill-code-block-content')
+      const element = view.container.querySelector<HTMLElement>('.varianotes-code-block-content')
       expect(element).toBeTruthy()
     })
 
     const selector = await view.findByRole('combobox', { name: 'Code block language' }) as HTMLSelectElement
-    expect(selector.closest('.repoquill-code-block')).toBeTruthy()
+    expect(selector.closest('.varianotes-code-block')).toBeTruthy()
     expect(view.queryByRole('toolbar', { name: 'Code block options' })).toBeNull()
     fireEvent.change(selector, { target: { value: 'typescript' } })
 
@@ -856,12 +856,12 @@ describe('MarkdownEditor read-only mode', () => {
       expect(copy.textContent).toBe('')
       expect(copy.querySelector('svg[data-icon="copy"]')).toBeTruthy()
       if (readOnly) {
-        expect(view.container.querySelector('.repoquill-code-block-language-label')?.textContent).toBe('Shell / Bash')
+        expect(view.container.querySelector('.varianotes-code-block-language-label')?.textContent).toBe('Shell / Bash')
         expect(view.queryByRole('combobox', { name: 'Code block language' })).toBeNull()
       } else {
         expect((view.getByRole('combobox', { name: 'Code block language' }) as HTMLSelectElement).value).toBe('bash')
       }
-      const code = view.container.querySelector('.repoquill-code-block-content') as HTMLElement
+      const code = view.container.querySelector('.varianotes-code-block-content') as HTMLElement
       const expectedCode = code.textContent
       const changesBeforeCopy = onChange.mock.calls.length
       expect(expectedCode).toBe('printf "hello"')
@@ -869,7 +869,7 @@ describe('MarkdownEditor read-only mode', () => {
       copy.focus()
       await userEvent.keyboard('{Enter}')
       await waitFor(() => expect(writeText).toHaveBeenCalledWith(expectedCode))
-      await waitFor(() => expect(view.container.querySelector('.repoquill-code-block-copy-status')?.textContent).toBe('Code copied to clipboard.'))
+      await waitFor(() => expect(view.container.querySelector('.varianotes-code-block-copy-status')?.textContent).toBe('Code copied to clipboard.'))
       expect(copy.querySelector('svg[data-icon="check"]')).toBeTruthy()
       expect(onChange).toHaveBeenCalledTimes(changesBeforeCopy)
       view.unmount()
@@ -883,7 +883,7 @@ describe('MarkdownEditor read-only mode', () => {
     const view = render(<MarkdownEditor documentKey="copy-code-failure" notePath="Note.md" markdown={'```json\n{"ok":true}\n```'} readOnly onChange={vi.fn()} />)
 
     fireEvent.click(await view.findByRole('button', { name: 'Copy code block' }))
-    await waitFor(() => expect(view.container.querySelector('.repoquill-code-block-copy-status')?.textContent).toBe('Copy failed. Select and copy the code manually.'))
+    await waitFor(() => expect(view.container.querySelector('.varianotes-code-block-copy-status')?.textContent).toBe('Copy failed. Select and copy the code manually.'))
     expect(alert).not.toHaveBeenCalled()
   })
 
@@ -1078,7 +1078,7 @@ describe('MarkdownEditor read-only mode', () => {
     const image = view.container.querySelector<HTMLImageElement>('.ProseMirror .milkdown-image-inline img')!
     expect(view.container.querySelector('.ProseMirror h2')?.textContent).toBe('Diagram')
     expect(view.container.querySelector('.ProseMirror')?.textContent).toContain('The rest of the pasted note stays available.')
-    expect(image.getAttribute('src')).toContain('#repoquill-external=')
+    expect(image.getAttribute('src')).toContain('#varianotes-external=')
     expect(image.style.display).toBe('none')
     expect(placeholder.textContent).toContain('Loading it sends a request to that site.')
     await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain('https://images.example.test/architecture.png'))
@@ -1150,7 +1150,7 @@ describe('MarkdownEditor read-only mode', () => {
 
     await view.findByRole('group', { name: 'External image' })
     expect(view.queryByRole('status')).toBeNull()
-    expect(view.container.querySelector('.ProseMirror img')?.getAttribute('src')).toContain('#repoquill-external=')
+    expect(view.container.querySelector('.ProseMirror img')?.getAttribute('src')).toContain('#varianotes-external=')
     await waitFor(() => expect(String(onChange.mock.calls.at(-1)?.[0] ?? '')).toContain(source))
     expect(fetchSpy).not.toHaveBeenCalled()
   })
@@ -1172,7 +1172,7 @@ describe('MarkdownEditor read-only mode', () => {
     expect(checkboxes[0].getAttribute('aria-checked')).toBe('false')
     expect(checkboxes[1].getAttribute('aria-checked')).toBe('true')
     expect(checkboxes[0].getAttribute('aria-label')).toContain('First task')
-    expect(view.container.querySelectorAll('.repoquill-list-item')).toHaveLength(3)
+    expect(view.container.querySelectorAll('.varianotes-list-item')).toHaveLength(3)
 
     fireEvent.click(view.getByText('First task'))
     expect(checkboxes[0].getAttribute('aria-checked')).toBe('false')

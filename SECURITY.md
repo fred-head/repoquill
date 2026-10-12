@@ -1,8 +1,8 @@
-# RepoQuill Security Policy
+# VariaNotes Security Policy
 
 ## Supported versions
 
-RepoQuill is currently alpha software. Only the most recent published alpha is
+VariaNotes is currently alpha software. Only the most recent published alpha is
 eligible for security fixes. Older alpha builds are unsupported and should be
 upgraded rather than exposed for continued use.
 
@@ -10,7 +10,7 @@ upgraded rather than exposed for continued use.
 
 The current alpha provides fail-closed single-owner local authentication with
 optional TOTP MFA. It has no registration, usernames, roles, email recovery,
-multi-user authorization, or note encryption. `REPOQUILL_AUTH_MODE=disabled`
+multi-user authorization, or note encryption. `VARIANOTES_AUTH_MODE=disabled`
 deliberately removes this boundary and is safe only when the operator
 constrains access by a private network, VPN, or external protection.
 
@@ -18,7 +18,7 @@ Authentication does not replace transport security. HTTPS termination and
 restricted backend reachability remain required for Internet-facing instances.
 OIDC is deferred and is not an implemented Alpha 2 authentication mode.
 
-The supplied Compose configuration publishes port 8080 on `127.0.0.1` by default. Set `REPOQUILL_PUBLISH_ADDR` only when deliberate network exposure is protected separately.
+The supplied Compose configuration publishes port 8080 on `127.0.0.1` by default. Set `VARIANOTES_PUBLISH_ADDR` only when deliberate network exposure is protected separately.
 
 ## Security boundaries
 
@@ -28,7 +28,7 @@ The supplied Compose configuration publishes port 8080 on `127.0.0.1` by default
 - Local-auth sessions use server-side state, confined secure cookies, and a
   session-bound CSRF token. Mutations also enforce exact request origins.
 - Forwarded IP and scheme headers are ignored unless the direct peer matches an
-  explicitly configured `REPOQUILL_TRUSTED_PROXIES` address or CIDR.
+  explicitly configured `VARIANOTES_TRUSTED_PROXIES` address or CIDR.
 - Vault onboarding creates ordinary directories or adopts direct child folders
   under the operator-configured vault root. A legacy `.git` directory is left
   untouched and is never read by the app.
@@ -79,7 +79,7 @@ and coordinated-disclosure process is documented in
 - Backups and their retention are the operator's responsibility. ZIP export is
   a portable copy and does not remove older copies from backups.
 - On upgrade, old `.git` directories and managed SSH key files may remain in
-  the persistent volume. RepoQuill no longer reads or removes them.
+  the persistent volume. VariaNotes no longer reads or removes them.
 - Do not mount arbitrary host directories or a Docker socket into the container.
 - Prefer note-owned local assets when opening a notebook from an untrusted
   source. Ordinary Markdown can contain external image URLs that contact their

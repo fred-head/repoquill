@@ -1,13 +1,13 @@
-# Contributing to RepoQuill
+# Contributing to VariaNotes
 
-RepoQuill is in alpha. Focused bug reports, documentation improvements, tests,
+VariaNotes is in alpha. Focused bug reports, documentation improvements, tests,
 and small changes consistent with the project's portability and data-safety
 principles are welcome.
 
 ## Before opening an issue
 
 - Search existing issues first.
-- Include the RepoQuill version, deployment method, browser, relevant sanitized
+- Include the VariaNotes version, deployment method, browser, relevant sanitized
   logs, expected behavior, and actual behavior.
 - Remove note contents, private repository URLs, SSH material, credentials, host
   details, and other sensitive data.

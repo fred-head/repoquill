@@ -61,7 +61,7 @@ type OutlineHeading = { position: number; level: number; text: string }
 const emptyToolbarState: ToolbarState = { block: 'paragraph', strong: false, emphasis: false, strike: false, code: false, link: false, bullet: false, ordered: false, task: false, quote: false, table: false }
 const imagePresentationSizes: ImagePresentationSize[] = ['small', 'medium', 'large', 'full']
 const emptyImagePresentations: Record<string, ImagePresentationSize> = {}
-const externalImagePlaceholderPrefix = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=#repoquill-external='
+const externalImagePlaceholderPrefix = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=#varianotes-external='
 
 function isExternalImageSource(source: string): boolean {
   return source.startsWith('//') || /^https?:/i.test(source)
@@ -77,62 +77,62 @@ function externalSourceFromPlaceholderURL(source: string | null): string | undef
 }
 
 function updateExternalImagePlaceholder(wrapper: HTMLElement, image: HTMLImageElement, source: string): void {
-  if (wrapper.dataset.repoquillExternalImageSource !== source) {
-    wrapper.dataset.repoquillExternalImageSource = source
-    wrapper.dataset.repoquillExternalImageLoaded = 'false'
-    delete wrapper.dataset.repoquillExternalImageFailed
-    wrapper.querySelector('.repoquill-external-image-placeholder')?.remove()
+  if (wrapper.dataset.varianotesExternalImageSource !== source) {
+    wrapper.dataset.varianotesExternalImageSource = source
+    wrapper.dataset.varianotesExternalImageLoaded = 'false'
+    delete wrapper.dataset.varianotesExternalImageFailed
+    wrapper.querySelector('.varianotes-external-image-placeholder')?.remove()
   }
 
-  if (image.dataset.repoquillExternalImageErrorHandler !== 'true') {
-    image.dataset.repoquillExternalImageErrorHandler = 'true'
+  if (image.dataset.varianotesExternalImageErrorHandler !== 'true') {
+    image.dataset.varianotesExternalImageErrorHandler = 'true'
     image.addEventListener('error', () => {
       const currentWrapper = image.closest<HTMLElement>('.milkdown-image-inline')
-      const currentSource = currentWrapper?.dataset.repoquillExternalImageSource
-      if (!currentWrapper || !currentSource || currentWrapper.dataset.repoquillExternalImageLoaded !== 'true') return
-      currentWrapper.dataset.repoquillExternalImageFailed = 'true'
+      const currentSource = currentWrapper?.dataset.varianotesExternalImageSource
+      if (!currentWrapper || !currentSource || currentWrapper.dataset.varianotesExternalImageLoaded !== 'true') return
+      currentWrapper.dataset.varianotesExternalImageFailed = 'true'
       updateExternalImagePlaceholder(currentWrapper, image, currentSource)
     })
   }
 
-  const failed = wrapper.dataset.repoquillExternalImageFailed === 'true'
-  if (wrapper.dataset.repoquillExternalImageLoaded === 'true' && !failed) {
-    wrapper.querySelector('.repoquill-external-image-placeholder')?.remove()
+  const failed = wrapper.dataset.varianotesExternalImageFailed === 'true'
+  if (wrapper.dataset.varianotesExternalImageLoaded === 'true' && !failed) {
+    wrapper.querySelector('.varianotes-external-image-placeholder')?.remove()
     image.style.display = ''
     if (image.getAttribute('src') !== source) image.setAttribute('src', source)
     return
   }
 
   image.style.display = 'none'
-  let placeholder = wrapper.querySelector<HTMLSpanElement>('.repoquill-external-image-placeholder')
+  let placeholder = wrapper.querySelector<HTMLSpanElement>('.varianotes-external-image-placeholder')
   if (!placeholder) {
     placeholder = document.createElement('span')
-    placeholder.className = 'repoquill-external-image-placeholder'
+    placeholder.className = 'varianotes-external-image-placeholder'
     placeholder.setAttribute('role', 'group')
     placeholder.setAttribute('aria-label', 'External image')
 
     const details = document.createElement('span')
-    details.className = 'repoquill-external-image-details'
+    details.className = 'varianotes-external-image-details'
     const label = document.createElement('span')
-    label.className = 'repoquill-external-image-label'
+    label.className = 'varianotes-external-image-label'
     const note = document.createElement('span')
-    note.className = 'repoquill-external-image-note'
+    note.className = 'varianotes-external-image-note'
     note.textContent = 'Loading it sends a request to that site.'
     details.append(label, note)
 
     const button = document.createElement('button')
     button.type = 'button'
-    button.className = 'repoquill-external-image-load'
+    button.className = 'varianotes-external-image-load'
     button.addEventListener('mousedown', (event) => event.preventDefault())
     button.addEventListener('click', (event) => {
       event.preventDefault()
       event.stopPropagation()
-      wrapper.dataset.repoquillExternalImageLoaded = 'true'
-      delete wrapper.dataset.repoquillExternalImageFailed
+      wrapper.dataset.varianotesExternalImageLoaded = 'true'
+      delete wrapper.dataset.varianotesExternalImageFailed
       placeholder?.remove()
       image.style.display = ''
       image.referrerPolicy = 'no-referrer'
-      image.setAttribute('src', wrapper.dataset.repoquillExternalImageSource ?? source)
+      image.setAttribute('src', wrapper.dataset.varianotesExternalImageSource ?? source)
     })
     placeholder.append(details, button)
     wrapper.append(placeholder)
@@ -141,7 +141,7 @@ function updateExternalImagePlaceholder(wrapper: HTMLElement, image: HTMLImageEl
   const host = (() => {
     try { return new URL(source, globalThis.location?.href ?? 'https://localhost').hostname || 'external host' } catch { return 'external host' }
   })()
-  const label = placeholder.querySelector<HTMLElement>('.repoquill-external-image-label')
+  const label = placeholder.querySelector<HTMLElement>('.varianotes-external-image-label')
   const labelText = failed ? `Could not load image from ${host}.` : `External image from ${host}`
   if (label && label.textContent !== labelText) label.textContent = labelText
   const button = placeholder.querySelector<HTMLButtonElement>('button')
@@ -154,10 +154,10 @@ function updateExternalImagePlaceholder(wrapper: HTMLElement, image: HTMLImageEl
 }
 
 function clearExternalImagePlaceholder(wrapper: HTMLElement, image: HTMLImageElement): void {
-  delete wrapper.dataset.repoquillExternalImageSource
-  delete wrapper.dataset.repoquillExternalImageLoaded
-  delete wrapper.dataset.repoquillExternalImageFailed
-  wrapper.querySelector('.repoquill-external-image-placeholder')?.remove()
+  delete wrapper.dataset.varianotesExternalImageSource
+  delete wrapper.dataset.varianotesExternalImageLoaded
+  delete wrapper.dataset.varianotesExternalImageFailed
+  wrapper.querySelector('.varianotes-external-image-placeholder')?.remove()
   image.style.display = ''
 }
 
@@ -181,7 +181,7 @@ function sameOutline(left: OutlineHeading[], right: OutlineHeading[]): boolean {
 }
 
 function currentOutlinePosition(view: EditorView, headings: OutlineHeading[]): number | undefined {
-  const stickyToolbar = view.dom.closest('.repoquill-editor-layout')?.querySelector<HTMLElement>('.repoquill-editor-toolbars[data-sticky="true"]')
+  const stickyToolbar = view.dom.closest('.varianotes-editor-layout')?.querySelector<HTMLElement>('.varianotes-editor-toolbars[data-sticky="true"]')
   const toolbarBottom = stickyToolbar?.getBoundingClientRect().bottom
   const threshold = toolbarBottom !== undefined && toolbarBottom > 0 ? toolbarBottom + 8 : 128
   let preceding: number | undefined
@@ -350,16 +350,16 @@ function insertParsedMarkdown(view: EditorView, parse: (markdown: string) => Nod
 
 const interactiveListItemView = $view(listItemSchema.node, () => (initialNode, editorView, getPos) => {
   const dom = document.createElement('li')
-  dom.className = 'repoquill-list-item'
+  dom.className = 'varianotes-list-item'
 
   const checkbox = document.createElement('button')
   checkbox.type = 'button'
   checkbox.setAttribute('role', 'checkbox')
   checkbox.setAttribute('contenteditable', 'false')
-  checkbox.className = 'repoquill-task-checkbox'
+  checkbox.className = 'varianotes-task-checkbox'
 
   const contentDOM = document.createElement('div')
-  contentDOM.className = 'repoquill-list-item-content'
+  contentDOM.className = 'varianotes-list-item-content'
   dom.append(checkbox, contentDOM)
 
   let currentNode = initialNode
@@ -458,7 +458,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   const noteLinkOpeningRef = useRef<NoteLinkOpening | undefined>(undefined)
   const noteLinkOpeningKeyDownRef = useRef(false)
   const noteLinkTriggerIndexRef = useRef(0)
-  // Compatibility layer for RepoQuill's empty-cursor inline-code workflow.
+  // Compatibility layer for VariaNotes's empty-cursor inline-code workflow.
   // Milkdown 7.22 intentionally makes the mark non-inclusive, so ProseMirror
   // otherwise drops it after the first typed character. Keep this explicit
   // mode until Milkdown offers an equivalent empty-selection command itself.
@@ -503,8 +503,8 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     const dock = outlineDock.current
     const container = editorContainer.current
     if (!dock || !container) return
-    const toolbar = container.closest('.repoquill-editor-layout')?.querySelector<HTMLElement>('.repoquill-editor-toolbars')
-    const scroller = container.closest('.repoquill-note-scroll') as HTMLElement | null
+    const toolbar = container.closest('.varianotes-editor-layout')?.querySelector<HTMLElement>('.varianotes-editor-toolbars')
+    const scroller = container.closest('.varianotes-note-scroll') as HTMLElement | null
     const updateDockPosition = () => {
       const editorTop = container.getBoundingClientRect().top
       const toolbarTop = toolbar?.getBoundingClientRect().top
@@ -575,7 +575,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       if (!noteLinkTriggerRef.current && !noteLinkOpeningRef.current) return
       const target = event.target
       if (!(target instanceof Element)) return
-      if (editorContainer.current?.contains(target) || target.closest('[data-repoquill-note-link-menu]')) return
+      if (editorContainer.current?.contains(target) || target.closest('[data-varianotes-note-link-menu]')) return
       noteLinkTriggerIntentRef.current = undefined
       noteLinkOpeningRef.current = undefined
       noteLinkOpeningKeyDownRef.current = false
@@ -611,24 +611,24 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
     const container = editorContainer.current
     if (!container) return
     const decorateImages = () => {
-      const images = container.querySelectorAll<HTMLImageElement>('.repoquill-editor .milkdown-image-inline img')
+      const images = container.querySelectorAll<HTMLImageElement>('.varianotes-editor .milkdown-image-inline img')
       if (Array.from(images).some((image) => imageAssetPath(image.src, notePath))) void loadImagePresentations()
-      for (const wrapper of container.querySelectorAll<HTMLElement>('.repoquill-editor .milkdown-image-inline')) {
-        if (wrapper.querySelector('img') || !wrapper.dataset.repoquillExternalImageSource) continue
-        delete wrapper.dataset.repoquillExternalImageSource
-        delete wrapper.dataset.repoquillExternalImageLoaded
-        delete wrapper.dataset.repoquillExternalImageFailed
-        wrapper.querySelector('.repoquill-external-image-placeholder')?.remove()
+      for (const wrapper of container.querySelectorAll<HTMLElement>('.varianotes-editor .milkdown-image-inline')) {
+        if (wrapper.querySelector('img') || !wrapper.dataset.varianotesExternalImageSource) continue
+        delete wrapper.dataset.varianotesExternalImageSource
+        delete wrapper.dataset.varianotesExternalImageLoaded
+        delete wrapper.dataset.varianotesExternalImageFailed
+        wrapper.querySelector('.varianotes-external-image-placeholder')?.remove()
       }
       for (const image of images) {
         const wrapper = image.closest<HTMLElement>('.milkdown-image-inline')
         const currentSource = image.getAttribute('src')
         const placeholderSource = externalSourceFromPlaceholderURL(currentSource)
-        const storedExternalSource = wrapper?.dataset.repoquillExternalImageSource
+        const storedExternalSource = wrapper?.dataset.varianotesExternalImageSource
         const externalSource = placeholderSource ?? (currentSource && isExternalImageSource(currentSource) ? currentSource : undefined) ?? (currentSource === storedExternalSource ? storedExternalSource : undefined)
         if (wrapper && externalSource) updateExternalImagePlaceholder(wrapper, image, externalSource)
         else if (wrapper && storedExternalSource) clearExternalImagePlaceholder(wrapper, image)
-        if (wrapper?.dataset.repoquillExternalImageSource && (wrapper.dataset.repoquillExternalImageLoaded !== 'true' || wrapper.dataset.repoquillExternalImageFailed === 'true')) continue
+        if (wrapper?.dataset.varianotesExternalImageSource && (wrapper.dataset.varianotesExternalImageLoaded !== 'true' || wrapper.dataset.varianotesExternalImageFailed === 'true')) continue
 
         const assetPath = imageAssetPath(image.src, notePath)
         if (wrapper) wrapper.dataset.presentationSize = assetPath ? activeImagePresentations[assetPath] ?? 'full' : 'full'
@@ -636,12 +636,12 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
           image.tabIndex = 0
           image.setAttribute('role', 'button')
           image.setAttribute('aria-label', image.alt ? `View image: ${image.alt}` : 'View note image')
-          image.dataset.repoquillViewerTrigger = 'true'
-        } else if (image.dataset.repoquillViewerTrigger) {
+          image.dataset.varianotesViewerTrigger = 'true'
+        } else if (image.dataset.varianotesViewerTrigger) {
           image.removeAttribute('tabindex')
           image.removeAttribute('role')
           image.removeAttribute('aria-label')
-          delete image.dataset.repoquillViewerTrigger
+          delete image.dataset.varianotesViewerTrigger
         }
       }
     }
@@ -791,7 +791,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
             editable: () => isEditorEditable(readOnly),
             attributes: {
               ...previous.attributes,
-              class: 'repoquill-editor',
+              class: 'varianotes-editor',
               'aria-label': 'Markdown editor',
               tabindex: '0',
             },
@@ -904,7 +904,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
                 const handled = previous.handleDOMEvents?.blur?.(view, event) ?? false
                 globalThis.setTimeout(() => {
                   const activeElement = document.activeElement
-                  if (activeElement instanceof Element && activeElement.closest('[data-repoquill-note-link-menu]')) return
+                  if (activeElement instanceof Element && activeElement.closest('[data-varianotes-note-link-menu]')) return
                   closeNoteLinkTrigger()
                 }, 0)
                 return handled
@@ -1293,7 +1293,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
 
   function openReadOnlyImage(target: HTMLElement) {
     if (!readOnly) return false
-    const image = target.closest<HTMLImageElement>('.repoquill-editor .milkdown-image-inline img')
+    const image = target.closest<HTMLImageElement>('.varianotes-editor .milkdown-image-inline img')
     if (!image) return false
     openImageViewer({ src: image.currentSrc || image.src, alt: image.alt }, image)
     return true
@@ -1454,9 +1454,9 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
   }
 
   return (
-    <div className="repoquill-editor-layout">
-      <div className="repoquill-editor-main">
-      {(!readOnly || selectedLink?.targetPath) && <div aria-label="Editor toolbars" data-sticky={stickyToolbar ? 'true' : 'false'} className="repoquill-editor-toolbars mb-3 space-y-1.5">
+    <div className="varianotes-editor-layout">
+      <div className="varianotes-editor-main">
+      {(!readOnly || selectedLink?.targetPath) && <div aria-label="Editor toolbars" data-sticky={stickyToolbar ? 'true' : 'false'} className="varianotes-editor-toolbars mb-3 space-y-1.5">
       {!readOnly && <div role="toolbar" aria-label="Editor formatting" className="flex max-w-full flex-wrap items-center gap-0.5 border-b border-zinc-800/80 pb-1.5">
         <ToolbarButton label="Undo" disabled={false} onClick={() => callCommand(undoCommand)}><EditorIcon name="undo" /></ToolbarButton>
         <ToolbarButton label="Redo" disabled={false} onClick={() => callCommand(redoCommand)}><EditorIcon name="redo" /></ToolbarButton>
@@ -1553,7 +1553,7 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
         }}
         onClickCapture={(event) => { openReadOnlyImage(event.target as HTMLElement) }}
         onKeyDownCapture={(event) => {
-          if (readOnly && (event.key === 'Enter' || event.key === ' ') && (event.target as HTMLElement).closest('.repoquill-editor .milkdown-image-inline img')) {
+          if (readOnly && (event.key === 'Enter' || event.key === ' ') && (event.target as HTMLElement).closest('.varianotes-editor .milkdown-image-inline img')) {
             event.preventDefault()
             openReadOnlyImage(event.target as HTMLElement)
           }
@@ -1571,20 +1571,20 @@ function MilkdownEditor({ documentKey, notePath, markdown, readOnly, onChange, n
       {linkPicker && !readOnly && <LinkPicker notePath={notePath} notePaths={notePaths} draft={linkPicker} onApply={applyLink} onClose={() => setLinkPicker(undefined)} />}
       {markdownPaste && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setMarkdownPaste(undefined) }}><form onSubmit={(event) => { event.preventDefault(); applyMarkdownPaste() }} role="dialog" aria-modal="true" aria-labelledby="markdown-paste-title" className="w-full max-w-2xl rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="markdown-paste-title" className="text-lg font-semibold text-zinc-100">Paste as Markdown</h2><p className="mt-1 text-sm text-zinc-400">Headings, lists, tasks, quotes, code, links, tables, and dividers become editable note content.</p><label className="mt-4 block text-sm text-zinc-300">Markdown<textarea autoFocus rows={12} value={markdownPaste.text} onChange={(event) => setMarkdownPaste({ text: event.target.value, clipboardHint: markdownPaste.clipboardHint })} className="mt-2 w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder="# Heading&#10;&#10;- First item&#10;- Second item" /></label><p className="mt-2 text-xs text-zinc-500">{markdownPaste.clipboardHint} External images stay blocked until you load them. Raw HTML is not inserted.</p>{markdownPaste.error && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{markdownPaste.error}</p>}<div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setMarkdownPaste(undefined)} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => applyMarkdownPaste(true)} disabled={!markdownPaste.text} className="min-h-10 rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40">Insert as plain text</button><button type="submit" disabled={!markdownPaste.text} className="min-h-10 rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40">Insert Markdown</button></div></form></div>}
       {editingAlt !== undefined && !readOnly && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingAlt(undefined) }}><form onSubmit={(event) => { event.preventDefault(); saveImageMetadata() }} role="dialog" aria-modal="true" aria-labelledby="image-metadata-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="image-metadata-title" className="text-lg font-semibold text-zinc-100">Edit image</h2><label className="mt-4 block text-sm text-zinc-300">Alt text<input autoFocus value={editingAlt} onChange={(event) => setEditingAlt(event.target.value)} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-amber-500" placeholder="Leave empty for a decorative image" /></label><p className="mt-2 text-xs text-zinc-500">Describe meaningful content briefly, or leave this empty for a decorative image.</p><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setEditingAlt(undefined)} className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="submit" className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">Save</button></div></form></div>}
-      <div ref={outlineDock} className="repoquill-outline-dock" data-positioned="false">
-        <div className="repoquill-outline-rail">
-          <button ref={outlineToggle} type="button" title="Document outline" aria-label="Outline / Table of contents" aria-pressed={outlineOpen} aria-expanded={outlineOpen} aria-controls={outlineOpen ? 'repoquill-document-outline' : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => setOutlineOpen((open) => !open)} className="repoquill-outline-toggle"><span aria-hidden="true">☷</span></button>
+      <div ref={outlineDock} className="varianotes-outline-dock" data-positioned="false">
+        <div className="varianotes-outline-rail">
+          <button ref={outlineToggle} type="button" title="Document outline" aria-label="Outline / Table of contents" aria-pressed={outlineOpen} aria-expanded={outlineOpen} aria-controls={outlineOpen ? 'varianotes-document-outline' : undefined} onMouseDown={(event) => event.preventDefault()} onClick={() => setOutlineOpen((open) => !open)} className="varianotes-outline-toggle"><span aria-hidden="true">☷</span></button>
         </div>
-        {outlineOpen && <aside id="repoquill-document-outline" aria-label="Document outline" aria-labelledby="repoquill-document-outline-title" className="repoquill-outline-panel">
+        {outlineOpen && <aside id="varianotes-document-outline" aria-label="Document outline" aria-labelledby="varianotes-document-outline-title" className="varianotes-outline-panel">
           <header className="flex min-h-10 items-center justify-between gap-3 border-b border-zinc-800 px-2 py-2">
-            <h2 id="repoquill-document-outline-title" className="text-sm font-semibold text-zinc-200">Outline</h2>
+            <h2 id="varianotes-document-outline-title" className="text-sm font-semibold text-zinc-200">Outline</h2>
             <button type="button" aria-label="Close document outline" onClick={closeOutline} className="min-h-8 min-w-8 rounded px-2 text-lg leading-none text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-amber-500">×</button>
           </header>
-          <nav aria-label="Table of contents" className="repoquill-outline-nav">
+          <nav aria-label="Table of contents" className="varianotes-outline-nav">
             {outlineHeadings.length === 0
               ? <p className="px-2 py-3 text-sm text-zinc-500">This note has no headings yet.</p>
               : <ol className="space-y-0.5 py-2">{outlineHeadings.map((heading) => <li key={heading.position}>
-                <button type="button" aria-label={`Heading ${heading.level}: ${heading.text || 'Untitled heading'}`} aria-current={activeOutlinePosition === heading.position ? 'location' : undefined} onClick={() => selectOutlineHeading(heading)} style={{ '--outline-level': Math.max(0, heading.level - 1) } as CSSProperties} className="repoquill-outline-entry">
+                <button type="button" aria-label={`Heading ${heading.level}: ${heading.text || 'Untitled heading'}`} aria-current={activeOutlinePosition === heading.position ? 'location' : undefined} onClick={() => selectOutlineHeading(heading)} style={{ '--outline-level': Math.max(0, heading.level - 1) } as CSSProperties} className="varianotes-outline-entry">
                   <span className="min-w-0 flex-1 truncate">{heading.text || 'Untitled heading'}</span>
                 </button>
               </li>)}</ol>}
@@ -1640,7 +1640,7 @@ function ImageViewer({ image, onClose }: { image: ViewedImage; onClose: () => vo
           </div>
         </header>
         <div data-size-mode={sizeMode} className={`min-h-0 flex-1 overflow-auto p-3 sm:p-6 ${sizeMode === 'fit' ? 'flex items-center justify-center' : 'block'}`}>
-          {loadFailed ? <div role="alert" className="m-auto max-w-md rounded-lg border border-red-900/70 bg-red-950/30 p-4 text-center text-sm text-red-100"><p className="font-medium">This image could not be loaded.</p><p className="mt-2 text-xs leading-5 text-red-200/80">The asset may have been moved or removed outside RepoQuill. Your note and its Markdown were not changed.</p></div> : <img src={image.src} alt={accessibleDescription} draggable={false} onError={() => setLoadFailed(true)} className={sizeMode === 'fit' ? 'h-auto max-h-full w-auto max-w-full rounded-md object-contain' : 'h-auto max-h-none w-auto max-w-none rounded-md'} />}
+          {loadFailed ? <div role="alert" className="m-auto max-w-md rounded-lg border border-red-900/70 bg-red-950/30 p-4 text-center text-sm text-red-100"><p className="font-medium">This image could not be loaded.</p><p className="mt-2 text-xs leading-5 text-red-200/80">The asset may have been moved or removed outside VariaNotes. Your note and its Markdown were not changed.</p></div> : <img src={image.src} alt={accessibleDescription} draggable={false} onError={() => setLoadFailed(true)} className={sizeMode === 'fit' ? 'h-auto max-h-full w-auto max-w-full rounded-md object-contain' : 'h-auto max-h-none w-auto max-w-none rounded-md'} />}
         </div>
       </div>
     </div>
@@ -1653,7 +1653,7 @@ function SlashCommandMenu({ commands, selectedIndex, left, top, onSelect }: { co
 }
 
 function NoteLinkTriggerMenu({ paths, selectedIndex, left, top, onSelect }: { paths:string[]; selectedIndex:number; left:number; top:number; onSelect:(path:string)=>void }) {
-  return <div data-repoquill-note-link-menu role="listbox" aria-label="Internal note suggestions" className="fixed z-50 max-h-72 w-80 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl" style={{ left,top }}>{paths.length ? paths.map((path,index) => <button key={path} type="button" role="option" aria-selected={index===selectedIndex} onMouseDown={(event)=>event.preventDefault()} onClick={()=>onSelect(path)} className={`block min-h-12 w-full rounded-lg px-3 py-2 text-left ${index===selectedIndex?'bg-amber-400/15 text-amber-100':'text-zinc-200 hover:bg-zinc-800'}`}><span className="block truncate text-sm font-medium">{path.split('/').pop()?.replace(/\.md$/i,'')}</span><span className="block truncate text-xs text-zinc-500">{path}</span></button>) : <p className="px-3 py-4 text-sm text-zinc-500">No matching notes</p>}</div>
+  return <div data-varianotes-note-link-menu role="listbox" aria-label="Internal note suggestions" className="fixed z-50 max-h-72 w-80 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl" style={{ left,top }}>{paths.length ? paths.map((path,index) => <button key={path} type="button" role="option" aria-selected={index===selectedIndex} onMouseDown={(event)=>event.preventDefault()} onClick={()=>onSelect(path)} className={`block min-h-12 w-full rounded-lg px-3 py-2 text-left ${index===selectedIndex?'bg-amber-400/15 text-amber-100':'text-zinc-200 hover:bg-zinc-800'}`}><span className="block truncate text-sm font-medium">{path.split('/').pop()?.replace(/\.md$/i,'')}</span><span className="block truncate text-xs text-zinc-500">{path}</span></button>) : <p className="px-3 py-4 text-sm text-zinc-500">No matching notes</p>}</div>
 }
 
 function LinkPicker({ notePath, notePaths, draft, onApply, onClose }: { notePath:string; notePaths:string[]; draft:LinkDraft; onApply:(href:string,label?:string)=>void; onClose:()=>void }) {

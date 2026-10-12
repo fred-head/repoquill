@@ -174,7 +174,7 @@ func Open(ctx context.Context, config Config, logger *slog.Logger) (*Service, er
 	}
 	service := &Service{db: db, config: config, logger: logger, encryptionKey: encryptionKey}
 	if !config.CookieSecure {
-		logger.Warn("authentication session cookies are not marked Secure; use this setting only for explicit local HTTP development", "setting", "REPOQUILL_SESSION_COOKIE_SECURE", "value", false)
+		logger.Warn("authentication session cookies are not marked Secure; use this setting only for explicit local HTTP development", "setting", "VARIANOTES_SESSION_COOKIE_SECURE", "value", false)
 	}
 	if err := service.initialize(ctx); err != nil {
 		_ = db.Close()

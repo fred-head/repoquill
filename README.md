@@ -1,10 +1,14 @@
-# RepoQuill
+# VariaNotes
 
-RepoQuill is a self-hosted, single-owner Markdown vault for the browser and
+VariaNotes is a self-hosted, single-owner Markdown vault for the browser and
 installable PWA. Notes are ordinary Markdown files and images are ordinary
 files in the vault. The server filesystem is the canonical copy; devices read
-and save through the same server while online. RepoQuill does not synchronize
+and save through the same server while online. VariaNotes does not synchronize
 separate device copies or provide offline editing.
+
+**Self-hosted Markdown notes with full control over your data.**
+
+*Your notes. Your space.*
 
 > **Alpha software:** use a pinned release, keep operator-managed backups, and
 > read [Known Limitations](KNOWN-LIMITATIONS.md) before storing important
@@ -31,27 +35,42 @@ separate device copies or provide offline editing.
 
 ## Quick start with Docker
 
+The GitHub repository and GHCR package still use `fred-head/repoquill`. The
+Compose service name and named volume key also remain `repoquill` identifiers
+for in-place upgrade compatibility. The container runs the `varianotes` CLI.
+
 ```yaml
 services:
   repoquill:
     image: ghcr.io/fred-head/repoquill:0.1.0-alpha
+    build: .
     init: true
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "${VARIANOTES_PUBLISH_ADDR:-${REPOQUILL_PUBLISH_ADDR:-127.0.0.1}}:8080:8080"
     volumes:
       - repoquill-data:/data
     environment:
-      REPOQUILL_NOTEBOOKS_DIR: /data/notebooks
-      REPOQUILL_NOTEBOOK_METADATA: /data/app/notebooks.json
-      REPOQUILL_AUTH_MODE: local
-      REPOQUILL_AUTH_METADATA: /data/app/auth.db
-      REPOQUILL_AUTH_ENCRYPTION_KEY_FILE: /data/app/auth.key
-      REPOQUILL_SESSION_COOKIE_SECURE: "true"
-      # Set only to the exact address/CIDR of your reverse proxy network.
-      # REPOQUILL_TRUSTED_PROXIES: 172.20.0.0/24
-      # Set only if the proxy rewrites the browser-visible origin.
-      # REPOQUILL_TRUSTED_ORIGINS: https://notes.example.com
+      VARIANOTES_NOTEBOOKS_DIR: "${VARIANOTES_NOTEBOOKS_DIR:-${REPOQUILL_NOTEBOOKS_DIR:-/data/notebooks}}"
+      VARIANOTES_NOTEBOOK_METADATA: "${VARIANOTES_NOTEBOOK_METADATA:-${REPOQUILL_NOTEBOOK_METADATA:-/data/app/notebooks.json}}"
+      VARIANOTES_AUTH_MODE: "${VARIANOTES_AUTH_MODE:-${REPOQUILL_AUTH_MODE:-local}}"
+      VARIANOTES_AUTH_METADATA: "${VARIANOTES_AUTH_METADATA:-${REPOQUILL_AUTH_METADATA:-/data/app/auth.db}}"
+      VARIANOTES_AUTH_ENCRYPTION_KEY_FILE: "${VARIANOTES_AUTH_ENCRYPTION_KEY_FILE:-${REPOQUILL_AUTH_ENCRYPTION_KEY_FILE:-/data/app/auth.key}}"
+      VARIANOTES_SESSION_COOKIE_SECURE: "${VARIANOTES_SESSION_COOKIE_SECURE:-${REPOQUILL_SESSION_COOKIE_SECURE:-true}}"
+      VARIANOTES_TRUSTED_PROXIES: "${VARIANOTES_TRUSTED_PROXIES:-${REPOQUILL_TRUSTED_PROXIES:-}}"
+      VARIANOTES_TRUSTED_ORIGINS: "${VARIANOTES_TRUSTED_ORIGINS:-${REPOQUILL_TRUSTED_ORIGINS:-}}"
+      VARIANOTES_ADDR: "${VARIANOTES_ADDR:-${REPOQUILL_ADDR:-:8080}}"
+      VARIANOTES_NOTEBOOK_NAME: "${VARIANOTES_NOTEBOOK_NAME:-${REPOQUILL_NOTEBOOK_NAME:-}}"
+      REPOQUILL_NOTEBOOKS_DIR: "${REPOQUILL_NOTEBOOKS_DIR:-}"
+      REPOQUILL_NOTEBOOK_METADATA: "${REPOQUILL_NOTEBOOK_METADATA:-}"
+      REPOQUILL_AUTH_MODE: "${REPOQUILL_AUTH_MODE:-}"
+      REPOQUILL_AUTH_METADATA: "${REPOQUILL_AUTH_METADATA:-}"
+      REPOQUILL_AUTH_ENCRYPTION_KEY_FILE: "${REPOQUILL_AUTH_ENCRYPTION_KEY_FILE:-}"
+      REPOQUILL_SESSION_COOKIE_SECURE: "${REPOQUILL_SESSION_COOKIE_SECURE:-}"
+      REPOQUILL_TRUSTED_PROXIES: "${REPOQUILL_TRUSTED_PROXIES:-}"
+      REPOQUILL_TRUSTED_ORIGINS: "${REPOQUILL_TRUSTED_ORIGINS:-}"
+      REPOQUILL_ADDR: "${REPOQUILL_ADDR:-}"
+      REPOQUILL_NOTEBOOK_NAME: "${REPOQUILL_NOTEBOOK_NAME:-}"
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m
@@ -65,8 +84,8 @@ volumes:
 ```
 
 The example expects an HTTPS reverse proxy. For a localhost-only HTTP test,
-set `REPOQUILL_SESSION_COOKIE_SECURE` to `"false"` and open
-<http://localhost:8080>. Restore `"true"` before serving RepoQuill through
+set `VARIANOTES_SESSION_COOKIE_SECURE` to `"false"` and open
+<http://localhost:8080>. Restore `"true"` before serving VariaNotes through
 HTTPS. Never expose the backend port directly to the public Internet.
 
 Start the service:
@@ -80,7 +99,7 @@ On first start with local authentication, create the one-time setup token in a
 trusted terminal and enter it on the setup screen with your owner password:
 
 ```sh
-docker compose exec repoquill repoquill auth bootstrap-token
+docker compose exec repoquill varianotes auth bootstrap-token
 ```
 
 The token is shown once and expires after 15 minutes. Passwords require at
@@ -89,7 +108,7 @@ configure session lifetimes, inspect sessions, enable TOTP MFA, and revoke
 other devices.
 
 After signing in, create a vault or adopt an existing direct child folder under
-`REPOQUILL_NOTEBOOKS_DIR`. Adoption keeps the existing Markdown and assets in
+`VARIANOTES_NOTEBOOKS_DIR`. Adoption keeps the existing Markdown and assets in
 place. A legacy `.git` directory is left untouched and is not used by the
 application. Its old commits may still contain deleted notes or secrets.
 
@@ -112,20 +131,30 @@ automatic backup and does not contain authentication data or Trash.
 
 | Variable | Purpose and safe default |
 | --- | --- |
-| `REPOQUILL_AUTH_MODE` | `local` by default; `disabled` removes built-in authentication. |
-| `REPOQUILL_AUTH_METADATA` | Authentication database, normally `/data/app/auth.db`. |
-| `REPOQUILL_AUTH_ENCRYPTION_KEY_FILE` | MFA key path; defaults beside `auth.db`. |
-| `REPOQUILL_SESSION_COOKIE_SECURE` | Keep `true` behind HTTPS; use `false` only for localhost HTTP testing. |
-| `REPOQUILL_TRUSTED_PROXIES` | Exact proxy IPs/CIDRs allowed to supply forwarding headers. |
-| `REPOQUILL_TRUSTED_ORIGINS` | Exact public origins when proxy host rewriting requires them. |
-| `REPOQUILL_NOTEBOOKS_DIR` | Vault storage root, normally `/data/notebooks`. |
-| `REPOQUILL_NOTEBOOK_METADATA` | Vault registry, normally `/data/app/notebooks.json`. |
-| `REPOQUILL_DEV_VAULT_PATH` | Optional initial vault path used by `scripts/dev.sh`; omit in production. |
-| `REPOQUILL_NOTEBOOK_NAME` | Optional display name for the legacy single-vault path. |
-| `REPOQUILL_PUBLISH_ADDR` | Compose host bind address; defaults to `127.0.0.1`. |
-| `REPOQUILL_ADDR` | Internal HTTP listen address; normally `:8080`. |
+| `VARIANOTES_AUTH_MODE` | `local` by default; `disabled` removes built-in authentication. |
+| `VARIANOTES_AUTH_METADATA` | Authentication database, normally `/data/app/auth.db`. |
+| `VARIANOTES_AUTH_ENCRYPTION_KEY_FILE` | MFA key path; defaults beside `auth.db`. |
+| `VARIANOTES_SESSION_COOKIE_SECURE` | Keep `true` behind HTTPS; use `false` only for localhost HTTP testing. |
+| `VARIANOTES_TRUSTED_PROXIES` | Exact proxy IPs/CIDRs allowed to supply forwarding headers. |
+| `VARIANOTES_TRUSTED_ORIGINS` | Exact public origins when proxy host rewriting requires them. |
+| `VARIANOTES_NOTEBOOKS_DIR` | Vault storage root, normally `/data/notebooks`. |
+| `VARIANOTES_NOTEBOOK_METADATA` | Vault registry, normally `/data/app/notebooks.json`. |
+| `VARIANOTES_DEV_VAULT_PATH` | Optional initial vault path used by `scripts/dev.sh`; omit in production. |
+| `VARIANOTES_NOTEBOOK_NAME` | Optional display name for the legacy single-vault path. |
+| `VARIANOTES_PUBLISH_ADDR` | Compose host bind address; defaults to `127.0.0.1`. |
+| `VARIANOTES_ADDR` | Internal HTTP listen address; normally `:8080`. |
 
-`REPOQUILL_AUTH_MODE=disabled` is only suitable for localhost, a private
+During the transition, every `VARIANOTES_*` application setting also accepts a
+`REPOQUILL_*` alias with the same suffix. Existing `.env` files and direct
+container invocations therefore continue to work. Direct application startup
+fails with a clear error if both names contain different non-empty values. An
+empty new value falls back to the legacy value. The Compose example resolves the new host
+variable first and passes both names to the application, which rejects
+conflicting application settings. `VARIANOTES_PUBLISH_ADDR` takes precedence
+over its legacy Compose host variable. Remove or align duplicate settings when
+both are present.
+
+`VARIANOTES_AUTH_MODE=disabled` is only suitable for localhost, a private
 LAN/VPN, or a deliberately configured external access boundary. It is not
 inferred from proxy headers.
 
@@ -159,13 +188,13 @@ image assets; unused-asset cleanup is a separate, explicit operation.
 
 When two browser sessions edit the same note, the server rejects a stale save.
 The open browser draft and current server version remain available for an
-explicit choice or a manually edited combined version. RepoQuill does not
+explicit choice or a manually edited combined version. VariaNotes does not
 create an in-app version history or retain a hidden save archive. Recovery
 after app-level deletion depends on operator backups.
 
 ## Security
 
-RepoQuill provides single-owner local authentication by default, optional TOTP
+VariaNotes provides single-owner local authentication by default, optional TOTP
 MFA, session expiry and revocation, and trusted-proxy controls. It does not
 provide multiple users or roles, and it does not terminate TLS. Put it behind a
 TLS reverse proxy and restrict backend reachability to that proxy. See the
@@ -175,20 +204,20 @@ TLS reverse proxy and restrict backend reachability to that proxy. See the
 If the owner password is forgotten, an operator can reset the credential:
 
 ```sh
-docker compose exec -it repoquill repoquill auth reset-password
+docker compose exec -it repoquill varianotes auth reset-password
 ```
 
 To reset MFA separately:
 
 ```sh
-docker compose exec repoquill repoquill auth reset-mfa
+docker compose exec repoquill varianotes auth reset-mfa
 ```
 
 Back up `/data/app/auth.db` and `/data/app/auth.key` together. Authentication
 recovery changes do not modify vault files. Report security issues privately as
 described in [SECURITY.md](SECURITY.md).
 
-## Upgrade from a Git-backed RepoQuill release
+## Upgrade from an earlier RepoQuill installation
 
 1. Before stopping the old container, save open notes and resolve any recovery-draft or conflict
    prompt in the old browser app. The new release clears legacy browser-stored
@@ -213,6 +242,50 @@ assets use no-store/network-only handling. If a rollback requires prior
 application metadata, restore the matching `/data` backup before starting the
 older image. See [ALPHA-RELEASE.md](ALPHA-RELEASE.md) for the operator checklist.
 
+### Compose volume and repository rename
+
+The current Compose configuration keeps the `repoquill` service name and the
+`repoquill-data` volume key. Compose prefixes that volume with the project name
+(normally `repoquill` when launched from this checkout). Keep the same project
+name and `/data` mount when upgrading; the service container can be replaced
+without replacing the volume. Do not run `docker compose down -v` as part of an
+upgrade.
+
+Before a future checkout-directory or repository rename, record the existing
+Compose project and actual volume name:
+
+```sh
+docker compose ls
+docker volume ls
+```
+
+Start the renamed checkout with that same project name, for example
+`docker compose -p repoquill up -d` if `repoquill` was the recorded name. If the
+project name must change, configure `repoquill-data` as an external volume using
+the exact existing volume name from `docker volume inspect`:
+
+```yaml
+volumes:
+  repoquill-data:
+    external: true
+    name: repoquill_repoquill-data
+```
+
+Replace the example volume name with the inspected name. Back up `/data` before
+changing that reference and verify the registered vaults after startup.
+Do not create an empty replacement volume and assume it contains the old data.
+
+The GitHub repository URL, release workflow, and GHCR image remain
+`fred-head/repoquill` until those external resources are explicitly renamed or
+migrated. Only after the repository and registry package migration should
+published images move to `ghcr.io/fred-head/varianotes`. The Go module path and
+frontend repository links likewise continue to use the current GitHub URL
+until that repository migration is complete. The PWA manifest ID (`/`),
+existing `repoquill.*` browser preference keys, cross-tab authentication event
+names, session cookie names, MFA encryption context, and recovery-code hashing
+domain stay stable so preferences, open tabs, installs, and signed-in browser
+sessions remain compatible through the branding change.
+
 ## Local development and testing
 
 Requirements: Go 1.26+, Node.js 24 LTS, and npm.
@@ -224,9 +297,14 @@ Requirements: Go 1.26+, Node.js 24 LTS, and npm.
 For local authentication, create a setup token in another terminal:
 
 ```sh
-REPOQUILL_AUTH_METADATA="$PWD/.repoquill-data/app/auth.db" \
-  go run ./cmd/repoquill auth bootstrap-token
+VARIANOTES_AUTH_METADATA="$PWD/.repoquill-data/app/auth.db" \
+  go run ./cmd/varianotes auth bootstrap-token
 ```
+
+The existing `.repoquill-data` development directory is deliberately retained
+so local authentication state and existing development data remain in place.
+The environment variable prefix changed; the development data directory did
+not.
 
 Then open <http://localhost:5173>. To pass an existing folder for local
 development, use `./scripts/dev.sh /absolute/path/to/notes`. See

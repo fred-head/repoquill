@@ -1,5 +1,5 @@
 const legacyDraftKeys = new Set(['repoquill.recovery-draft'])
-const legacyDraftPrefixes = ['repoquill:conflict-decisions:']
+const legacyDraftPrefixes = ['repoquill:conflict-decisions:', 'varianotes:conflict-decisions:']
 
 type KeyStorage = Pick<Storage, 'key' | 'length' | 'removeItem'>
 

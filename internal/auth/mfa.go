@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	mfaIssuer             = "RepoQuill"
+	mfaIssuer             = "VariaNotes"
 	mfaRecoveryCodeCount  = 10
 	mfaEnrollmentLifetime = 15 * time.Minute
 )

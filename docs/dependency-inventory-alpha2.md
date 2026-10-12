@@ -1,5 +1,9 @@
 # Alpha 2 dependency and toolchain inventory
 
+This is a historical Alpha 2 snapshot. References to RepoQuill describe the
+product at the time of review and are preserved as part of that record; the
+current product name is VariaNotes.
+
 Initial snapshot: 2026-08-30
 
 Final source review: 2026-09-01

@@ -412,7 +412,7 @@ func writeMarkdownAtomically(target, content string) error {
 	if err != nil || !info.Mode().IsRegular() {
 		return errors.Join(ErrInvalidPath, err)
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(target), ".repoquill-link-rewrite-*.tmp")
+	temporary, err := os.CreateTemp(filepath.Dir(target), ".varianotes-link-rewrite-*.tmp")
 	if err != nil {
 		return err
 	}

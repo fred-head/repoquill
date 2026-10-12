@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/fred-head/repoquill/internal/app"
 	"github.com/fred-head/repoquill/internal/auth"
+	"github.com/fred-head/repoquill/internal/envcompat"
 	"golang.org/x/term"
 )
 
@@ -21,6 +23,14 @@ var version = "dev"
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-h", "--help", "help":
+			printUsage(os.Stdout)
+			return
+		case "-v", "--version", "version":
+			printVersion(os.Stdout, version)
+			return
+		}
 		if err := runAuthCommand(context.Background(), logger, os.Args[1:]); err != nil {
 			logger.Error("authentication command failed", "error", err)
 			os.Exit(1)
@@ -47,13 +57,18 @@ func main() {
 	if authState.Mode == auth.ModeDisabled {
 		logger.Warn("authentication is explicitly disabled; restrict access with a trusted network or external protection")
 	}
-	handler, err := app.NewHandlerWithAuth(logger, os.Getenv("REPOQUILL_DEV_VAULT_PATH"), authService, version)
+	devVaultPath, _, err := envcompat.Lookup(os.LookupEnv, "VARIANOTES_DEV_VAULT_PATH")
+	if err != nil {
+		logger.Error("configure application", "error", err)
+		os.Exit(1)
+	}
+	handler, err := app.NewHandlerWithAuth(logger, devVaultPath, authService, version)
 	if err != nil {
 		logger.Error("configure application", "error", err)
 		os.Exit(1)
 	}
 	server := &http.Server{
-		Addr:              envOrDefault("REPOQUILL_ADDR", ":8080"),
+		Addr:              ":8080",
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -61,12 +76,18 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 	}
+	if address, _, lookupErr := envcompat.Lookup(os.LookupEnv, "VARIANOTES_ADDR"); lookupErr != nil {
+		logger.Error("configure server address", "error", lookupErr)
+		os.Exit(1)
+	} else if address != "" {
+		server.Addr = address
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
-		logger.Info("repoquill started", "address", server.Addr)
+		logger.Info("varianotes started", "address", server.Addr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server stopped unexpectedly", "error", err)
 			os.Exit(1)
@@ -80,12 +101,12 @@ func main() {
 		logger.Error("graceful shutdown failed", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("repoquill stopped")
+	logger.Info("varianotes stopped")
 }
 
 func runAuthCommand(ctx context.Context, logger *slog.Logger, arguments []string) error {
 	if len(arguments) != 2 || arguments[0] != "auth" || (arguments[1] != "bootstrap-token" && arguments[1] != "reset-password" && arguments[1] != "reset-mfa") {
-		return errors.New("usage: repoquill auth <bootstrap-token|reset-password|reset-mfa>")
+		return errors.New("usage: varianotes auth <bootstrap-token|reset-password|reset-mfa>")
 	}
 	config, err := auth.ConfigFromEnvironment(os.LookupEnv)
 	if err != nil {
@@ -115,7 +136,7 @@ func runAuthCommand(ctx context.Context, logger *slog.Logger, arguments []string
 	}
 	// This is deliberate command output to the operator's terminal, not a log
 	// record. The plaintext token is returned once and is never persisted.
-	fmt.Fprintln(os.Stdout, "Use this one-time setup token in RepoQuill within 15 minutes:")
+	fmt.Fprintln(os.Stdout, "Use this one-time setup token in VariaNotes within 15 minutes:")
 	fmt.Fprintln(os.Stdout, token.Value)
 	fmt.Fprintf(os.Stdout, "Expires at: %s\n", token.ExpiresAt.Format(time.RFC3339))
 	return nil
@@ -150,9 +171,14 @@ func resetOwnerPassword(ctx context.Context, service *auth.Service) error {
 	return nil
 }
 
-func envOrDefault(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
+func printUsage(writer io.Writer) {
+	fmt.Fprintln(writer, "VariaNotes — self-hosted Markdown notes with full control over your data")
+	fmt.Fprintln(writer)
+	fmt.Fprintln(writer, "Usage:")
+	fmt.Fprintln(writer, "  varianotes [--help|--version]")
+	fmt.Fprintln(writer, "  varianotes auth <bootstrap-token|reset-password|reset-mfa>")
+}
+
+func printVersion(writer io.Writer, currentVersion string) {
+	fmt.Fprintf(writer, "varianotes %s\n", currentVersion)
 }

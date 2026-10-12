@@ -108,14 +108,14 @@ jobs:
           --pull
           --build-arg VERSION=scheduled-${GITHUB_SHA}
           --build-arg VCS_REF=${GITHUB_SHA}
-          --tag repoquill:scheduled
+          --tag varianotes:scheduled
           .
 
       - name: Produce Trivy report
         id: trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: repoquill:scheduled
+          image-ref: varianotes:scheduled
           format: json
           output: trivy-fresh.json
           scanners: vuln,secret
@@ -133,7 +133,7 @@ jobs:
 
       - name: Enforce fresh-image policy
         if: always()
-        run: ./scripts/evaluate-trivy-report.sh trivy-fresh.json repoquill:scheduled
+        run: ./scripts/evaluate-trivy-report.sh trivy-fresh.json varianotes:scheduled
 
   published-images:
     name: Scan published ${{ matrix.kind }} image

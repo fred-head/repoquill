@@ -7,6 +7,8 @@ export type AuthStatus = {
 }
 
 let csrfToken = ''
+// Keep these names stable so already-open tabs from the previous app version
+// continue to coordinate authentication changes with updated tabs.
 const authRequiredEvent = 'repoquill:auth-required'
 const authChangedEvent = 'repoquill:auth-changed'
 const channelName = 'repoquill-auth'

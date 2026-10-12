@@ -25,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Rebranded the active application as VariaNotes and renamed its CLI to
+  `varianotes`. Existing RepoQuill environment aliases, deployment volume,
+  session cookies, MFA data, and browser preferences remain compatible.
 - Replaced Git-backed notebooks and synchronization with online-only
   filesystem vaults. Saves write directly to the server; the operator owns
   backup and restore.

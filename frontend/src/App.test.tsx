@@ -84,6 +84,7 @@ afterAll(async () => new Promise((resolve) => setTimeout(resolve, 3_100)))
 describe('App auto-lock integration', () => {
   it('keeps the note visible when inactivity changes it to Read only', async () => {
     const view = render(<App />)
+    expect(await view.findByText('VariaNotes')).toBeTruthy()
     await waitFor(() => expect((view.container.querySelector('[aria-haspopup="menu"]') as HTMLElement).textContent).toContain('Vaults'))
     await waitFor(() => expect(view.getAllByRole('button', { name: 'Personal Notes' }).length).toBeGreaterThan(0))
     expect(view.getByText('Create in:').parentElement?.textContent).toContain('Personal Notes')
@@ -114,7 +115,7 @@ describe('App auto-lock integration', () => {
   it('uses one bounded PWA scroll area and measures the sticky toolbar offset from the visible header stack', async () => {
     const view = render(<App />)
     const headerStack = await waitFor(() => {
-      const element = view.container.querySelector<HTMLElement>('.repoquill-note-header-stack')
+      const element = view.container.querySelector<HTMLElement>('.varianotes-note-header-stack')
       expect(element).toBeTruthy()
       return element!
     })
@@ -129,8 +130,8 @@ describe('App auto-lock integration', () => {
     const toolbars = formatting.closest<HTMLElement>('[aria-label="Editor toolbars"]')
     const noteScroller = formatting.closest<HTMLElement>('main')
     await waitFor(() => expect(noteScroller?.style.getPropertyValue('--editor-toolbar-top')).toBe('123px'))
-    expect(view.container.firstElementChild?.classList.contains('repoquill-app-shell')).toBe(true)
-    expect(noteScroller?.classList.contains('repoquill-note-scroll')).toBe(true)
+    expect(view.container.firstElementChild?.classList.contains('varianotes-app-shell')).toBe(true)
+    expect(noteScroller?.classList.contains('varianotes-note-scroll')).toBe(true)
     expect(toolbars?.dataset.sticky).toBe('true')
   })
 
@@ -228,7 +229,7 @@ describe('App auto-lock integration', () => {
     const view = render(<App />)
     expect(await view.findByRole('heading', { name: 'Create your first vault' })).toBeTruthy()
     expect(view.getByText('No vault yet')).toBeTruthy()
-    expect(view.queryByText(/Set REPOQUILL_DEV_VAULT_PATH/)).toBeNull()
+    expect(view.queryByText(/Set VARIANOTES_DEV_VAULT_PATH/)).toBeNull()
     fireEvent.click(view.getAllByRole('button', { name: 'Add Vault' })[0])
     expect(view.getByRole('heading', { name: 'Add Vault' })).toBeTruthy()
     expect(view.getByRole('button', { name: 'Create an empty vault' })).toBeTruthy()
@@ -475,12 +476,12 @@ describe('App auto-lock integration', () => {
     window.dispatchEvent(event)
     fireEvent.click(await view.findByRole('button', { name: 'Dismiss install suggestion' }))
     expect(localStorage.getItem('repoquill.install-prompt-dismissed')).toBe('true')
-    expect(view.queryByText('Install RepoQuill for a standalone app experience.')).toBeNull()
+    expect(view.queryByText('Install VariaNotes for a standalone app experience.')).toBeNull()
 
     cleanup()
     const nextView = render(<App />)
     window.dispatchEvent(event)
-    expect(nextView.queryByText('Install RepoQuill for a standalone app experience.')).toBeNull()
+    expect(nextView.queryByText('Install VariaNotes for a standalone app experience.')).toBeNull()
   })
 
   it('does not persist unsaved note content into browser storage', async () => {

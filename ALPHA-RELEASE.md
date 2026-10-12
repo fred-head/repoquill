@@ -1,6 +1,6 @@
-# Alpha release and recovery guide
+# VariaNotes alpha release and recovery guide
 
-This checklist is for operators evaluating and upgrading RepoQuill. CI remains
+This checklist is for operators evaluating and upgrading VariaNotes. CI remains
 the publication gate; do not promote an image that has not passed the release
 workflow and security checks.
 
@@ -17,7 +17,7 @@ workflow and security checks.
    available.
 
 Operators choose backup schedule, retention, off-site storage, and restore
-testing. RepoQuill's ZIP export is an owner-triggered portable copy of a vault,
+testing. VariaNotes's ZIP export is an owner-triggered portable copy of a vault,
 not a backup service.
 
 ## Git-free storage transition
@@ -29,7 +29,7 @@ adoption. New vaults are created as plain folders; there is no Git or SSH
 runtime requirement.
 
 Before starting the new image, preserve the old `/data` volume. Existing `.git`
-directories and managed SSH key files are left on disk; RepoQuill no longer
+directories and managed SSH key files are left on disk; VariaNotes no longer
 reads, uses, or deletes them. Old commits may contain deleted notes or secrets.
 On first startup, obsolete remote URLs, branch settings, and SSH-key
 assignments are removed from the vault registry; the key files themselves are
@@ -37,6 +37,31 @@ left untouched.
 The application cannot erase copies in old commits or operator backups. Treat
 their review and any cleanup as a separate operator migration with its own
 verified backup.
+
+## Rebranding compatibility
+
+VariaNotes prefers `VARIANOTES_*` settings and continues to accept matching
+`REPOQUILL_*` names. An empty new value falls back to the old name. If both are
+non-empty and differ, startup reports the conflicting names. Compose resolves
+the new host variable first, passes both values through, and lets the
+application reject conflicting settings.
+
+The rebrand does not move or rename `/data`, notebook directories,
+`/data/app/notebooks.json`, `/data/app/auth.db`, or `/data/app/auth.key`. Keep
+the existing Compose project name, `repoquill` service key, `repoquill-data`
+volume key, `repoquill` container user (and its volume ownership), and `/data`
+mount during deployment. The PWA
+manifest ID (`/`), browser preference keys, cross-tab authentication event
+names, session cookie names, MFA encryption context, and recovery-code hashing
+domain also remain stable.
+The container exposes `repoquill` as a temporary command alias for `varianotes`
+so existing operator scripts continue to work during the transition.
+
+The GitHub repository, workflow image path, and existing GHCR package stay at
+`fred-head/repoquill` until an operator performs those external migrations.
+After a repository checkout is renamed, reuse its recorded Compose project
+name, or explicitly attach the existing volume by its inspected name. Back up
+the complete volume first and never use `docker compose down -v` to upgrade.
 
 After the upgrade, sign in and verify the registered vault list, representative
 notes, assets, Trash, and export. Confirm that each device sees the same server

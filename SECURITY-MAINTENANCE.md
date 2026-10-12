@@ -1,12 +1,12 @@
 # Security Maintenance and Vulnerability Response
 
-This document defines how RepoQuill evaluates dependency updates, scanner
+This document defines how VariaNotes evaluates dependency updates, scanner
 findings, published artifacts, and privately reported vulnerabilities. It is a
 maintenance procedure, not a claim that automation can find every defect.
 
 ## Continuous signals
 
-RepoQuill uses independent signals so a source commit is not required to detect
+VariaNotes uses independent signals so a source commit is not required to detect
 a newly disclosed vulnerability:
 
 - Dependabot alerts and reviewed update pull requests for Go, npm, Docker, and
@@ -27,9 +27,10 @@ not clean results. GitHub workflow notifications are the initial maintainer
 signal; the run summary identifies the reference or digest, component,
 advisory, severity, installed version, and fixed version where known.
 
-The repository variable `REPOQUILL_LATEST_ALPHA_VERSION` identifies the newest
-immutable image tag for scheduled rescanning. It must be updated only after a
-new immutable Alpha release completes successfully.
+The existing repository variable `REPOQUILL_LATEST_ALPHA_VERSION` identifies
+the newest immutable image tag for scheduled rescanning. Its name is retained
+until the repository settings are migrated; update it only after a new
+immutable Alpha release completes successfully.
 
 ## Dependency pull-request policy
 
@@ -76,7 +77,7 @@ report receives the following assessment:
    upstream advisory when possible. Do not dismiss it merely because a second
    scanner does not report it.
 3. Evaluate reachability, attacker prerequisites, exposed data, authentication
-   boundary, and whether RepoQuill's actual build includes the affected code.
+   boundary, and whether VariaNotes's actual build includes the affected code.
 4. Classify the response as affected, not affected, mitigated, false positive,
    or under investigation. Any dismissal must contain a specific technical
    rationale in the scanner's audit trail.
@@ -95,7 +96,7 @@ qualifies for an exception that marks a release clean.
 
 A CodeQL dismissal is permitted only after the complete reported source-to-sink
 flow and all intervening checks have been reviewed. The audit comment must name
-the concrete control that makes the flow safe. For RepoQuill filesystem flows,
+the concrete control that makes the flow safe. For VariaNotes filesystem flows,
 that means confirming normalization, absolute/parent rejection, reserved-name
 rejection where applicable, resolved-parent or resolved-target symlink checks,
 root containment, expected file type, and a destructive-operation revalidation.
@@ -165,7 +166,7 @@ If a credential may have been exposed:
 
 1. Revoke or rotate it immediately at its authority (Git provider, proxy,
    registry, or other service).
-2. Replace affected RepoQuill-managed keys and verify trusted host identities.
+2. Replace affected VariaNotes-managed keys and verify trusted host identities.
 3. Inspect Git history, workflow logs, artifacts, images, caches, mirrors, and
    forks. Removing a secret from the latest commit is insufficient.
 4. Preserve evidence without copying secrets into issues or ordinary logs.

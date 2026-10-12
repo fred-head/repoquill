@@ -14,8 +14,9 @@ function fakeStorage(initial: Record<string, string>) {
 describe('legacy browser draft cleanup', () => {
   it('removes note-bearing drafts while keeping unrelated settings', () => {
     const storage = fakeStorage({
-      'repoquill:conflict-decisions:first': 'sensitive combined note',
-      'repoquill:conflict-decisions:second': 'another note',
+      'repoquill:conflict-decisions:previous-version': 'sensitive previous-version note',
+      'varianotes:conflict-decisions:first': 'sensitive combined note',
+      'varianotes:conflict-decisions:second': 'another note',
       'repoquill.recovery-draft': 'recovery note',
       'repoquill.theme': 'light',
     })

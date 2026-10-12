@@ -3,6 +3,7 @@ package auth
 import (
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +38,33 @@ func TestConfigFromEnvironmentAcceptsExplicitDisabledMode(t *testing.T) {
 	}
 	if config.Mode != ModeDisabled || !config.ModeExplicit {
 		t.Fatalf("expected explicit disabled mode, got %#v", config)
+	}
+}
+
+func TestConfigFromEnvironmentUsesVariaNotesNamesAndRetainsPaths(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "varianotes-auth.db")
+	config, err := ConfigFromEnvironment(mapLookup(map[string]string{
+		"VARIANOTES_AUTH_MODE":     "local",
+		"VARIANOTES_AUTH_METADATA": metadataPath,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MetadataPath != metadataPath {
+		t.Fatalf("configured auth path changed: got %q, want %q", config.MetadataPath, metadataPath)
+	}
+	if config.EncryptionKeyPath != filepath.Join(filepath.Dir(metadataPath), "auth.key") {
+		t.Fatalf("unexpected encryption key path %q", config.EncryptionKeyPath)
+	}
+}
+
+func TestConfigFromEnvironmentRejectsConflictingNamespaces(t *testing.T) {
+	_, err := ConfigFromEnvironment(mapLookup(map[string]string{
+		"VARIANOTES_AUTH_MODE": "local",
+		"REPOQUILL_AUTH_MODE":  "disabled",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "conflicting VARIANOTES_AUTH_MODE and REPOQUILL_AUTH_MODE") {
+		t.Fatalf("expected a clear namespace conflict error, got %v", err)
 	}
 }
 
