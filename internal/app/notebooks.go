@@ -306,7 +306,7 @@ func newNotebookID() (string, error) {
 // notebook root. Refusing nested paths and symlinks keeps later deletion
 // checks confined to a single filesystem component.
 func adoptNotebookDirectory(baseDirectory, folderName string) (string, error) {
-	if folderName == "" || folderName == "." || folderName == ".." || strings.ContainsAny(folderName, "/\\\x00") || filepath.IsAbs(folderName) {
+	if folderName == "" || folderName == "." || strings.Contains(folderName, "..") || strings.ContainsAny(folderName, "/\\\x00") || filepath.IsAbs(folderName) {
 		return "", errors.New("choose a direct child folder inside the notebook directory")
 	}
 	base, err := filepath.Abs(baseDirectory)

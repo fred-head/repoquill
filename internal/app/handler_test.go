@@ -1248,8 +1248,10 @@ func TestAdoptVaultPreservesLegacyGitDirectoryAndExportOmitsIt(t *testing.T) {
 	if duplicate := adopt("legacy"); duplicate.Code != http.StatusConflict {
 		t.Fatalf("duplicate folder registration returned %d: %s", duplicate.Code, duplicate.Body.String())
 	}
-	if traversal := adopt("../outside"); traversal.Code != http.StatusBadRequest {
-		t.Fatalf("path traversal was accepted: %d %s", traversal.Code, traversal.Body.String())
+	for _, unsafeFolder := range []string{"../outside", "legacy..backup"} {
+		if traversal := adopt(unsafeFolder); traversal.Code != http.StatusBadRequest {
+			t.Errorf("unsafe folder %q was accepted: %d %s", unsafeFolder, traversal.Code, traversal.Body.String())
+		}
 	}
 	if symlink := adopt("escape"); symlink.Code != http.StatusBadRequest {
 		t.Fatalf("symlink escape was accepted: %d %s", symlink.Code, symlink.Body.String())
