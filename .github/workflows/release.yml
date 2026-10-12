@@ -382,11 +382,11 @@ jobs:
             echo
             echo "### Upgrade and migration"
             echo
-            echo "1. Back up \`/data\`, including app metadata, keys, trusted hosts, and notebook working trees."
+            echo "1. Back up the complete \`/data\` volume, including vault files and application metadata."
             echo "2. Read the [Alpha release guide](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/ALPHA-RELEASE.md) and [known limitations](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/KNOWN-LIMITATIONS.md)."
             echo "3. Pull and deploy the immutable version tag, then complete the documented operator smoke test before relying on it."
             echo
-            echo "Canonical notes and assets require no proprietary migration; they remain ordinary Git-backed Markdown files. Any application-metadata migration or special limitation must be documented in the release guide before this tag is created."
+            echo "Canonical notes and assets remain ordinary Markdown and files in the vault. Any application-metadata migration or special limitation must be documented in the release guide before this tag is created."
             echo
             echo "### Rollback"
             echo

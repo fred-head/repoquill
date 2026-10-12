@@ -21,8 +21,8 @@ beforeEach(() => {
   localStorage.setItem('repoquill.auto-lock-minutes', '1')
   let active = 'personal'
   let notebooks = [{ id: 'local', name: 'repos' }, { id: 'personal', name: 'Personal Notes', branch: 'main' }, { id: 'work', name: 'Work', branch: 'main' }]
-  let noteContent = '# Auto-lock note'
-  let noteVersion = 'v1'
+  const noteContent = '# Auto-lock note'
+  const noteVersion = 'v1'
   let notePath = 'Note.md'
   let noteTrashed = false
   let trashItems: Array<{id:string;originalPath:string;type:'file';deletedAt:string;size:number}> = []
@@ -36,12 +36,6 @@ beforeEach(() => {
     if (url === '/api/notebooks/local' && init?.method === 'DELETE') { notebooks = notebooks.filter((notebook) => notebook.id !== 'local'); return new Response(null, { status: 204 }) }
     if (url === '/api/repository/tree') return Response.json({ entries: active === 'personal' ? [...(noteTrashed ? [] : [{ name: notePath, path: notePath, type: 'file' }]), { name: 'Second.md', path: 'Second.md', type: 'file' }] : [{ name: 'Work.md', path: 'Work.md', type: 'file' }] })
     if (url === '/api/repository/search?q=auto-lock') return Response.json({ results: [{ path: 'Note.md', type: 'content', line: 1, excerpt: '# Auto-lock note' }] })
-    if (url === '/api/repository/git/status') return Response.json({ state: 'clean', branch: 'main' })
-    if (url === '/api/repository/git/sync' && init?.method === 'POST') return Response.json({ state: 'synced', branch: 'main' })
-    if (url === '/api/repository/git/sync-background' && init?.method === 'POST') return Response.json({ status: 'accepted' }, { status: 202 })
-    if (url === '/api/repository/history?path=Note.md') return Response.json({ entries: [{ versionId: 'a'.repeat(40), timestamp: '2026-08-20T10:00:00Z', summary: 'Earlier note', path: 'Note.md' }] })
-    if (url.startsWith('/api/repository/history/version?')) return Response.json({ versionId: 'a'.repeat(40), timestamp: '2026-08-20T10:00:00Z', summary: 'Earlier note', path: 'Note.md', content: '# Earlier note' })
-    if (url === '/api/repository/history/restore' && init?.method === 'POST') { noteContent = '# Earlier note'; noteVersion = 'v-restored'; return Response.json({ path: 'Note.md', content: noteContent, version: noteVersion }) }
     if (url === '/api/repository/move/preview' && init?.method === 'POST') { const body = JSON.parse(String(init.body)); return Response.json({ source:body.source,target:body.target,token:'rewrite-token',rewrites:[{notePath:'Second.md',nextNotePath:'Second.md',line:1,before:'Note.md',after:body.target}] }) }
     if (url === '/api/repository/move' && init?.method === 'POST') { const body = JSON.parse(String(init.body)); notePath = body.target; return Response.json({ path:body.target,rewrites:[] }) }
     if (url === '/api/repository/entry?path=Note.md' && init?.method === 'DELETE') { noteTrashed = true; const item = { id: 'b'.repeat(32), originalPath: 'Note.md', type: 'file' as const, deletedAt: '2026-08-28T10:00:00Z', size: 42 }; trashItems = [item]; return Response.json(item) }
@@ -90,7 +84,7 @@ afterAll(async () => new Promise((resolve) => setTimeout(resolve, 3_100)))
 describe('App auto-lock integration', () => {
   it('keeps the note visible when inactivity changes it to Read only', async () => {
     const view = render(<App />)
-    await waitFor(() => expect((view.container.querySelector('[aria-haspopup="menu"]') as HTMLElement).textContent).toContain('Notebooks'))
+    await waitFor(() => expect((view.container.querySelector('[aria-haspopup="menu"]') as HTMLElement).textContent).toContain('Vaults'))
     await waitFor(() => expect(view.getAllByRole('button', { name: 'Personal Notes' }).length).toBeGreaterThan(0))
     expect(view.getByText('Create in:').parentElement?.textContent).toContain('Personal Notes')
     expect(view.container.textContent).not.toContain('Local repository')
@@ -203,30 +197,25 @@ describe('App auto-lock integration', () => {
     expect(sidebar.querySelector('#notebook-navigation-content')).toBeTruthy()
   })
 
-  it('opens primary notebook navigation, onboarding, and switches without stale tree state', async () => {
+  it('opens vault navigation, onboarding, and switches without stale tree state', async () => {
     const view = render(<App />)
-    await waitFor(() => expect((view.container.querySelector('[aria-haspopup="menu"]') as HTMLElement).textContent).toContain('Notebooks'))
+    await waitFor(() => expect((view.container.querySelector('[aria-haspopup="menu"]') as HTMLElement).textContent).toContain('Vaults'))
     await waitFor(() => expect(view.getAllByRole('button', { name: 'Personal Notes' }).length).toBeGreaterThan(0))
     const switcher = view.container.querySelector('[aria-haspopup="menu"]') as HTMLButtonElement
     fireEvent.click(switcher)
     expect(view.getByRole('menuitemradio', { name: 'Personal Notes' }).getAttribute('aria-checked')).toBe('true')
-    fireEvent.click(view.getByRole('menuitem', { name: '+ Add Notebook' }))
-    expect(view.getByRole('heading', { name: 'Add Notebook' })).toBeTruthy()
+    fireEvent.click(view.getByRole('menuitem', { name: '+ Add Vault' }))
+    expect(view.getByRole('heading', { name: 'Add Vault' })).toBeTruthy()
     fireEvent.click(view.getByRole('button', { name: 'Cancel' }))
     fireEvent.click(switcher)
     fireEvent.click(view.getByRole('menuitemradio', { name: 'Work' }))
-    await waitFor(() => expect(switcher.textContent).toContain('Notebooks'))
+    await waitFor(() => expect(switcher.textContent).toContain('Vaults'))
     expect(view.queryByRole('button', { name: 'Note' })).toBeNull()
     await waitFor(() => expect(view.getAllByRole('button', { name: 'Work' }).length).toBeGreaterThan(0))
-	await waitFor(() => {
-		const syncCalls = vi.mocked(globalThis.fetch).mock.calls.filter(([url, init]) => String(url) === '/api/repository/git/sync' && init?.method === 'POST')
-		// Startup/focus triggers are browser-timing dependent; switching must add
-		// a synchronization request without requiring an incidental focus event.
-		expect(syncCalls.length).toBeGreaterThanOrEqual(2)
-	}, { timeout: 5000 })
-  }, 10_000)
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([url]) => String(url).includes('/api/repository/git/'))).toBe(false)
+  })
 
-  it('offers notebook onboarding instead of a synthetic local notebook on a fresh installation', async () => {
+  it('offers vault onboarding on a fresh installation', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url === '/api/health') return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -237,62 +226,68 @@ describe('App auto-lock integration', () => {
     }))
 
     const view = render(<App />)
-    expect(await view.findByRole('heading', { name: 'Connect your first notebook' })).toBeTruthy()
-    expect(view.getByText('No notebook yet')).toBeTruthy()
-    expect(view.queryByText(/Set REPOQUILL_REPOSITORY/)).toBeNull()
-    expect((view.getByRole('button', { name: 'Sync' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(view.getAllByRole('button', { name: 'Add Notebook' })[0])
-    expect(view.getByRole('heading', { name: 'Add Notebook' })).toBeTruthy()
+    expect(await view.findByRole('heading', { name: 'Create your first vault' })).toBeTruthy()
+    expect(view.getByText('No vault yet')).toBeTruthy()
+    expect(view.queryByText(/Set REPOQUILL_DEV_VAULT_PATH/)).toBeNull()
+    fireEvent.click(view.getAllByRole('button', { name: 'Add Vault' })[0])
+    expect(view.getByRole('heading', { name: 'Add Vault' })).toBeTruthy()
+    expect(view.getByRole('button', { name: 'Create an empty vault' })).toBeTruthy()
   })
 
-  it('creates a local-only notebook and labels automatic commits as local versions', async () => {
+  it('creates a filesystem vault and makes it available to the active app', async () => {
     let created = false
-    const notebook = { id: 'local-git', name: 'My notes', branch: 'main' }
+    const notebook = { id: 'vault-id', name: 'My notes' }
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === '/api/health') return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
       if (url === '/api/notebook') return Response.json({ name: created ? notebook.name : 'Notebook', configured: created })
       if (url === '/api/notebooks') return Response.json({ activeId: created ? notebook.id : '', notebooks: created ? [notebook] : [] })
       if (url === '/api/notebooks/local' && init?.method === 'POST') { created = true; return Response.json(notebook, { status: 201 }) }
+      if (url === `/api/notebooks/${notebook.id}/health`) return Response.json({ localFiles: { state: 'ok' }, writeAccess: { state: 'ok' } })
       if (url === '/api/repository/tree') return Response.json({ entries: [] })
-      if (url === '/api/repository/git/status') return Response.json({ state: created ? 'local_only' : 'invalid', branch: 'main', localChanges: false })
-      if (url === '/api/repository/git/sync' && init?.method === 'POST') return Response.json({ state: 'local_only', branch: 'main', localChanges: false })
-      if (url === '/api/repository/git/sync-background' && init?.method === 'POST') return Response.json({ status: 'accepted' }, { status: 202 })
-      if (url === `/api/notebooks/${notebook.id}/health`) return Response.json({ localFiles: { state: 'ok' }, writeAccess: { state: 'ok' }, connection: { state: 'local_only' }, pendingWork: { state: 'local_only' } })
       return Response.json({ error: 'unexpected request' }, { status: 500 })
     }))
 
     const view = render(<App />)
-    fireEvent.click((await view.findAllByRole('button', { name: 'Add Notebook' }))[0])
-    fireEvent.click(view.getByRole('button', { name: /Create a local-only notebook/ }))
-    fireEvent.change(view.getByLabelText('Notebook name'), { target: { value: notebook.name } })
-    fireEvent.click(view.getByRole('button', { name: 'Create local-only notebook' }))
+    fireEvent.click((await view.findAllByRole('button', { name: 'Add Vault' }))[0])
+    fireEvent.change(view.getByLabelText('Vault name'), { target: { value: notebook.name } })
+    fireEvent.click(view.getByRole('button', { name: 'Create vault' }))
 
     await waitFor(() => expect(created).toBe(true))
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([url, init]) => String(url) === '/api/notebooks/local' && init?.method === 'POST' && JSON.parse(String(init.body)).name === notebook.name)).toBe(true)
-    await view.findByRole('heading', { name: 'Manage Notebooks' })
+    await view.findByRole('heading', { name: 'Manage Vaults' })
     fireEvent.click(view.getByRole('button', { name: 'Done' }))
-    expect(await view.findByRole('button', { name: 'Create version' })).toBeTruthy()
-
-    fireEvent.click(view.getByRole('button', { name: 'Settings' }))
-    expect(await view.findByRole('heading', { name: 'Local versioning' })).toBeTruthy()
-    expect(view.getByLabelText('Scheduled local versions')).toBeTruthy()
-    expect(view.getByLabelText('Create a local version after editing inactivity')).toBeTruthy()
+    expect(await view.findByRole('button', { name: notebook.name })).toBeTruthy()
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([url]) => String(url).includes('/api/repository/git/'))).toBe(false)
   })
 
   it('unregisters an inactive legacy notebook without presenting file deletion', async () => {
     const view = render(<App />)
     const switcher = view.container.querySelector('[aria-haspopup="menu"]') as HTMLButtonElement
-    await waitFor(() => expect(switcher.textContent).toContain('Notebooks'))
+    await waitFor(() => expect(switcher.textContent).toContain('Vaults'))
     await waitFor(() => expect(view.getAllByRole('button', { name: 'Personal Notes' }).length).toBeGreaterThan(0))
     fireEvent.click(switcher)
-    fireEvent.click(view.getByRole('menuitem', { name: 'Manage Notebooks' }))
+    fireEvent.click(view.getByRole('menuitem', { name: 'Manage Vaults' }))
     const legacyCard = (await view.findByRole('heading', { name: 'repos' })).closest('section') as HTMLElement
     const remove = Array.from(legacyCard.querySelectorAll('button')).find(button => button.textContent === 'Remove…')!
     fireEvent.click(remove)
     fireEvent.click(view.getByRole('button', { name: 'Remove registration' }))
     await waitFor(() => expect(view.queryByRole('heading', { name: 'repos' })).toBeNull())
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([url, init]) => String(url) === '/api/notebooks/local' && init?.method === 'DELETE')).toBe(true)
+  })
+
+  it('warns that deleting a vault folder also removes legacy Git history', async () => {
+    const view = render(<App />)
+    const switcher = view.container.querySelector('[aria-haspopup="menu"]') as HTMLButtonElement
+    await waitFor(() => expect(switcher.textContent).toContain('Vaults'))
+    fireEvent.click(switcher)
+    fireEvent.click(view.getByRole('menuitem', { name: 'Manage Vaults' }))
+    const workCard = (await view.findByRole('heading', { name: 'Work' })).closest('section') as HTMLElement
+    fireEvent.click(within(workCard).getByRole('button', { name: 'Remove…' }))
+    const confirmation = await view.findByRole('alertdialog', { name: 'Remove Work?' })
+    fireEvent.click(within(confirmation).getByRole('checkbox'))
+    expect(confirmation.textContent).toContain('legacy .git history')
+    expect(confirmation.textContent).toContain('Operator backups may retain copies')
   })
 
   it('opens, switches, and closes notes in session tabs without duplicate editors', async () => {
@@ -334,57 +329,44 @@ describe('App auto-lock integration', () => {
     expect(JSON.parse(String(moveCall?.[1]?.body))).toEqual({ source:'Note.md',target:'Renamed.md',rewriteToken:'rewrite-token' })
   })
 
-	it('guides a non-technical user through an overlapping Markdown change', async () => {
-		const fallback = vi.mocked(globalThis.fetch)
-		let resolved = false
-		vi.stubGlobal('fetch',vi.fn(async (input:RequestInfo|URL,init?:RequestInit) => {
-			const url = String(input)
-			if (url === '/api/repository/git/status' && !resolved) return Response.json({ state:'conflict',branch:'main',conflictFiles:['Note.md'] })
-			if (url === '/api/repository/git/conflicts') return Response.json({ token:'conflict-token',items:[{ path:'Note.md',kind:'markdown',yourExists:true,otherExists:true,yourContent:'# Your version',otherContent:'# Other version' }] })
-			if (url === '/api/repository/git/conflicts/resolve' && init?.method === 'POST') { resolved=true; return Response.json({ state:'synced',message:'done',safetyPoint:'recovery-1' }) }
-			return fallback(input,init)
-		}))
-		const view = render(<App />)
-		fireEvent.click(await view.findByRole('button',{ name:'Note' }))
-		await waitFor(()=>expect(view.container.textContent).toContain('Auto-lock note'))
-		fireEvent.click(view.getByRole('button',{ name:/Synchronization: Your decision is required/ }))
-		fireEvent.click(await view.findByRole('button',{ name:'Review affected items' }))
-		const assistant = await view.findByRole('dialog',{ name:'Choose the resulting content' })
-		expect(assistant.textContent).toContain('Your version')
-		expect(assistant.textContent).toContain('Other version')
-		fireEvent.click(view.getByRole('button',{ name:'Use your version' }))
-		await waitFor(()=>expect(sessionStorage.getItem('repoquill:conflict-decisions:conflict-token')).toContain('use_yours'))
-		expect(localStorage.getItem('repoquill:conflict-decisions:conflict-token')).toBeNull()
-		fireEvent.click(view.getByRole('button',{ name:'Review complete — apply' }))
-		await waitFor(()=>expect(view.queryByRole('dialog',{ name:'Choose the resulting content' })).toBeNull())
-		expect(sessionStorage.getItem('repoquill:conflict-decisions:conflict-token')).toBeNull()
-		expect(await view.findByText('Changes synchronized. Recovery point: recovery-1')).toBeTruthy()
-		fireEvent.click(view.getByRole('button',{ name:'Dismiss notification' }))
-		expect(view.queryByText('Changes synchronized. Recovery point: recovery-1')).toBeNull()
-		const call = vi.mocked(globalThis.fetch).mock.calls.find(([url,request])=>String(url)==='/api/repository/git/conflicts/resolve'&&request?.method==='POST')
-		expect(JSON.parse(String(call?.[1]?.body))).toEqual({ token:'conflict-token',decisions:[{ path:'Note.md',action:'use_yours' }] })
-	})
+  it('preserves both versions when a stale browser draft meets a changed server file', async () => {
+    const fallback = vi.mocked(globalThis.fetch)
+    let serverContent = '# Auto-lock note'
+    let serverVersion = 'v1'
+    let conflicted = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/repository/file?') && init?.method === 'PUT' && !conflicted) {
+        conflicted = true
+        serverContent = '# Server version'
+        serverVersion = 'v2'
+        return Response.json({ error: 'file changed since it was opened' }, { status: 409 })
+      }
+      if (url === '/api/repository/file/resolve-conflict' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { content: string }
+        serverContent = body.content
+        serverVersion = 'v3'
+        return Response.json({ path: 'Note.md', content: serverContent, version: serverVersion })
+      }
+      if (url.startsWith('/api/repository/file?')) return Response.json({ path: 'Note.md', content: serverContent, version: serverVersion })
+      return fallback(input, init)
+    }))
 
-  it('views a readable note history diff and restores through a normal version-checked save', async () => {
+    const user = userEvent.setup()
     const view = render(<App />)
     fireEvent.click(await view.findByRole('button', { name: 'Note' }))
-    await waitFor(() => expect(view.container.textContent).toContain('Auto-lock note'))
-    fireEvent.click(view.getByRole('button', { name: 'Version history' }))
+    const editor = await view.findByText('Auto-lock note').then((element) => element.closest('.ProseMirror') as HTMLElement)
+    editor.focus()
+    await user.type(editor, ' from browser', { skipClick: true })
+    await waitFor(() => expect(editor.textContent).toContain('from browser'))
+    fireEvent.click(view.getByRole('button', { name: 'Save' }))
 
-    const dialog = await view.findByRole('dialog', { name: 'Version history' })
-    fireEvent.click(await view.findByRole('button', { name: /Earlier note/ }))
-    const comparison = await view.findByRole('region', { name: 'Version comparison' })
-    expect(comparison.textContent).toContain('Earlier note')
-    expect(comparison.textContent).toContain('Auto-lock note')
-
-    fireEvent.click(view.getByRole('button', { name: 'Restore this version' }))
-    fireEvent.click(view.getByRole('button', { name: 'Restore version' }))
-    await waitFor(() => expect(view.queryByRole('dialog', { name: 'Version history' })).toBeNull())
-    await waitFor(() => expect(view.container.textContent).toContain('Earlier note'))
-    const restoreCall = vi.mocked(globalThis.fetch).mock.calls.find(([url, init]) => String(url) === '/api/repository/history/restore' && init?.method === 'POST')
-    expect(restoreCall).toBeTruthy()
-    expect(JSON.parse(String(restoreCall?.[1]?.body))).toEqual({ path: 'Note.md', versionId: 'a'.repeat(40), expectedVersion: 'v1' })
-    expect(dialog).toBeTruthy()
+    const dialog = await view.findByRole('dialog', { name: 'This note changed on the server' })
+    expect(dialog.textContent).toContain('from browser')
+    expect(dialog.textContent).toContain('Server version')
+    fireEvent.click(view.getByRole('button', { name: 'Save my version' }))
+    await waitFor(() => expect(serverContent).toContain('from browser'))
+    expect(view.queryByRole('dialog', { name: 'This note changed on the server' })).toBeNull()
   })
 
   it('moves a note to notebook Trash and restores it from the touch-friendly Trash view', async () => {
@@ -440,11 +422,11 @@ describe('App auto-lock integration', () => {
     await waitFor(() => expect(onLoggedOut).toHaveBeenCalledOnce())
   })
 
-  it('requests best-effort background sync when a saved tab closes', async () => {
+  it('does not start synchronization when the browser tab closes', async () => {
     render(<App />)
     await waitFor(() => expect(vi.mocked(globalThis.fetch).mock.calls.some(([url]) => String(url) === '/api/notebooks')).toBe(true))
     window.dispatchEvent(new Event('pagehide'))
-    await waitFor(() => expect(vi.mocked(globalThis.fetch).mock.calls.some(([url, init]) => String(url) === '/api/repository/git/sync-background' && init?.method === 'POST' && init.keepalive === true)).toBe(true))
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([url]) => String(url).includes('/api/repository/git/'))).toBe(false)
   })
 
   it('searches the active notebook and opens a content result', async () => {
@@ -470,10 +452,10 @@ describe('App auto-lock integration', () => {
     await waitFor(() => expect(openNavigation.getAttribute('aria-expanded')).toBe('false'))
   })
 
-  it('reports offline mode and offers browser-provided PWA installation', async () => {
+  it('reports server unavailability and offers browser-provided PWA installation', async () => {
     const view = render(<App />)
     window.dispatchEvent(new Event('offline'))
-    expect(await view.findByText('Offline.')).toBeTruthy()
+    expect(await view.findByText(/Vault files are online-only/)).toBeTruthy()
 
     const prompt = vi.fn(async () => undefined)
     const event = new Event('beforeinstallprompt') as Event & { prompt: typeof prompt; userChoice: Promise<{ outcome: 'accepted' }> }
@@ -501,21 +483,15 @@ describe('App auto-lock integration', () => {
     expect(nextView.queryByText('Install RepoQuill for a standalone app experience.')).toBeNull()
   })
 
-  it('opens the same guided assistant when a recovery draft overlaps a server change', async () => {
-    const draft = { notebookId: 'personal', path: 'Note.md', content: '# Unsaved recovery', savedContent: '# Older copy', version: 'older-version', capturedAt: '2026-08-27T09:00:00Z' }
-    sessionStorage.setItem('repoquill.recovery-draft', JSON.stringify(draft))
-    const view = render(<App authMode="local" />)
-
-    fireEvent.click(await view.findByRole('button', { name: 'Review draft' }))
-		const assistant = await view.findByRole('dialog',{ name:'Choose the resulting content' })
-		expect(assistant.textContent).toContain('Unsaved recovery')
-		expect(assistant.textContent).toContain('Auto-lock note')
-    expect(JSON.parse(sessionStorage.getItem('repoquill.recovery-draft') ?? 'null')).toEqual(draft)
-		fireEvent.click(view.getByRole('button',{ name:'Use other version' }))
-		fireEvent.click(view.getByRole('button',{ name:'Review complete — apply' }))
-		await waitFor(()=>expect(view.queryByRole('dialog',{ name:'Choose the resulting content' })).toBeNull())
-		expect(sessionStorage.getItem('repoquill.recovery-draft')).toBeNull()
-		expect(view.container.textContent).toContain('Auto-lock note')
+  it('does not persist unsaved note content into browser storage', async () => {
+    const view = render(<App />)
+    fireEvent.click(await view.findByRole('button', { name: 'Note' }))
+    const editor = await view.findByText('Auto-lock note').then((element) => element.closest('.ProseMirror') as HTMLElement)
+    editor.focus()
+    await userEvent.type(editor, ' private draft', { skipClick: true })
+    await waitFor(() => expect(editor.textContent).toContain('private draft'))
+    expect(sessionStorage.getItem('repoquill.recovery-draft')).toBeNull()
+    expect(localStorage.getItem('repoquill.recovery-draft')).toBeNull()
   })
 })
 

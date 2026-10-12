@@ -8,12 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Added local-only Git notebooks with automatic local commits, clear versioning
-  status, later connection to empty or history-compatible remotes, and an
-  explicit workflow to return a connected notebook to local-only mode.
-- Added guided, per-notebook managed SSH key rotation with a separate
-  replacement key, explicit host trust and repository access checks, a confirmed
-  assignment switch, and visibility into remaining old-key assignments.
+- Added filesystem vault creation, adoption of existing folders, and bounded
+  ZIP export of ordinary vault files.
+- Added explicit stale-save review that preserves the browser draft and current
+  server file until the owner chooses a version or edits a combined result.
 - Added an optional document outline as a collapsible right-edge heading tree
   that uses the available margin without reducing the note editor's width.
 - Added portable fenced-code language selection and controlled syntax
@@ -27,10 +25,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Replaced Git-backed notebooks and synchronization with online-only
+  filesystem vaults. Saves write directly to the server; the operator owns
+  backup and restore.
+- Made PWA API and asset requests network-only/no-store and removed note
+  history, Git conflict, remote, and SSH administration flows.
 - Redesigned the Markdown editor toolbar with compact SVG icon buttons and a
   grouped Insert menu, keeping common formatting actions directly accessible.
-- Removed the redundant backend-connected indicator; offline notices and
-  synchronization status continue to report connection problems.
+- Replaced synchronization status with direct server-save status.
 - Moved the running RepoQuill version into the Settings header, right-aligned
   beside the heading.
 - Made the Paste as Markdown toolbar action more compact with a paste icon and
@@ -46,9 +48,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   Markdown syntax, image metadata, and link destinations do not inflate visible
   word and character counts; Unicode graphemes and logical document lines are
   counted consistently in Edit and Read only modes.
-- Refresh an open note after conflict-free synchronization receives external
-  edits, while preserving editor drafts across sync races and safely tracking
-  remote note moves and deletions.
 - Align the document outline with the editor toolbar and keep the note
   scrollbar visible while the outline is open.
 

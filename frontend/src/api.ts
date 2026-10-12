@@ -23,7 +23,7 @@ export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {})
   const method = (init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
   const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && csrfToken) headers.set('X-CSRF-Token', csrfToken)
-  const response = await fetch(input, { ...init, headers })
+  const response = await fetch(input, { ...init, cache: 'no-store', headers })
   const pathname = typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url, window.location.href).pathname
   const authenticationAttempt = pathname === '/api/auth/login' || pathname === '/api/auth/login/mfa'
   if (response.status === 401 && !authenticationAttempt) {

@@ -59,14 +59,11 @@ start_container() {
     --security-opt no-new-privileges:true \
     --publish 127.0.0.1::8080 \
     --volume "${volume_name}:/data" \
-    --env REPOQUILL_REPOSITORY=/data/repos \
     --env REPOQUILL_NOTEBOOKS_DIR=/data/notebooks \
     --env REPOQUILL_NOTEBOOK_METADATA=/data/app/notebooks.json \
     --env "REPOQUILL_AUTH_MODE=${auth_mode}" \
     --env REPOQUILL_AUTH_METADATA=/data/app/auth.db \
     --env REPOQUILL_SESSION_COOKIE_SECURE=false \
-    --env REPOQUILL_KEYS_DIR=/data/keys \
-    --env REPOQUILL_SSH_KNOWN_HOSTS=/data/keys/known_hosts \
     "${image}" >/dev/null
   container_created=true
 }
@@ -96,6 +93,13 @@ wait_for_health() {
 
 start_container local
 port="$(wait_for_health)"
+
+for retired_tool in git ssh; do
+  if docker exec "${container_name}" /bin/sh -c "command -v ${retired_tool}" >/dev/null 2>&1; then
+    echo "Production image still contains retired runtime tool: ${retired_tool}" >&2
+    exit 1
+  fi
+done
 
 runtime_uid="$(docker exec "${container_name}" id -u)"
 if [[ "${runtime_uid}" == "0" ]]; then
@@ -146,6 +150,19 @@ if [[ ! "${csrf_token}" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
 fi
 if [[ "$(docker exec "${container_name}" stat -c '%a' /data/app/auth.key)" != "600" ]]; then
   echo "MFA encryption key does not have private permissions" >&2
+  exit 1
+fi
+vault_response="$(curl --fail --silent --show-error \
+  --cookie "${cookie_jar}" \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --header "X-CSRF-Token: ${csrf_token}" \
+  --data '{"name":"Release check"}' \
+  "http://127.0.0.1:${port}/api/notebooks/local")"
+vault_id="$(printf '%s\n' "${vault_response}" | sed -n 's/.*"id":"\([0-9a-f]\{32\}\)".*/\1/p')"
+unset vault_response
+if [[ ! "${vault_id}" =~ ^[0-9a-f]{32}$ ]]; then
+  echo "Authenticated owner could not create a filesystem vault" >&2
   exit 1
 fi
 curl --fail --silent --show-error \
@@ -199,6 +216,7 @@ docker run --rm \
   --volume "${volume_name}:/data:ro" \
   --entrypoint /bin/sh \
   "${image}" \
-  -c 'test -f "/data/repos/Release check.md" && grep -Fx "# Release check" "/data/repos/Release check.md" >/dev/null'
+  -c 'test -f "$1" && grep -Fx "# Release check" "$1" >/dev/null' \
+  sh "/data/notebooks/${vault_id}/Release check.md"
 
 echo "Container security, health, and persistence checks passed."

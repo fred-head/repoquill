@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0-alpha.2.security.4",
   "license": "Apache-2.0",
-  "description": "Browser frontend for RepoQuill Git-backed Markdown notes",
+  "description": "Browser frontend for RepoQuill's self-hosted Markdown vault",
   "homepage": "https://github.com/fred-head/repoquill#readme",
   "bugs": {
     "url": "https://github.com/fred-head/repoquill/issues"

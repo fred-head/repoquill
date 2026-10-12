@@ -20,7 +20,7 @@ FROM alpine:3.24
 ARG VERSION=0.1.0-alpha.2.security.4
 ARG VCS_REF=""
 LABEL org.opencontainers.image.title="RepoQuill" \
-      org.opencontainers.image.description="Self-hosted Git-backed Markdown notes" \
+      org.opencontainers.image.description="Self-hosted browser-based Markdown vault" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.source="https://github.com/fred-head/repoquill" \
       org.opencontainers.image.url="https://github.com/fred-head/repoquill" \
@@ -28,13 +28,10 @@ LABEL org.opencontainers.image.title="RepoQuill" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="${VCS_REF}"
 RUN apk upgrade --no-cache \
-    && apk add --no-cache ca-certificates git openssh-client \
+    && apk add --no-cache ca-certificates \
     && addgroup -S repoquill \
     && adduser -S -G repoquill -h /data repoquill \
-    && mkdir -p /data/app /data/repos /data/notebooks /data/keys \
-    && touch /data/keys/known_hosts \
-    && chmod 700 /data/keys \
-    && chmod 600 /data/keys/known_hosts \
+    && mkdir -p /data/app /data/notebooks \
     && chown -R repoquill:repoquill /data
 COPY --from=backend /out/repoquill /usr/local/bin/repoquill
 COPY LICENSE /usr/share/licenses/repoquill/LICENSE

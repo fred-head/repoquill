@@ -14,7 +14,7 @@ export default defineConfig({
         id: '/',
         name: 'RepoQuill',
         short_name: 'RepoQuill',
-        description: 'Portable Git-backed Markdown notes',
+        description: 'A self-hosted Markdown vault for the browser',
         theme_color: '#18181b',
         background_color: '#09090b',
         display: 'standalone',
@@ -34,6 +34,12 @@ export default defineConfig({
         cleanupOutdatedCaches: true,
         navigateFallbackDenylist: [/^\/api\//],
         globPatterns: ['**/*.{js,css,html,svg}'],
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
+            handler: 'NetworkOnly',
+          },
+        ],
       },
     }),
   ],

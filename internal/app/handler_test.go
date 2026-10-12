@@ -1,6 +1,7 @@
 package app
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -12,14 +13,12 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/fred-head/repoquill/internal/auth"
-	gitrepo "github.com/fred-head/repoquill/internal/git"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -524,7 +523,7 @@ func TestSecurityHeadersAndSameOriginProtection(t *testing.T) {
 		t.Fatalf("API cache policy is unsafe: %q", health.Header().Get("Cache-Control"))
 	}
 
-	crossSite := httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil)
+	crossSite := httptest.NewRequest(http.MethodPost, "/api/notebooks/local", nil)
 	crossSite.Header.Set("Origin", "https://attacker.example")
 	crossSite.Header.Set("Sec-Fetch-Site", "cross-site")
 	blocked := httptest.NewRecorder()
@@ -533,7 +532,7 @@ func TestSecurityHeadersAndSameOriginProtection(t *testing.T) {
 		t.Fatalf("cross-site mutation was not rejected: %d", blocked.Code)
 	}
 
-	sameSite := httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil)
+	sameSite := httptest.NewRequest(http.MethodPost, "/api/notebooks/local", nil)
 	sameSite.Host = "notes.example.test"
 	sameSite.Header.Set("Origin", "http://notes.example.test")
 	allowed := httptest.NewRecorder()
@@ -713,7 +712,7 @@ func TestInactiveLegacyNotebookCanBeUnregisteredWithoutDeletingFiles(t *testing.
 		ActiveID: "active",
 		Entries: []notebookRecord{
 			{ID: "local", Name: "repos", LocalPath: localRoot},
-			{ID: "active", Name: "Notes", LocalPath: activeRoot, RemoteURL: "git@example.test:notes.git"},
+			{ID: "active", Name: "Notes", LocalPath: activeRoot},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -1038,402 +1037,222 @@ func TestRepositoryAssetCleanupAPI(t *testing.T) {
 	}
 }
 
-func TestCloneAndActivateNotebookAPI(t *testing.T) {
-	t.Setenv("REPOQUILL_ALLOW_LOCAL_REMOTES", "true")
+func TestLocalNotebookCreatesFilesystemVaultAndGitRoutesAreGone(t *testing.T) {
 	base := t.TempDir()
-	remote := filepath.Join(base, "remote.git")
-	seed := filepath.Join(base, "seed")
-	runGitTest(t, "init", "--bare", "--initial-branch=main", remote)
-	runGitTest(t, "init", "--initial-branch=main", seed)
-	runGitTest(t, "-C", seed, "config", "user.name", "Test")
-	runGitTest(t, "-C", seed, "config", "user.email", "test@example.test")
-	if err := os.WriteFile(filepath.Join(seed, "Cloned.md"), []byte("# Cloned"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGitTest(t, "-C", seed, "add", "--all")
-	runGitTest(t, "-C", seed, "commit", "-m", "Initial")
-	runGitTest(t, "-C", seed, "remote", "add", "origin", remote)
-	runGitTest(t, "-C", seed, "push", "origin", "main")
-
-	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", filepath.Join(base, "notebooks"))
+	notebookBase := filepath.Join(base, "notebooks")
 	metadata := filepath.Join(base, "app", "notebooks.json")
+	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", notebookBase)
 	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
 	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := bytes.NewBufferString(`{"name":"Private","repositoryUrl":"` + remote + `","branch":"main"}`)
+
+	created := httptest.NewRecorder()
+	handler.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/notebooks/local", strings.NewReader(`{"name":"Private"}`)))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("vault creation failed: %d %s", created.Code, created.Body.String())
+	}
+	var record notebookRecord
+	if err := json.Unmarshal(created.Body.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.ID == "" || record.Name != "Private" || record.LocalPath == "" {
+		t.Fatalf("invalid vault record: %#v", record)
+	}
+	if _, err := os.Stat(filepath.Join(record.LocalPath, ".git")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new vault unexpectedly has Git metadata: %v", err)
+	}
+	registryBytes, err := os.ReadFile(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, legacyField := range []string{"remoteUrl", "branch", "authType", "keyId", "lastSyncedAt"} {
+		if strings.Contains(string(registryBytes), legacyField) {
+			t.Fatalf("new registry retained Git field %q: %s", legacyField, registryBytes)
+		}
+	}
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/api/repository/git/status"},
+		{http.MethodPost, "/api/repository/git/sync"},
+		{http.MethodGet, "/api/repository/history?path=Secret.md"},
+		{http.MethodPost, "/api/notebooks/test-connection"},
+		{http.MethodGet, "/api/notebooks/ssh-keys"},
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(route.method, route.path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Errorf("legacy route %s %s returned %d: %s", route.method, route.path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestHandlerMigratesLegacyVaultRegistryWithoutDeletingVaultOrSSHFiles(t *testing.T) {
+	base := t.TempDir()
+	vault := filepath.Join(base, "notebooks", "legacy-id")
+	gitConfig := filepath.Join(vault, ".git", "config")
+	keyPath := filepath.Join(base, "keys", "old-key")
+	metadata := filepath.Join(base, "app", "notebooks.json")
+	for _, directory := range []string{filepath.Dir(gitConfig), filepath.Dir(keyPath)} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(vault, "Note.md"), []byte("# Keep this note"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyGit := []byte("legacy commits")
+	if err := os.WriteFile(gitConfig, legacyGit, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyKey := []byte("legacy private key")
+	if err := os.WriteFile(keyPath, legacyKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyRegistry := map[string]any{
+		"activeId":          "legacy-id",
+		"unrelatedMetadata": map[string]string{"keep": "yes"},
+		"notebooks": []map[string]string{{
+			"id": "legacy-id", "name": "Legacy", "localPath": vault,
+			"remoteUrl": "https://owner:secret@example.invalid/private.git",
+			"branch":    "main", "authType": "managed-ssh", "keyId": "old-key",
+			"lastSyncedAt": "2026-09-01T12:00:00Z",
+		}},
+	}
+	registryBytes, err := json.Marshal(legacyRegistry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(metadata), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metadata, registryBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", filepath.Join(base, "notebooks"))
+
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := os.ReadFile(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, legacyField := range []string{"remoteUrl", "branch", "authType", "keyId", "lastSyncedAt", "secret@example.invalid"} {
+		if strings.Contains(string(migrated), legacyField) {
+			t.Errorf("migrated registry retained legacy value %q: %s", legacyField, migrated)
+		}
+	}
+	var document map[string]any
+	if err := json.Unmarshal(migrated, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document["activeId"] != "legacy-id" || document["unrelatedMetadata"].(map[string]any)["keep"] != "yes" {
+		t.Fatalf("migration did not preserve active vault and unrelated metadata: %#v", document)
+	}
+	registrations := document["notebooks"].([]any)
+	registration := registrations[0].(map[string]any)
+	if registration["id"] != "legacy-id" || registration["name"] != "Legacy" || registration["localPath"] != vault {
+		t.Fatalf("migration changed the vault registration: %#v", registration)
+	}
+	for path, want := range map[string][]byte{gitConfig: legacyGit, keyPath: legacyKey, filepath.Join(vault, "Note.md"): []byte("# Keep this note")} {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("migration changed preserved data at %q: %q, %v", path, got, err)
+		}
+	}
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/notebooks", body))
-	if response.Code != http.StatusCreated {
-		t.Fatalf("clone failed: %d %s", response.Code, response.Body.String())
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/notebooks", nil))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "secret@example.invalid") || !strings.Contains(response.Body.String(), `"name":"Legacy"`) {
+		t.Fatalf("unexpected migrated vault response: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdoptVaultPreservesLegacyGitDirectoryAndExportOmitsIt(t *testing.T) {
+	base := t.TempDir()
+	notebookBase := filepath.Join(base, "notebooks")
+	legacyVault := filepath.Join(notebookBase, "legacy")
+	gitDirectory := filepath.Join(legacyVault, ".git")
+	if err := os.MkdirAll(gitDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyVault, "Secret.md"), []byte("# Plain note"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyConfig := []byte("[remote \\\"origin\\\"]\\nurl = https://example.invalid/private.git\\n")
+	if err := os.WriteFile(filepath.Join(gitDirectory, "config"), legacyConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(notebookBase, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	metadata := filepath.Join(base, "app", "notebooks.json")
+	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", notebookBase)
+	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adopt := func(folder string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		body, _ := json.Marshal(map[string]string{"name": "Legacy Vault", "folder": folder})
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/notebooks/adopt", bytes.NewReader(body)))
+		return response
+	}
+	adopted := adopt("legacy")
+	if adopted.Code != http.StatusCreated {
+		t.Fatalf("vault adoption failed: %d %s", adopted.Code, adopted.Body.String())
+	}
+	var record notebookRecord
+	if err := json.Unmarshal(adopted.Body.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(record.LocalPath) != filepath.Clean(legacyVault) {
+		t.Fatalf("adopted path = %q, want %q", record.LocalPath, legacyVault)
+	}
+	configAfter, err := os.ReadFile(filepath.Join(gitDirectory, "config"))
+	if err != nil || !bytes.Equal(configAfter, legacyConfig) {
+		t.Fatalf("legacy Git metadata was modified: %q, %v", configAfter, err)
 	}
 	tree := httptest.NewRecorder()
 	handler.ServeHTTP(tree, httptest.NewRequest(http.MethodGet, "/api/repository/tree", nil))
-	if tree.Code != http.StatusOK || !strings.Contains(tree.Body.String(), "Cloned.md") {
-		t.Fatalf("cloned notebook not active: %d %s", tree.Code, tree.Body.String())
+	if tree.Code != http.StatusOK || !strings.Contains(tree.Body.String(), "Secret.md") || strings.Contains(tree.Body.String(), ".git") {
+		t.Fatalf("adopted tree exposed the wrong files: %d %s", tree.Code, tree.Body.String())
 	}
-	if _, err := os.Stat(metadata); err != nil {
-		t.Fatalf("notebook metadata was not persisted: %v", err)
+	archive := httptest.NewRecorder()
+	handler.ServeHTTP(archive, httptest.NewRequest(http.MethodGet, "/api/notebooks/"+record.ID+"/export", nil))
+	if archive.Code != http.StatusOK || archive.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("vault export failed or is cacheable: %d %s", archive.Code, archive.Body.String())
 	}
-	if err := os.WriteFile(filepath.Join(seed, "Local.md"), []byte("# Local"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	syncResponse := httptest.NewRecorder()
-	handler.ServeHTTP(syncResponse, httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil))
-	if syncResponse.Code != http.StatusOK || !strings.Contains(syncResponse.Body.String(), `"state":"synced"`) {
-		t.Fatalf("sync failed: %d %s", syncResponse.Code, syncResponse.Body.String())
-	}
-	registry, err := loadNotebookRegistry(metadata)
-	if err != nil || len(registry.Entries) != 1 || registry.Entries[0].LastSyncedAt == "" {
-		t.Fatalf("last successful sync was not persisted: %#v, %v", registry, err)
-	}
-	restarted, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	zipReader, err := zip.NewReader(bytes.NewReader(archive.Body.Bytes()), int64(archive.Body.Len()))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("export is not a valid ZIP archive: %v", err)
 	}
-	health := httptest.NewRecorder()
-	restarted.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/api/notebooks/"+registry.Entries[0].ID+"/health", nil))
-	if health.Code != http.StatusOK || !strings.Contains(health.Body.String(), registry.Entries[0].LastSyncedAt) {
-		t.Fatalf("persisted sync time was not restored after restart: %d %s", health.Code, health.Body.String())
-	}
-}
-
-func TestLocalNotebookAPIConnectsEmptyRemoteAndSwitchesBack(t *testing.T) {
-	t.Setenv("REPOQUILL_ALLOW_LOCAL_REMOTES", "true")
-	base := t.TempDir()
-	notebookBase := filepath.Join(base, "notebooks")
-	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", notebookBase)
-	metadata := filepath.Join(base, "app", "notebooks.json")
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
-	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	create := httptest.NewRecorder()
-	handler.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/notebooks/local", strings.NewReader(`{"name":"Local"}`)))
-	if create.Code != http.StatusCreated {
-		t.Fatalf("local notebook creation failed: %d %s", create.Code, create.Body.String())
-	}
-	var record notebookRecord
-	if err := json.Unmarshal(create.Body.Bytes(), &record); err != nil {
-		t.Fatal(err)
-	}
-	if record.RemoteURL != "" || record.Branch != "main" {
-		t.Fatalf("new local notebook has unexpected Git settings: %#v", record)
-	}
-	if remotes := strings.TrimSpace(runGitTest(t, "-C", record.LocalPath, "remote")); remotes != "" {
-		t.Fatalf("new local notebook unexpectedly has remotes: %q", remotes)
-	}
-	if err := os.WriteFile(filepath.Join(record.LocalPath, "Note.md"), []byte("local version"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	status := httptest.NewRecorder()
-	handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/repository/git/status", nil))
-	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"state":"local_only"`) || !strings.Contains(status.Body.String(), `"localChanges":true`) {
-		t.Fatalf("local-only status was misleading: %d %s", status.Code, status.Body.String())
-	}
-	syncResponse := httptest.NewRecorder()
-	handler.ServeHTTP(syncResponse, httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil))
-	if syncResponse.Code != http.StatusOK || !strings.Contains(syncResponse.Body.String(), `"state":"local_only"`) {
-		t.Fatalf("local commit was reported as a sync failure: %d %s", syncResponse.Code, syncResponse.Body.String())
-	}
-
-	remote := filepath.Join(base, "empty.git")
-	runGitTest(t, "init", "--bare", "--initial-branch=main", remote)
-	connectBody := `{"repositoryUrl":"` + remote + `","branch":"main","authType":"existing-server-ssh"}`
-	connect := httptest.NewRecorder()
-	handler.ServeHTTP(connect, httptest.NewRequest(http.MethodPost, "/api/notebooks/"+record.ID+"/remote", strings.NewReader(connectBody)))
-	if connect.Code != http.StatusOK || !strings.Contains(connect.Body.String(), remote) {
-		t.Fatalf("empty remote was not connected: %d %s", connect.Code, connect.Body.String())
-	}
-	push := httptest.NewRecorder()
-	handler.ServeHTTP(push, httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil))
-	if push.Code != http.StatusOK || !strings.Contains(push.Body.String(), `"state":"synced"`) {
-		t.Fatalf("first sync to empty remote failed: %d %s", push.Code, push.Body.String())
-	}
-	if count := strings.TrimSpace(runGitTest(t, "-C", remote, "rev-list", "--count", "main")); count != "1" {
-		t.Fatalf("local commit did not reach remote: %s commits", count)
-	}
-	remoteHeadBeforeDisconnect := strings.TrimSpace(runGitTest(t, "-C", remote, "rev-parse", "main"))
-	if err := os.WriteFile(filepath.Join(record.LocalPath, "After.md"), []byte("keep after disconnect"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	disconnect := httptest.NewRecorder()
-	handler.ServeHTTP(disconnect, httptest.NewRequest(http.MethodPost, "/api/notebooks/"+record.ID+"/remote/disconnect", strings.NewReader(`{"confirmed":true}`)))
-	if disconnect.Code != http.StatusOK || strings.Contains(disconnect.Body.String(), remote) {
-		t.Fatalf("remote was not disconnected cleanly: %d %s", disconnect.Code, disconnect.Body.String())
-	}
-	if remotes := strings.TrimSpace(runGitTest(t, "-C", record.LocalPath, "remote")); remotes != "" {
-		t.Fatalf("origin remained after switching to local-only: %q", remotes)
-	}
-	status = httptest.NewRecorder()
-	handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/repository/git/status", nil))
-	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"state":"local_only"`) {
-		t.Fatalf("disconnected notebook status is wrong: %d %s", status.Code, status.Body.String())
-	}
-	registry, err := loadNotebookRegistry(metadata)
-	if err != nil || len(registry.Entries) != 1 || registry.Entries[0].RemoteURL != "" || registry.Entries[0].AuthType != "" {
-		t.Fatalf("local-only registration retained remote settings: %#v %v", registry, err)
-	}
-	if remoteHead := strings.TrimSpace(runGitTest(t, "-C", remote, "rev-parse", "main")); remoteHead != remoteHeadBeforeDisconnect {
-		t.Fatal("disconnect altered the remote repository")
-	}
-	if count := strings.TrimSpace(runGitTest(t, "-C", record.LocalPath, "rev-list", "--count", "main")); count != "2" {
-		t.Fatalf("disconnect did not commit local-only changes: %s commits", count)
-	}
-	restarted, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	restartStatus := httptest.NewRecorder()
-	restarted.ServeHTTP(restartStatus, httptest.NewRequest(http.MethodGet, "/api/repository/git/status", nil))
-	if restartStatus.Code != http.StatusOK || !strings.Contains(restartStatus.Body.String(), `"state":"local_only"`) {
-		t.Fatalf("local-only notebook did not recover after restart: %d %s", restartStatus.Code, restartStatus.Body.String())
-	}
-}
-
-func TestConnectLocalNotebookRejectsUnrelatedRemoteHistory(t *testing.T) {
-	t.Setenv("REPOQUILL_ALLOW_LOCAL_REMOTES", "true")
-	base := t.TempDir()
-	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", filepath.Join(base, "notebooks"))
-	metadata := filepath.Join(base, "app", "notebooks.json")
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
-	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	create := httptest.NewRecorder()
-	handler.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/notebooks/local", strings.NewReader(`{"name":"Local"}`)))
-	if create.Code != http.StatusCreated {
-		t.Fatalf("local notebook creation failed: %d %s", create.Code, create.Body.String())
-	}
-	var record notebookRecord
-	if err := json.Unmarshal(create.Body.Bytes(), &record); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(record.LocalPath, "Local.md"), []byte("keep local history"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	commit := httptest.NewRecorder()
-	handler.ServeHTTP(commit, httptest.NewRequest(http.MethodPost, "/api/repository/git/sync", nil))
-	if !strings.Contains(commit.Body.String(), `"state":"local_only"`) {
-		t.Fatalf("local history was not committed: %s", commit.Body.String())
-	}
-	_, unrelated := createTestRemoteWithNote(t, base, "Remote.md", "different history")
-	body := `{"repositoryUrl":"` + unrelated + `","branch":"main","authType":"existing-server-ssh"}`
-	connect := httptest.NewRecorder()
-	handler.ServeHTTP(connect, httptest.NewRequest(http.MethodPost, "/api/notebooks/"+record.ID+"/remote", strings.NewReader(body)))
-	if connect.Code != http.StatusConflict || !strings.Contains(connect.Body.String(), "unrelated Git histories") {
-		t.Fatalf("unrelated remote history was accepted: %d %s", connect.Code, connect.Body.String())
-	}
-	if remotes := strings.TrimSpace(runGitTest(t, "-C", record.LocalPath, "remote")); remotes != "" {
-		t.Fatalf("rejected remote remained configured: %q", remotes)
-	}
-	if content, err := os.ReadFile(filepath.Join(record.LocalPath, "Local.md")); err != nil || string(content) != "keep local history" {
-		t.Fatalf("local content changed after rejection: %q %v", content, err)
-	}
-	registry, err := loadNotebookRegistry(metadata)
-	if err != nil || registry.Entries[0].RemoteURL != "" {
-		t.Fatalf("rejected connection changed notebook registration: %#v %v", registry, err)
-	}
-}
-
-func TestManagedSSHKeyAPINeverReturnsPrivateMaterial(t *testing.T) {
-	base := t.TempDir()
-	t.Setenv("REPOQUILL_KEYS_DIR", filepath.Join(base, "keys"))
-	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/notebooks/ssh-key", nil))
-	if response.Code != http.StatusCreated {
-		t.Fatalf("key generation failed: %d %s", response.Code, response.Body.String())
-	}
-	if strings.Contains(response.Body.String(), "PRIVATE KEY") || strings.Contains(strings.ToLower(response.Body.String()), "privatekey") {
-		t.Fatalf("API exposed private material: %s", response.Body.String())
-	}
-	var key struct {
-		KeyID       string `json:"keyId"`
-		PublicKey   string `json:"publicKey"`
-		Fingerprint string `json:"fingerprint"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&key); err != nil {
-		t.Fatal(err)
-	}
-	private, err := os.Stat(filepath.Join(base, "keys", key.KeyID, "id_ed25519"))
-	if err != nil || private.Mode().Perm() != 0o600 || !strings.HasPrefix(key.PublicKey, "ssh-ed25519 ") || !strings.HasPrefix(key.Fingerprint, "SHA256:") {
-		t.Fatalf("unexpected persisted key: %v, %v", private, err)
-	}
-}
-
-type managedKeyRotationFixture struct {
-	handler     http.Handler
-	metadata    string
-	keys        string
-	root        string
-	oldKeyID    string
-	newKeyID    string
-	logPath     string
-	failurePath string
-}
-
-func newManagedKeyRotationFixture(t *testing.T) managedKeyRotationFixture {
-	t.Helper()
-	base := t.TempDir()
-	keysDirectory := filepath.Join(base, "keys")
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	oldKey, err := gitrepo.GenerateSSHKey(keysDirectory, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	newKey, err := gitrepo.GenerateSSHKey(keysDirectory, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := filepath.Join(base, "notebook")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runGitTest(t, "-C", root, "init", "--initial-branch=main")
-	metadata := filepath.Join(base, "app", "notebooks.json")
-	if err := registerActiveNotebook(metadata, notebookRecord{ID: "notebook-1", Name: "Private", LocalPath: root, RemoteURL: "git@example.test:owner/notes.git", Branch: "main", AuthType: "managed-ssh", KeyID: oldKey.ID}); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("REPOQUILL_KEYS_DIR", keysDirectory)
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
-	t.Setenv("REPOQUILL_SSH_KNOWN_HOSTS", filepath.Join(keysDirectory, "known_hosts"))
-	handler, err := NewHandler(logger, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	actualGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatal(err)
-	}
-	binDirectory := filepath.Join(base, "fake-bin")
-	if err := os.MkdirAll(binDirectory, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	logPath := filepath.Join(base, "git-commands.log")
-	failurePath := filepath.Join(base, "fail-connection-test")
-	fakeGit := "#!/bin/sh\nprintf '%s\\n' \"${GIT_SSH_COMMAND-}\" >> \"$REPOQUILL_FAKE_GIT_LOG\"\nif [ \"$1\" = \"ls-remote\" ]; then\n  if [ -f \"$REPOQUILL_FAKE_GIT_FAILURE\" ]; then\n    printf 'Permission denied (publickey).\\n' >&2\n    exit 128\n  fi\n  exit 0\nfi\nexec \"$REPOQUILL_REAL_GIT\" \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(binDirectory, "git"), []byte(fakeGit), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("REPOQUILL_FAKE_GIT_LOG", logPath)
-	t.Setenv("REPOQUILL_FAKE_GIT_FAILURE", failurePath)
-	t.Setenv("REPOQUILL_REAL_GIT", actualGit)
-	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return managedKeyRotationFixture{handler: handler, metadata: metadata, keys: keysDirectory, root: root, oldKeyID: oldKey.ID, newKeyID: newKey.ID, logPath: logPath, failurePath: failurePath}
-}
-
-func (fixture managedKeyRotationFixture) rotateRequest(t *testing.T) *httptest.ResponseRecorder {
-	t.Helper()
-	body := `{"expectedKeyId":"` + fixture.oldKeyID + `","keyId":"` + fixture.newKeyID + `"}`
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPatch, "/api/notebooks/notebook-1/ssh-key", strings.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	fixture.handler.ServeHTTP(response, request)
-	return response
-}
-
-func TestManagedSSHKeyRotationUpdatesNotebookAndActiveGitService(t *testing.T) {
-	fixture := newManagedKeyRotationFixture(t)
-	response := fixture.rotateRequest(t)
-	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "PRIVATE KEY") {
-		t.Fatalf("rotate managed SSH key: %d %s", response.Code, response.Body.String())
-	}
-	registry, err := loadNotebookRegistry(fixture.metadata)
-	if err != nil || len(registry.Entries) != 1 || registry.Entries[0].KeyID != fixture.newKeyID {
-		t.Fatalf("replacement assignment was not persisted: %#v, %v", registry, err)
-	}
-	if _, err := os.Stat(filepath.Join(fixture.keys, fixture.oldKeyID, "id_ed25519")); err != nil {
-		t.Fatalf("old private key was removed during rotation: %v", err)
-	}
-	list := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/notebooks/ssh-keys", nil))
-	var listed struct {
-		Keys []struct {
-			KeyID       string `json:"keyId"`
-			Assigned    bool   `json:"assigned"`
-			Assignments []struct {
-				NotebookID string `json:"notebookId"`
-			} `json:"assignments"`
-		} `json:"keys"`
-	}
-	if list.Code != http.StatusOK || json.NewDecoder(list.Body).Decode(&listed) != nil {
-		t.Fatalf("list managed SSH key assignments: %d %s", list.Code, list.Body.String())
-	}
-	for _, key := range listed.Keys {
-		if key.KeyID == fixture.newKeyID && (!key.Assigned || len(key.Assignments) != 1 || key.Assignments[0].NotebookID != "notebook-1") {
-			t.Fatalf("replacement assignment is not visible: %#v", key)
+	foundNote := false
+	for _, item := range zipReader.File {
+		if strings.Contains(item.Name, ".git") {
+			t.Fatalf("legacy Git files leaked into export: %q", item.Name)
 		}
-		if key.KeyID == fixture.oldKeyID && key.Assigned {
-			t.Fatalf("old key should be unassigned after rotation: %#v", key)
+		if item.Name == "Secret.md" {
+			foundNote = true
 		}
 	}
-	if strings.Contains(list.Body.String(), "PRIVATE KEY") {
-		t.Fatalf("key listing exposed private material: %s", list.Body.String())
+	if !foundNote {
+		t.Fatal("ordinary Markdown note is missing from export")
 	}
-
-	if err := os.WriteFile(fixture.logPath, nil, 0o600); err != nil {
-		t.Fatal(err)
+	if duplicate := adopt("legacy"); duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate folder registration returned %d: %s", duplicate.Code, duplicate.Body.String())
 	}
-	status := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/repository/git/status", nil))
-	if status.Code != http.StatusOK {
-		t.Fatalf("active notebook status failed: %d %s", status.Code, status.Body.String())
+	if traversal := adopt("../outside"); traversal.Code != http.StatusBadRequest {
+		t.Fatalf("path traversal was accepted: %d %s", traversal.Code, traversal.Body.String())
 	}
-	commands, err := os.ReadFile(fixture.logPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(commands), filepath.Join(fixture.keys, fixture.newKeyID, "id_ed25519")) || strings.Contains(string(commands), filepath.Join(fixture.keys, fixture.oldKeyID, "id_ed25519")) {
-		t.Fatalf("active Git service did not switch to the replacement key: %s", commands)
-	}
-}
-
-func TestManagedSSHKeyRotationFailurePreservesPreviousAssignment(t *testing.T) {
-	fixture := newManagedKeyRotationFixture(t)
-	if err := os.WriteFile(fixture.failurePath, []byte("fail"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	response := fixture.rotateRequest(t)
-	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"state":"authentication_failed"`) {
-		t.Fatalf("failed replacement test response: %d %s", response.Code, response.Body.String())
-	}
-	registry, err := loadNotebookRegistry(fixture.metadata)
-	if err != nil || len(registry.Entries) != 1 || registry.Entries[0].KeyID != fixture.oldKeyID {
-		t.Fatalf("failed test changed the active assignment: %#v, %v", registry, err)
-	}
-	if _, err := os.Stat(filepath.Join(fixture.keys, fixture.oldKeyID, "id_ed25519")); err != nil {
-		t.Fatalf("failed test removed the current private key: %v", err)
-	}
-}
-
-func TestManagedSSHKeyRotationRejectsAssignedReplacementAndStaleAssignment(t *testing.T) {
-	fixture := newManagedKeyRotationFixture(t)
-	if err := registerNotebookWithoutActivation(fixture.metadata, notebookRecord{ID: "notebook-2", Name: "Work", LocalPath: fixture.root, RemoteURL: "git@example.test:owner/work.git", Branch: "main", AuthType: "managed-ssh", KeyID: fixture.newKeyID}); err != nil {
-		t.Fatal(err)
-	}
-	response := fixture.rotateRequest(t)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("already assigned replacement status = %d: %s", response.Code, response.Body.String())
-	}
-	staleBody := `{"expectedKeyId":"cccccccccccccccccccccccccccccccc","keyId":"` + fixture.newKeyID + `"}`
-	staleResponse := httptest.NewRecorder()
-	staleRequest := httptest.NewRequest(http.MethodPatch, "/api/notebooks/notebook-1/ssh-key", strings.NewReader(staleBody))
-	staleRequest.Header.Set("Content-Type", "application/json")
-	fixture.handler.ServeHTTP(staleResponse, staleRequest)
-	if staleResponse.Code != http.StatusConflict {
-		t.Fatalf("stale assignment status = %d: %s", staleResponse.Code, staleResponse.Body.String())
-	}
-	registry, err := loadNotebookRegistry(fixture.metadata)
-	if err != nil || len(registry.Entries) != 2 || registry.Entries[0].KeyID != fixture.oldKeyID {
-		t.Fatalf("rejected rotations changed assignments: %#v, %v", registry, err)
+	if symlink := adopt("escape"); symlink.Code != http.StatusBadRequest {
+		t.Fatalf("symlink escape was accepted: %d %s", symlink.Code, symlink.Body.String())
 	}
 }
 
@@ -1447,18 +1266,6 @@ func TestActiveNotebookNameAPIUsesConfiguredName(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/notebook", nil))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"Personal Notes"`) {
 		t.Fatalf("unexpected notebook info: %d %s", response.Code, response.Body.String())
-	}
-}
-
-func TestBackgroundGitSyncIsAcceptedWithoutBrowserRequestLifetime(t *testing.T) {
-	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/repository/git/sync-background", nil))
-	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"status":"accepted"`) {
-		t.Fatalf("unexpected background sync response: %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -1476,7 +1283,7 @@ func TestNotebookRegistryPreservesEntriesAndChangesActiveNotebook(t *testing.T) 
 	if err := registerActiveNotebook(metadata, notebookRecord{ID: "first", Name: "Private", LocalPath: firstPath}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registerActiveNotebook(metadata, notebookRecord{ID: "second", Name: "Work", LocalPath: secondPath, RemoteURL: "git@example.test:work.git", Branch: "main"}); err != nil {
+	if err := registerActiveNotebook(metadata, notebookRecord{ID: "second", Name: "Work", LocalPath: secondPath}); err != nil {
 		t.Fatal(err)
 	}
 	registry, err := loadNotebookRegistry(metadata)
@@ -1501,145 +1308,6 @@ func TestNotebookRegistryPreservesEntriesAndChangesActiveNotebook(t *testing.T) 
 	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/notebooks", nil))
 	if !strings.Contains(list.Body.String(), `"name":"Private"`) || !strings.Contains(list.Body.String(), `"name":"Work"`) || strings.Contains(list.Body.String(), firstPath) {
 		t.Fatalf("unsafe/incomplete notebook list: %s", list.Body.String())
-	}
-}
-
-func TestManagedSSHKeyManagementProtectsAssignedKeys(t *testing.T) {
-	base := t.TempDir()
-	keysDirectory := filepath.Join(base, "keys")
-	metadata := filepath.Join(base, "app", "notebooks.json")
-	t.Setenv("REPOQUILL_KEYS_DIR", keysDirectory)
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
-	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	generate := func() string {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/notebooks/ssh-key", nil))
-		var key struct {
-			KeyID string `json:"keyId"`
-		}
-		if response.Code != http.StatusCreated || json.NewDecoder(response.Body).Decode(&key) != nil {
-			t.Fatalf("generate managed key: %d %s", response.Code, response.Body.String())
-		}
-		return key.KeyID
-	}
-	assignedID := generate()
-	unusedID := generate()
-	if err := registerActiveNotebook(metadata, notebookRecord{ID: "notebook", Name: "Private", LocalPath: base, AuthType: "managed-ssh", KeyID: assignedID}); err != nil {
-		t.Fatal(err)
-	}
-
-	list := httptest.NewRecorder()
-	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/notebooks/ssh-keys", nil))
-	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"notebookName":"Private"`) || strings.Contains(list.Body.String(), "PRIVATE KEY") {
-		t.Fatalf("unexpected key list: %d %s", list.Code, list.Body.String())
-	}
-	assignedDelete := httptest.NewRecorder()
-	handler.ServeHTTP(assignedDelete, httptest.NewRequest(http.MethodDelete, "/api/notebooks/ssh-keys/"+assignedID, nil))
-	if assignedDelete.Code != http.StatusConflict {
-		t.Fatalf("assigned key deletion status = %d: %s", assignedDelete.Code, assignedDelete.Body.String())
-	}
-	unusedDelete := httptest.NewRecorder()
-	handler.ServeHTTP(unusedDelete, httptest.NewRequest(http.MethodDelete, "/api/notebooks/ssh-keys/"+unusedID, nil))
-	if unusedDelete.Code != http.StatusOK {
-		t.Fatalf("unused key deletion status = %d: %s", unusedDelete.Code, unusedDelete.Body.String())
-	}
-	if _, err := os.Stat(filepath.Join(keysDirectory, unusedID)); !os.IsNotExist(err) {
-		t.Fatal("unused managed key was not deleted")
-	}
-	if _, err := os.Stat(filepath.Join(keysDirectory, assignedID, "id_ed25519")); err != nil {
-		t.Fatal("assigned private key was deleted")
-	}
-}
-
-func runGitTest(t *testing.T, arguments ...string) string {
-	t.Helper()
-	command := exec.Command("git", arguments...)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v failed: %v\n%s", arguments, err, output)
-	}
-	return string(output)
-}
-
-func createTestRemoteWithNote(t *testing.T, base, filename, content string) (string, string) {
-	t.Helper()
-	remote := filepath.Join(base, "unrelated.git")
-	seed := filepath.Join(base, "unrelated-seed")
-	runGitTest(t, "init", "--bare", "--initial-branch=main", remote)
-	runGitTest(t, "init", "--initial-branch=main", seed)
-	runGitTest(t, "-C", seed, "config", "user.name", "Test")
-	runGitTest(t, "-C", seed, "config", "user.email", "test@example.test")
-	if err := os.WriteFile(filepath.Join(seed, filename), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGitTest(t, "-C", seed, "add", "--all")
-	runGitTest(t, "-C", seed, "commit", "-m", "Initial remote note")
-	runGitTest(t, "-C", seed, "remote", "add", "origin", remote)
-	runGitTest(t, "-C", seed, "push", "origin", "main")
-	return seed, remote
-}
-
-func TestNoteHistoryAPIViewsAndRestoresWithoutRewritingHistory(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "Note.md"), []byte("first version"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGitTest(t, "-C", root, "init", "-q")
-	runGitTest(t, "-C", root, "config", "user.name", "Test")
-	runGitTest(t, "-C", root, "config", "user.email", "test@example.invalid")
-	runGitTest(t, "-C", root, "add", "Note.md")
-	runGitTest(t, "-C", root, "commit", "-qm", "Create note")
-	if err := os.WriteFile(filepath.Join(root, "Note.md"), []byte("second version"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGitTest(t, "-C", root, "commit", "-qam", "Update note")
-
-	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	historyResponse := httptest.NewRecorder()
-	handler.ServeHTTP(historyResponse, httptest.NewRequest(http.MethodGet, "/api/repository/history?path=Note.md", nil))
-	var history struct {
-		Limited bool `json:"limited"`
-		Entries []struct {
-			VersionID string `json:"versionId"`
-			Summary   string `json:"summary"`
-		} `json:"entries"`
-	}
-	if historyResponse.Code != http.StatusOK || json.NewDecoder(historyResponse.Body).Decode(&history) != nil || len(history.Entries) != 2 {
-		t.Fatalf("unexpected history response: %d %s", historyResponse.Code, historyResponse.Body.String())
-	}
-	if history.Limited {
-		t.Fatal("ordinary repository was incorrectly reported as shallow")
-	}
-
-	currentResponse := httptest.NewRecorder()
-	handler.ServeHTTP(currentResponse, httptest.NewRequest(http.MethodGet, "/api/repository/file?path=Note.md", nil))
-	var current struct {
-		Version string `json:"version"`
-	}
-	if err := json.NewDecoder(currentResponse.Body).Decode(&current); err != nil {
-		t.Fatal(err)
-	}
-	restoreBody, _ := json.Marshal(map[string]string{"path": "Note.md", "versionId": history.Entries[1].VersionID, "expectedVersion": current.Version})
-	restoreResponse := httptest.NewRecorder()
-	handler.ServeHTTP(restoreResponse, httptest.NewRequest(http.MethodPost, "/api/repository/history/restore", bytes.NewReader(restoreBody)))
-	if restoreResponse.Code != http.StatusOK || !strings.Contains(restoreResponse.Body.String(), "first version") {
-		t.Fatalf("restore failed: %d %s", restoreResponse.Code, restoreResponse.Body.String())
-	}
-	var commitCount string
-	command := exec.Command("git", "-C", root, "rev-list", "--count", "HEAD")
-	if output, commandErr := command.Output(); commandErr != nil {
-		t.Fatal(commandErr)
-	} else {
-		commitCount = strings.TrimSpace(string(output))
-	}
-	if commitCount != "2" {
-		t.Fatalf("restore rewrote history: %s commits", commitCount)
 	}
 }
 
@@ -1698,7 +1366,7 @@ func TestImagePresentationAPIValidatesAndPersistsOutsideTheRepository(t *testing
 		t.Fatalf("load presentation = %d %s", loaded.Code, loaded.Body.String())
 	}
 	if _, err := os.Stat(filepath.Join(root, "image-presentations.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("presentation metadata leaked into Git working tree: %v", err)
+		t.Fatalf("presentation metadata leaked into the vault folder: %v", err)
 	}
 	invalid := request(http.MethodPut, "/api/repository/image-presentation", `{"note":"Note.md","image":"Note.assets/image.png","size":"400px"}`)
 	if invalid.Code != http.StatusBadRequest {

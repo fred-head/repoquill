@@ -1,9 +1,11 @@
 package app
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,43 +14,72 @@ import (
 
 var notebookRegistryMu sync.Mutex
 
-var (
-	errNotebookSSHKeyChanged = errors.New("notebook SSH key assignment changed")
-	errNotebookNotManagedSSH = errors.New("notebook does not use a managed SSH key")
-	errManagedSSHKeyAssigned = errors.New("managed SSH key is assigned to another notebook")
-)
-
 type notebookRecord struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	LocalPath    string `json:"localPath"`
-	RemoteURL    string `json:"remoteUrl,omitempty"`
-	Branch       string `json:"branch"`
-	AuthType     string `json:"authType"`
-	KeyID        string `json:"keyId,omitempty"`
-	LastSyncedAt string `json:"lastSyncedAt,omitempty"`
-}
-
-func recordNotebookSync(metadataPath, notebookID, lastSyncedAt string) error {
-	notebookRegistryMu.Lock()
-	defer notebookRegistryMu.Unlock()
-	registry, err := loadNotebookRegistry(metadataPath)
-	if err != nil {
-		return err
-	}
-	for index := range registry.Entries {
-		if registry.Entries[index].ID != notebookID {
-			continue
-		}
-		registry.Entries[index].LastSyncedAt = lastSyncedAt
-		return writeNotebookRegistry(metadataPath, registry)
-	}
-	return os.ErrNotExist
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	LocalPath string `json:"localPath"`
 }
 
 type notebookRegistry struct {
 	ActiveID string           `json:"activeId"`
 	Entries  []notebookRecord `json:"notebooks"`
+}
+
+// migrateLegacyNotebookRegistry removes Git and SSH assignments left by older
+// releases while preserving vault registration and any unrelated metadata.
+func migrateLegacyNotebookRegistry(metadataPath string) error {
+	if strings.TrimSpace(metadataPath) == "" {
+		return nil
+	}
+	notebookRegistryMu.Lock()
+	defer notebookRegistryMu.Unlock()
+
+	// #nosec G304,G703 -- this is an operator-configured server metadata path, never an HTTP/request path.
+	content, err := os.ReadFile(metadataPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(content, &document); err != nil {
+		return fmt.Errorf("decode vault registry: %w", err)
+	}
+	if document == nil {
+		return nil
+	}
+	encodedEntries, exists := document["notebooks"]
+	if !exists {
+		return nil
+	}
+	var entries []map[string]json.RawMessage
+	if err := json.Unmarshal(encodedEntries, &entries); err != nil {
+		return fmt.Errorf("decode vault registrations: %w", err)
+	}
+	legacyFields := [...]string{"remoteUrl", "branch", "authType", "keyId", "lastSyncedAt"}
+	changed := false
+	for _, entry := range entries {
+		for _, field := range legacyFields {
+			if _, exists := entry[field]; exists {
+				delete(entry, field)
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return nil
+	}
+	updatedEntries, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	document["notebooks"] = updatedEntries
+	updated, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeNotebookRegistryContent(metadataPath, updated)
 }
 
 func loadActiveNotebook(metadataPath string) (notebookRecord, error) {
@@ -163,30 +194,6 @@ func isManagedNotebookID(notebookID string) bool {
 	return err == nil
 }
 
-func replaceNotebookRemote(metadataPath, notebookID, remoteURL, branch, authType, keyID string) (notebookRecord, error) {
-	notebookRegistryMu.Lock()
-	defer notebookRegistryMu.Unlock()
-	registry, err := loadNotebookRegistry(metadataPath)
-	if err != nil {
-		return notebookRecord{}, err
-	}
-	for index := range registry.Entries {
-		if registry.Entries[index].ID != notebookID {
-			continue
-		}
-		registry.Entries[index].RemoteURL = remoteURL
-		registry.Entries[index].Branch = branch
-		registry.Entries[index].AuthType = authType
-		registry.Entries[index].KeyID = keyID
-		registry.Entries[index].LastSyncedAt = ""
-		if err := writeNotebookRegistry(metadataPath, registry); err != nil {
-			return notebookRecord{}, err
-		}
-		return registry.Entries[index], nil
-	}
-	return notebookRecord{}, os.ErrNotExist
-}
-
 func findNotebook(metadataPath, notebookID string) (notebookRecord, error) {
 	notebookRegistryMu.Lock()
 	defer notebookRegistryMu.Unlock()
@@ -200,53 +207,6 @@ func findNotebook(metadataPath, notebookID string) (notebookRecord, error) {
 		}
 	}
 	return notebookRecord{}, os.ErrNotExist
-}
-
-// replaceNotebookManagedSSHKey serializes key assignment changes with key
-// deletion. The caller's validation runs under the same lock, so a key cannot
-// be deleted between its final availability check and registry update.
-func replaceNotebookManagedSSHKey(metadataPath, notebookID, expectedKeyID, nextKeyID string, validateKey func() error) (notebookRecord, error) {
-	notebookRegistryMu.Lock()
-	defer notebookRegistryMu.Unlock()
-	registry, err := loadNotebookRegistry(metadataPath)
-	if err != nil {
-		return notebookRecord{}, err
-	}
-	index := -1
-	for i := range registry.Entries {
-		if registry.Entries[i].ID == notebookID {
-			index = i
-			break
-		}
-	}
-	if index < 0 {
-		return notebookRecord{}, os.ErrNotExist
-	}
-	record := registry.Entries[index]
-	if record.AuthType != "managed-ssh" || record.RemoteURL == "" || record.KeyID == "" {
-		return notebookRecord{}, errNotebookNotManagedSSH
-	}
-	if record.KeyID != expectedKeyID {
-		return notebookRecord{}, errNotebookSSHKeyChanged
-	}
-	if nextKeyID == expectedKeyID {
-		return notebookRecord{}, errNotebookSSHKeyChanged
-	}
-	for i, entry := range registry.Entries {
-		if i != index && entry.AuthType == "managed-ssh" && entry.KeyID == nextKeyID {
-			return notebookRecord{}, errManagedSSHKeyAssigned
-		}
-	}
-	if validateKey != nil {
-		if err := validateKey(); err != nil {
-			return notebookRecord{}, err
-		}
-	}
-	registry.Entries[index].KeyID = nextKeyID
-	if err := writeNotebookRegistry(metadataPath, registry); err != nil {
-		return notebookRecord{}, err
-	}
-	return registry.Entries[index], nil
 }
 
 func setActiveNotebook(metadataPath, notebookID string) error {
@@ -303,11 +263,114 @@ func renameNotebook(metadataPath, notebookID, name string) (notebookRecord, erro
 	return notebookRecord{}, os.ErrNotExist
 }
 
+func createNotebookDirectory(baseDirectory string) (string, string, error) {
+	base, err := filepath.Abs(baseDirectory)
+	if err != nil {
+		return "", "", err
+	}
+	if err := os.MkdirAll(base, 0o750); err != nil {
+		return "", "", err
+	}
+	base, err = filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", "", err
+	}
+	for range 4 {
+		id, err := newNotebookID()
+		if err != nil {
+			return "", "", err
+		}
+		target := filepath.Join(base, id)
+		if err := os.Mkdir(target, 0o750); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return "", "", err
+		}
+		return id, target, nil
+	}
+	return "", "", errors.New("could not allocate a unique notebook directory")
+}
+
+func newNotebookID() (string, error) {
+	identifier := make([]byte, 16)
+	if _, err := rand.Read(identifier); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(identifier), nil
+}
+
+// adoptNotebookDirectory accepts an existing direct child of the configured
+// notebook root. Refusing nested paths and symlinks keeps later deletion
+// checks confined to a single filesystem component.
+func adoptNotebookDirectory(baseDirectory, folderName string) (string, error) {
+	if folderName == "" || folderName == "." || folderName == ".." || strings.ContainsAny(folderName, "/\\\x00") || filepath.IsAbs(folderName) {
+		return "", errors.New("choose a direct child folder inside the notebook directory")
+	}
+	base, err := filepath.Abs(baseDirectory)
+	if err != nil {
+		return "", err
+	}
+	base, err = filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(base, folderName)
+	info, err := os.Lstat(target)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("the selected vault must be an existing folder, not a symlink")
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(resolved))
+	if err != nil || filepath.Clean(parent) != filepath.Clean(base) {
+		return "", errors.New("the selected vault must be directly inside the notebook directory")
+	}
+	return resolved, nil
+}
+
+func isManagedNotebookDirectory(baseDirectory, localPath string) bool {
+	base, err := filepath.Abs(baseDirectory)
+	if err != nil {
+		return false
+	}
+	base, err = filepath.EvalSymlinks(base)
+	if err != nil {
+		return false
+	}
+	target, err := filepath.Abs(localPath)
+	if err != nil {
+		return false
+	}
+	info, err := os.Lstat(target)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return false
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(resolved))
+	if err != nil || filepath.Clean(parent) != filepath.Clean(base) {
+		return false
+	}
+	return filepath.Clean(resolved) != filepath.Clean(base)
+}
+
 func writeNotebookRegistry(metadataPath string, registry notebookRegistry) error {
 	content, err := json.MarshalIndent(registry, "", "  ")
 	if err != nil {
 		return err
 	}
+	return writeNotebookRegistryContent(metadataPath, content)
+}
+
+func writeNotebookRegistryContent(metadataPath string, content []byte) error {
 	// #nosec G301,G703 -- the operator-selected metadata parent contains no canonical notes; the file itself is created 0600.
 	if err := os.MkdirAll(filepath.Dir(metadataPath), 0o755); err != nil {
 		return err

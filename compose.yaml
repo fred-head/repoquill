@@ -16,8 +16,6 @@ services:
       REPOQUILL_SESSION_COOKIE_SECURE: ${REPOQUILL_SESSION_COOKIE_SECURE:-true}
       REPOQUILL_TRUSTED_PROXIES: ${REPOQUILL_TRUSTED_PROXIES:-}
       REPOQUILL_TRUSTED_ORIGINS: ${REPOQUILL_TRUSTED_ORIGINS:-}
-      REPOQUILL_KEYS_DIR: /data/keys
-      REPOQUILL_SSH_KNOWN_HOSTS: /data/keys/known_hosts
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m

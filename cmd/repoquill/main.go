@@ -47,7 +47,7 @@ func main() {
 	if authState.Mode == auth.ModeDisabled {
 		logger.Warn("authentication is explicitly disabled; restrict access with a trusted network or external protection")
 	}
-	handler, err := app.NewHandlerWithAuth(logger, os.Getenv("REPOQUILL_REPOSITORY"), authService, version)
+	handler, err := app.NewHandlerWithAuth(logger, os.Getenv("REPOQUILL_DEV_VAULT_PATH"), authService, version)
 	if err != nil {
 		logger.Error("configure application", "error", err)
 		os.Exit(1)

@@ -1,26 +1,16 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { AutoLockController, autoLockOptions, loadAutoLockPreference, parseAutoLockMinutes, saveAutoLockPreference, type AutoLockMinutes } from './app/autoLock'
-import { readConflictDecisionDraft, removeConflictDecisionDraft, writeConflictDecisionDraft } from './app/conflictDraftStorage'
 import { emptyDocumentStats, type DocumentStats } from './app/documentStats'
-import { defaultSyncPreferences, loadSyncPreferences, saveSyncPreferences, type SyncPreferences } from './app/syncPreferences'
 import { apiFetch, listenForAuthEvents, notifyAuthChanged, setCSRFToken } from './api'
-import { ManagedKeyRotation } from './components/settings/ManagedKeyRotation'
 
 const MarkdownEditor = lazy(() => import('./components/editor/MarkdownEditor').then((module) => ({ default: module.MarkdownEditor })))
 
 type Health = 'checking' | 'online' | 'offline'
 type SaveStatus = 'saved' | 'unsaved' | 'saving' | 'error' | 'conflict'
-type GitState = 'clean' | 'local_changes' | 'local_only' | 'remote_changes' | 'diverged' | 'synced' | 'sync_failed' | 'conflict' | 'invalid'
-type ReceivedChange = { kind: 'added' | 'updated' | 'moved' | 'deleted'; path: string; fromPath?: string }
-type GitStatus = { state: GitState; branch?: string; localChanges?: boolean; ahead?: number; behind?: number; conflictFiles?: string[]; message?: string; lastSyncedAt?: string; receivedChanges?: ReceivedChange[] }
-type NoteHistoryEntry = { versionId: string; timestamp: string; summary: string; path: string }
-type NoteHistoryVersion = NoteHistoryEntry & { content: string }
-type NoteHistoryResult = { entries: NoteHistoryEntry[]; limited: boolean }
 type Theme = 'dark' | 'light'
 type TreeNode = { name: string; path: string; type: 'directory' | 'file'; children?: TreeNode[] }
 type FileResponse = { path: string; content: string; version: string }
 type Draft = FileResponse & { savedContent: string }
-type SyncRefreshSnapshot = { notebookID: string; path: string; version: string; generation: number }
 type DocumentStatsSnapshot = { documentKey: string; stats: DocumentStats }
 type MenuState = { entry?: TreeNode; x: number; y: number }
 type CleanupAsset = { path: string; size: number }
@@ -28,39 +18,19 @@ type CleanupFailure = { path: string; error: string }
 type TrashItem = { id:string; originalPath:string; type:'file'|'directory'; deletedAt:string; size:number }
 type LinkRewrite = { notePath:string; nextNotePath:string; line:number; before:string; after:string }
 type MoveLinkPreview = { source:string; target:string; token:string; rewrites:LinkRewrite[] }
-type ConflictItem = { path:string; kind:'markdown'|'image'|'binary'|'modify_delete'; yourExists:boolean; otherExists:boolean; yourContent?:string; otherContent?:string }
-type ConflictOverview = { token:string; items:ConflictItem[] }
-type ConflictDecision = { path:string; action:string; content?:string }
-type GitAuthType = 'managed-ssh' | 'existing-server-ssh'
-type GitProvider = 'github' | 'gitlab' | 'forgejo' | 'other'
-type ConnectionResult = { state: string; message: string; branch?: string }
-type HostKeyInfo = { keyType: string; fingerprint: string }
-type HostTrustDiscovery = { state: string; message: string; requestId?: string; host: string; port: number; presentedKeys: HostKeyInfo[]; previouslyTrustedKeys?: HostKeyInfo[] }
-type ManagedSSHKey = { keyId: string; publicKey: string; createdAt: string; fingerprint?: string; assigned: boolean; notebookName?: string; assignments?: { notebookId: string; notebookName: string }[] }
-type NotebookInfo = { id: string; name: string; remoteUrl?: string; branch?: string; authType?: GitAuthType; keyId?: string }
+type NotebookInfo = { id: string; name: string }
 type NotebookCheck = { state:string; message:string }
-type NotebookHealth = { localFiles:NotebookCheck; writeAccess:NotebookCheck; connection:NotebookCheck; pendingWork:NotebookCheck; lastSyncedAt?:string }
+type NotebookHealth = { localFiles:NotebookCheck; writeAccess:NotebookCheck }
 type SearchResult = { path: string; type: 'directory' | 'file' | 'content'; line?: number; excerpt?: string }
+type ServerSessionSettings = { lifetimeHours: number; idleHours: number; rememberDays: number }
+type SecuritySession = { id: string; clientDescription?: string; current: boolean; lastActivityAt: string; revokedAt?: string }
 type NoteTab = { path: string; readOnly: boolean }
-type RecoveryDraft = { notebookId: string; path: string; content: string; version: string; savedContent: string; capturedAt: string }
 type CreateEntryRequest = { type:'file'|'directory'; parent:string; suggested:string }
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }
 const expandedFoldersStorageKey = 'repoquill.expanded-folders'
 const themeStorageKey = 'repoquill.theme'
 const installPromptDismissedStorageKey = 'repoquill.install-prompt-dismissed'
 const notebookSidebarCollapsedStorageKey = 'repoquill.notebook-sidebar-collapsed'
-const noteSwitchSyncFreshnessMs = 45_000
-const recoveryDraftStorageKey = 'repoquill.recovery-draft'
-const receivedChangesNoticeDurationMs = 12_000
-
-function loadRecoveryDraft(): RecoveryDraft | undefined {
-  try {
-    const value = JSON.parse(sessionStorage.getItem(recoveryDraftStorageKey) ?? 'null') as RecoveryDraft | null
-    return value?.path && value.version ? value : undefined
-  } catch {
-    return undefined
-  }
-}
 
 function loadTheme(): Theme {
   const stored = localStorage.getItem(themeStorageKey)
@@ -84,13 +54,6 @@ function parentPath(path: string): string {
 
 function baseName(path: string): string {
   return path.split('/').pop() ?? path
-}
-
-function recoveredNotePath(path: string): string {
-  const name = baseName(path)
-  const withoutExtension = name.toLowerCase().endsWith('.md') ? name.slice(0, -3) : name
-  const folder = parentPath(path)
-  return `${folder ? `${folder}/` : ''}${withoutExtension} (recovered).md`
 }
 
 function findTreeNode(entries: TreeNode[], path: string): TreeNode | undefined {
@@ -129,7 +92,6 @@ async function responseJSON<T>(response: Response): Promise<T> {
 export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut = () => undefined }: { authMode?: 'local'|'disabled'; runningVersion?:string; onLoggedOut?:()=>void } = {}) {
   const [theme, setTheme] = useState<Theme>(loadTheme)
   const [autoLockMinutes, setAutoLockMinutes] = useState<AutoLockMinutes>(() => loadAutoLockPreference(localStorage))
-  const [syncPreferences, setSyncPreferences] = useState<SyncPreferences>(() => loadSyncPreferences(localStorage))
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [notebookSwitcherOpen, setNotebookSwitcherOpen] = useState(false)
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
@@ -156,24 +118,9 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   const [noteError, setNoteError] = useState<string>()
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved')
   const [saveError, setSaveError] = useState<string>()
-  const [gitStatus, setGitStatus] = useState<GitStatus>({ state: 'invalid', message: 'Checking Git status…' })
-  const [gitSyncing, setGitSyncing] = useState(false)
-	const [syncDetailsOpen, setSyncDetailsOpen] = useState(false)
-	const [conflictOverview, setConflictOverview] = useState<ConflictOverview>()
-	const [saveConflict, setSaveConflict] = useState<{ overview:ConflictOverview; server:FileResponse }>()
-	const [conflictLoading, setConflictLoading] = useState(false)
-	const [conflictError, setConflictError] = useState<string>()
-	const [lastSuccessfulSyncAt, setLastSuccessfulSyncAt] = useState<string>()
-	const [lastSyncAttemptAt, setLastSyncAttemptAt] = useState<string>()
-	const [lastSyncError, setLastSyncError] = useState<string>()
-	const [nextScheduledSyncAt, setNextScheduledSyncAt] = useState<string>()
-  const [receivedChanges, setReceivedChanges] = useState<ReceivedChange[]>([])
-  const [receivedChangesNoticeVisible, setReceivedChangesNoticeVisible] = useState(false)
-  const [deletedNotePath, setDeletedNotePath] = useState<string>()
-  const [deletedRecoveryOpen, setDeletedRecoveryOpen] = useState(false)
-  const [deletedRecoveryError, setDeletedRecoveryError] = useState<string>()
-  const [historyPath, setHistoryPath] = useState<string>()
-  const [editorRevision, setEditorRevision] = useState(0)
+  const [saveConflict, setSaveConflict] = useState<{ server: FileResponse; yourContent: string }>()
+  const [conflictLoading, setConflictLoading] = useState(false)
+  const [conflictError, setConflictError] = useState<string>()
   const [trashOpen, setTrashOpen] = useState(false)
   const [operationError, setOperationError] = useState<string>()
   const [operationNotice, setOperationNotice] = useState<string>()
@@ -193,44 +140,19 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState<string>()
-  const [recoveryDraft, setRecoveryDraft] = useState<RecoveryDraft|undefined>(loadRecoveryDraft)
   const activeDraft = useRef<Draft | undefined>(undefined)
-  const deletedNotePathRef = useRef<string | undefined>(undefined)
-  const selectedPathRef = useRef(selectedPath)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const savePromise = useRef<Promise<FileResponse> | undefined>(undefined)
-  const syncPromise = useRef<Promise<boolean> | undefined>(undefined)
-  const syncRequested = useRef(false)
-  const localChangeGeneration = useRef(0)
-  const lastSyncedGeneration = useRef(0)
-  const lastSuccessfulSync = useRef(0)
-  const gitStatusRef = useRef(gitStatus)
-  const inactivitySyncTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const syncRepositoryRef = useRef<() => Promise<boolean>>(async () => false)
-  const syncPreferencesRef = useRef(syncPreferences)
-  const closeSyncTriggered = useRef(false)
-  const lastFocusSync = useRef(0)
+  const draftGeneration = useRef(0)
   const editorActivity = useRef(0)
   const autoLockExpire = useRef<() => void>(() => undefined)
   const autoLockController = useRef<AutoLockController | null>(null)
-  const activeNotebookIDRef = useRef(activeNotebookID)
   const noteHeaderStack = useRef<HTMLDivElement>(null)
   const [noteHeaderHeight, setNoteHeaderHeight] = useState(0)
 
-  activeNotebookIDRef.current = activeNotebookID
-  selectedPathRef.current = selectedPath
-  const preserveRecoveryDraft = useCallback(() => {
-    const draft = activeDraft.current
-    if (!draft || draft.content === draft.savedContent) return
-    const recovery = { notebookId: activeNotebookIDRef.current, path: draft.path, content: draft.content, version: draft.version, savedContent: draft.savedContent, capturedAt: new Date().toISOString() }
-    try { sessionStorage.setItem(recoveryDraftStorageKey, JSON.stringify(recovery)) } catch { return }
-    setRecoveryDraft(recovery)
-  }, [])
-
   useEffect(() => listenForAuthEvents(() => {
-    preserveRecoveryDraft()
     setReadOnly(true)
-  }, () => undefined), [preserveRecoveryDraft])
+  }, () => undefined), [])
 
   useEffect(() => {
     const handleOnline = () => setBrowserOnline(true)
@@ -298,31 +220,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     }
   }, [])
 
-  const refreshGitStatus = useCallback(async (force = false) => {
-    if (!force && notebookConfigured !== true) {
-      const status: GitStatus = { state: 'invalid', message: notebookConfigured === false ? 'Add a notebook to enable synchronization.' : 'Checking notebook configuration…' }
-      gitStatusRef.current = status
-      setGitStatus(status)
-      return
-    }
-    try {
-      const response = await apiFetch('/api/repository/git/status')
-      const status = await responseJSON<GitStatus>(response)
-      gitStatusRef.current = status
-      setGitStatus(status)
-		if (status.lastSyncedAt) {
-			lastSuccessfulSync.current = Date.parse(status.lastSyncedAt) || 0
-			setLastSuccessfulSyncAt(status.lastSyncedAt)
-		} else if (status.state === 'local_only') {
-			setLastSuccessfulSyncAt(undefined)
-		}
-    } catch (error) {
-      const status: GitStatus = { state: 'sync_failed', message: messageFrom(error) }
-      gitStatusRef.current = status
-      setGitStatus(status)
-    }
-  }, [notebookConfigured])
-
   const loadNotebookInfo = useCallback(async () => {
     try {
       const response = await apiFetch('/api/notebook')
@@ -349,10 +246,12 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
   }, [])
 
   useEffect(() => {
-    apiFetch('/api/health').then((response) => {
+    const checkHealth = () => apiFetch('/api/health').then((response) => {
       if (!response.ok) throw new Error('health check failed')
       setHealth('online')
     }).catch(() => setHealth('offline'))
+    void checkHealth()
+    const healthTimer = globalThis.setInterval(() => void checkHealth(), 15_000)
     apiFetch('/api/repository/tree').then(responseJSON<{ entries: TreeNode[] }>).then((data) => {
       setEntries(data.entries)
       setNotebookConfigured(true)
@@ -364,40 +263,17 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
       const draft = activeDraft.current
       if (draft && draft.content !== draft.savedContent) {
-        preserveRecoveryDraft()
         event.preventDefault()
         return
       }
-      if (syncPreferencesRef.current.syncOnClose && !closeSyncTriggered.current) {
-        closeSyncTriggered.current = true
-        void apiFetch('/api/repository/git/sync-background', { method: 'POST', keepalive: true })
-      }
-    }
-    const syncOnPageHide = () => {
-      const draft = activeDraft.current
-      if (draft && draft.content !== draft.savedContent) {
-        preserveRecoveryDraft()
-        return
-      }
-      if (!syncPreferencesRef.current.syncOnClose || closeSyncTriggered.current) return
-      closeSyncTriggered.current = true
-      void apiFetch('/api/repository/git/sync-background', { method: 'POST', keepalive: true })
     }
     window.addEventListener('beforeunload', warnBeforeUnload)
-    window.addEventListener('pagehide', syncOnPageHide)
     return () => {
       window.removeEventListener('beforeunload', warnBeforeUnload)
-      window.removeEventListener('pagehide', syncOnPageHide)
+      globalThis.clearInterval(healthTimer)
       if (saveTimer.current) clearTimeout(saveTimer.current)
-      if (inactivitySyncTimer.current) clearTimeout(inactivitySyncTimer.current)
     }
-  }, [preserveRecoveryDraft])
-
-  useEffect(() => {
-    const initial = globalThis.setTimeout(() => { void refreshGitStatus() }, 0)
-    const interval = globalThis.setInterval(() => { void refreshGitStatus() }, 15_000)
-    return () => { globalThis.clearTimeout(initial); globalThis.clearInterval(interval) }
-  }, [refreshGitStatus])
+  }, [])
 
   useEffect(() => {
     localStorage.setItem(expandedFoldersStorageKey, JSON.stringify([...expandedFolders]))
@@ -432,33 +308,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     saveAutoLockPreference(localStorage, autoLockMinutes)
   }, [autoLockMinutes])
 
-  useEffect(() => {
-    syncPreferencesRef.current = syncPreferences
-    saveSyncPreferences(localStorage, syncPreferences)
-  }, [syncPreferences])
-
-	useEffect(() => {
-		if (syncPreferences.scheduledMinutes === 0) {
-			const clearSchedule = globalThis.setTimeout(() => setNextScheduledSyncAt(undefined), 0)
-			return () => globalThis.clearTimeout(clearSchedule)
-		}
-		const intervalMilliseconds = syncPreferences.scheduledMinutes * 60_000
-		const scheduleNext = () => setNextScheduledSyncAt(new Date(Date.now() + intervalMilliseconds).toISOString())
-		const initialSchedule = globalThis.setTimeout(scheduleNext, 0)
-		const interval = globalThis.setInterval(() => {
-			scheduleNext()
-			void syncRepositoryRef.current()
-		}, intervalMilliseconds)
-		return () => {
-			globalThis.clearTimeout(initialSchedule)
-			globalThis.clearInterval(interval)
-		}
-	}, [syncPreferences.scheduledMinutes])
-
-  useEffect(() => {
-    if (addNotebookOpen && syncPreferences.syncOnNotebookSwitch) void syncRepositoryRef.current()
-  }, [addNotebookOpen, syncPreferences.syncOnNotebookSwitch])
-
   async function saveDraft(): Promise<boolean> {
     if (saveTimer.current) clearTimeout(saveTimer.current)
     if (savePromise.current) {
@@ -473,11 +322,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     if (!draft || draft.content === draft.savedContent) {
       setSaveStatus('saved')
       return true
-    }
-    if (deletedNotePathRef.current === draft.path) {
-      setSaveStatus('error')
-      setSaveError('This note was deleted elsewhere. Recover it as a new note before saving.')
-      return false
     }
 
     const snapshot = { path: draft.path, content: draft.content, version: draft.version }
@@ -496,18 +340,16 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       if (current?.path === snapshot.path) {
         current.version = saved.version
         current.savedContent = snapshot.content
-		if (recoveryDraft?.path === snapshot.path) { sessionStorage.removeItem(recoveryDraftStorageKey); setRecoveryDraft(undefined) }
       }
     } catch (error) {
 		const isConflict = error instanceof APIError && error.status === 409
+		if (error instanceof TypeError) setHealth('offline')
 		setSaveStatus(isConflict ? 'conflict' : 'error')
       setSaveError(messageFrom(error))
 		if (isConflict) {
-			const recovery = { notebookId:activeNotebookIDRef.current,path:snapshot.path,content:snapshot.content,version:snapshot.version,savedContent:draft.savedContent,capturedAt:new Date().toISOString() }
-			try { sessionStorage.setItem(recoveryDraftStorageKey,JSON.stringify(recovery)); setRecoveryDraft(recovery) } catch { /* the in-memory editor still preserves this version */ }
 			try {
 				const server = await responseJSON<FileResponse>(await apiFetch(`/api/repository/file?path=${encodeURIComponent(snapshot.path)}`))
-				setSaveConflict({ server,overview:{ token:`save:${server.version}`,items:[{ path:snapshot.path,kind:'markdown',yourExists:true,otherExists:true,yourContent:snapshot.content,otherContent:server.content }] } })
+				setSaveConflict({ server, yourContent: snapshot.content })
 			} catch { /* retry remains available without discarding the draft */ }
 		}
       return false
@@ -518,281 +360,44 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     const current = activeDraft.current
     if (current?.path === snapshot.path && current.content !== current.savedContent) return saveDraft()
     setSaveStatus('saved')
-    void refreshGitStatus()
     return true
   }
-
-  function isCurrentSyncNote(snapshot: SyncRefreshSnapshot, requireUnchanged: boolean) {
-    const draft = activeDraft.current
-    return activeNotebookIDRef.current === snapshot.notebookID &&
-      selectedPathRef.current === snapshot.path &&
-      draft?.path === snapshot.path &&
-      (!requireUnchanged || (draft.version === snapshot.version && draft.content === draft.savedContent && localChangeGeneration.current === snapshot.generation))
-  }
-
-  async function refreshActiveNoteAfterSync(changes: ReceivedChange[], syncingNotebookID: string, snapshot?: SyncRefreshSnapshot) {
-    if (activeNotebookIDRef.current === syncingNotebookID) {
-      for (const change of changes) {
-        if (change.kind !== 'moved' || !change.fromPath || !change.path.toLowerCase().endsWith('.md')) continue
-        setTabs((currentTabs) => {
-          if (!currentTabs.some((tab) => tab.path === change.fromPath)) return currentTabs
-          if (currentTabs.some((tab) => tab.path === change.path)) return currentTabs.filter((tab) => tab.path !== change.fromPath)
-          return currentTabs.map((tab) => tab.path === change.fromPath ? { ...tab, path: change.path } : tab)
-        })
-      }
-    }
-    if (!snapshot || changes.length === 0) return
-
-    const moved = changes.find((change) => change.kind === 'moved' && change.fromPath === snapshot.path && change.path.toLowerCase().endsWith('.md'))
-    if (moved) {
-      if (!isCurrentSyncNote(snapshot, false)) return
-      try {
-        const response = await apiFetch(`/api/repository/file?path=${encodeURIComponent(moved.path)}`)
-        const latest = await responseJSON<FileResponse>(response)
-        if (!isCurrentSyncNote(snapshot, false)) return
-
-        const current = activeDraft.current
-        if (!current) return
-        const changedDuringSync = localChangeGeneration.current !== snapshot.generation
-        const externalContentChanged = changedDuringSync && current.savedContent !== latest.content
-        const displayedContent = changedDuringSync ? current.content : latest.content
-        const savedContent = externalContentChanged ? current.savedContent : latest.content
-        activeDraft.current = { ...latest, version: externalContentChanged ? current.version : latest.version, content: displayedContent, savedContent }
-        selectedPathRef.current = moved.path
-        setSelectedPath(moved.path)
-        setSelectedItem(findTreeNode(entries, moved.path) ?? { name: baseName(moved.path), path: moved.path, type: 'file' })
-        setNote({ ...latest, content: displayedContent })
-        setEditorRevision((revision) => revision + 1)
-        deletedNotePathRef.current = undefined
-        setDeletedNotePath(undefined)
-        setSaveError(undefined)
-        if (externalContentChanged) {
-          setSaveStatus('conflict')
-          setSaveError('This note moved and changed elsewhere while you were editing. Your draft is preserved for review.')
-          setSaveConflict({ server: latest, overview: { token: `save:${latest.version}`, items: [{ path: latest.path, kind: 'markdown', yourExists: true, otherExists: true, yourContent: current.content, otherContent: latest.content }] } })
-        } else {
-          setSaveStatus(displayedContent === savedContent ? 'saved' : 'unsaved')
-        }
-      } catch {
-        // Keep the existing editor and draft visible if the moved path cannot be loaded.
-      }
-      return
-    }
-
-    const deleted = changes.some((change) => change.kind === 'deleted' && change.path === snapshot.path)
-    if (deleted && activeNotebookIDRef.current === snapshot.notebookID && selectedPathRef.current === snapshot.path && activeDraft.current?.path === snapshot.path) {
-      deletedNotePathRef.current = snapshot.path
-      setDeletedNotePath(snapshot.path)
-      setSaveError(undefined)
-      return
-    }
-
-    const updated = changes.some((change) => change.kind === 'updated' && change.path === snapshot.path)
-    if (!updated || !isCurrentSyncNote(snapshot, true)) return
+  async function applySaveConflict(action: 'keep_mine' | 'use_server' | 'edit_combined', content?: string) {
+    const pending = saveConflict
+    if (!pending) return
+    setConflictError(undefined)
+    setConflictLoading(true)
     try {
-      const response = await apiFetch(`/api/repository/file?path=${encodeURIComponent(snapshot.path)}`)
-      const latest = await responseJSON<FileResponse>(response)
-      if (!isCurrentSyncNote(snapshot, true)) return
-      activeDraft.current = { ...latest, savedContent: latest.content }
-      setNote(latest)
-      setEditorRevision((revision) => revision + 1)
+      let resolved = pending.server
+      if (action !== 'use_server') {
+        resolved = await responseJSON<FileResponse>(await apiFetch('/api/repository/file/resolve-conflict', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: pending.server.path, expectedVersion: pending.server.version, content: action === 'edit_combined' ? content ?? '' : pending.yourContent }),
+        }))
+      }
+      activeDraft.current = { ...resolved, savedContent: resolved.content }
+      setNote(resolved)
+      setSelectedPath(resolved.path)
+      setSelectedItem(findTreeNode(entries, resolved.path) ?? { name: baseName(resolved.path), path: resolved.path, type: 'file' })
+      setTabs((current) => current.some((tab) => tab.path === resolved.path) ? current : [...current, { path: resolved.path, readOnly: false }])
+      setReadOnly(false)
+      setSaveConflict(undefined)
       setSaveStatus('saved')
       setSaveError(undefined)
-      deletedNotePathRef.current = undefined
-      setDeletedNotePath(undefined)
-    } catch {
-      // A failed refresh must not replace a version that remains safely visible in the editor.
-    }
-  }
-
-  async function syncRepository(): Promise<boolean> {
-    if (notebookConfigured !== true) return false
-    if (syncPromise.current) return syncPromise.current
-    const operation = (async () => {
-      setGitSyncing(true)
-		setLastSyncAttemptAt(new Date().toISOString())
-		setLastSyncError(undefined)
+    } catch (error) {
+      setConflictError(messageFrom(error))
       try {
-        do {
-          syncRequested.current = false
-          if (!(await saveDraft())) return false
-          const syncedGeneration = localChangeGeneration.current
-          const syncingNotebookID = activeNotebookIDRef.current
-          const response = await apiFetch('/api/repository/git/sync', { method: 'POST' })
-          const result = await responseJSON<GitStatus>(response)
-          gitStatusRef.current = result
-          setGitStatus(result)
-			const localOnly = result.state === 'local_only'
-			if (result.state !== 'synced' && !localOnly) {
-				setLastSyncError(result.message ?? 'Synchronization needs attention.')
-				return false
-			}
-
-			setLastSyncError(undefined)
-			if (localOnly) {
-				lastSuccessfulSync.current = Date.now()
-				setLastSuccessfulSyncAt(undefined)
-			} else {
-				lastSuccessfulSync.current = result.lastSyncedAt ? Date.parse(result.lastSyncedAt) || Date.now() : Date.now()
-				setLastSuccessfulSyncAt(result.lastSyncedAt ?? new Date().toISOString())
-			}
-            if (result.receivedChanges?.length) {
-              setReceivedChanges(result.receivedChanges)
-              setReceivedChangesNoticeVisible(true)
-              const currentDraft = activeDraft.current
-              const refreshSnapshot = currentDraft && activeNotebookIDRef.current === syncingNotebookID && selectedPathRef.current === currentDraft.path
-                ? { notebookID: syncingNotebookID, path: currentDraft.path, version: currentDraft.version, generation: syncedGeneration }
-                : undefined
-              await refreshActiveNoteAfterSync(result.receivedChanges, syncingNotebookID, refreshSnapshot)
-            }
-          lastSyncedGeneration.current = syncedGeneration
-          await loadTree()
-
-          const statusResponse = await apiFetch('/api/repository/git/status')
-          const inspected = await responseJSON<GitStatus>(statusResponse)
-          gitStatusRef.current = inspected
-          setGitStatus(inspected)
-			if (inspected.lastSyncedAt) {
-				lastSuccessfulSync.current = Date.parse(inspected.lastSyncedAt) || lastSuccessfulSync.current
-				setLastSuccessfulSyncAt(inspected.lastSyncedAt)
-			} else if (inspected.state === 'local_only') {
-				setLastSuccessfulSyncAt(undefined)
-			}
-          if (localChangeGeneration.current !== syncedGeneration || inspected.state === 'local_changes' || inspected.state === 'diverged') {
-            syncRequested.current = true
-          }
-        } while (syncRequested.current)
-        return true
-      } catch (error) {
-        const status: GitStatus = { state: 'sync_failed', message: messageFrom(error) }
-        gitStatusRef.current = status
-        setGitStatus(status)
-		setLastSyncError(messageFrom(error))
-        return false
-      } finally {
-        setGitSyncing(false)
-      }
-    })()
-    syncPromise.current = operation
-    try {
-      return await operation
+        const server = await responseJSON<FileResponse>(await apiFetch(`/api/repository/file?path=${encodeURIComponent(pending.server.path)}`))
+        setSaveConflict({ server, yourContent: pending.yourContent })
+      } catch { /* Both versions remain available in memory. */ }
     } finally {
-      syncPromise.current = undefined
+      setConflictLoading(false)
     }
   }
 
-	async function openConflictAssistant() {
-		setConflictLoading(true)
-		setConflictError(undefined)
-		try {
-			const response = await apiFetch('/api/repository/git/conflicts')
-			setConflictOverview(await responseJSON<ConflictOverview>(response))
-			setSyncDetailsOpen(false)
-		} catch (error) {
-			setConflictError(messageFrom(error))
-		} finally {
-			setConflictLoading(false)
-		}
-	}
-
-  async function applyConflictResolution(token:string, decisions:ConflictDecision[]) {
-		setConflictLoading(true)
-		setConflictError(undefined)
-		setOperationNotice(undefined)
-		try {
-			const response = await apiFetch('/api/repository/git/conflicts/resolve', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ token,decisions }) })
-			const result = await responseJSON<{ state:GitState; message:string; safetyPoint?:string }>(response)
-			removeConflictDecisionDraft(sessionStorage, token)
-			setConflictOverview(undefined)
-			await loadTree()
-			await refreshGitStatus()
-			if (result.state === 'conflict') await openConflictAssistant()
-			else setOperationNotice(result.safetyPoint ? `Changes synchronized. Recovery point: ${result.safetyPoint}` : 'Changes synchronized.')
-		} catch (error) {
-			setConflictError(messageFrom(error))
-			try { const current = await responseJSON<ConflictOverview>(await apiFetch('/api/repository/git/conflicts')); setConflictOverview(current) } catch { /* source versions remain in Git */ }
-		} finally {
-			setConflictLoading(false)
-		}
-	}
-
-  function requestNoteSwitchSync() {
-    const status = gitStatusRef.current.state
-    const recentlySynced = Date.now() - lastSuccessfulSync.current < noteSwitchSyncFreshnessMs
-	const clean = status === 'clean' || status === 'synced' || status === 'local_only' && !gitStatusRef.current.localChanges
-    const noNewLocalChanges = localChangeGeneration.current === lastSyncedGeneration.current
-    if (recentlySynced && clean && noNewLocalChanges) return
-    void syncRepository()
-  }
-
-	async function applySaveConflict(decisions:ConflictDecision[]) {
-		const pending = saveConflict
-		const decision = decisions[0]
-		if (!pending || !decision) return
-		setConflictLoading(true)
-		setConflictError(undefined)
-		try {
-			let resolved = pending.server
-			if (decision.action !== 'use_other') {
-				const content = decision.action === 'edit_combined' ? decision.content ?? '' : pending.overview.items[0].yourContent ?? ''
-				const response = await apiFetch('/api/repository/file/resolve-conflict',{ method:'POST',headers:{ 'Content-Type':'application/json' },body:JSON.stringify({ path:pending.server.path,expectedVersion:pending.server.version,content }) })
-				resolved = (await responseJSON<{ file:FileResponse }>(response)).file
-			}
-			activeDraft.current = { ...resolved,savedContent:resolved.content }
-			selectedPathRef.current = resolved.path
-			deletedNotePathRef.current = undefined
-			setDeletedNotePath(undefined)
-			setNote(resolved)
-			setSelectedPath(resolved.path)
-			setSelectedItem(findTreeNode(entries,resolved.path) ?? { name:baseName(resolved.path),path:resolved.path,type:'file' })
-			setTabs((current)=>current.some((tab)=>tab.path===resolved.path)?current:[...current,{ path:resolved.path,readOnly:false }])
-			setReadOnly(false)
-			setSaveConflict(undefined)
-			removeConflictDecisionDraft(sessionStorage, pending.overview.token)
-			setSaveStatus('saved')
-			setSaveError(undefined)
-			sessionStorage.removeItem(recoveryDraftStorageKey)
-			setRecoveryDraft(undefined)
-			localChangeGeneration.current += decision.action === 'use_other' ? 0 : 1
-			void refreshGitStatus()
-		} catch (error) {
-			setConflictError(messageFrom(error))
-			try {
-				const server = await responseJSON<FileResponse>(await apiFetch(`/api/repository/file?path=${encodeURIComponent(pending.server.path)}`))
-				setSaveConflict({ server,overview:{ token:`save:${server.version}`,items:[{ ...pending.overview.items[0],otherContent:server.content }] } })
-			} catch { /* both in-memory versions remain available */ }
-		} finally { setConflictLoading(false) }
-	}
-
-  useEffect(() => {
-    syncRepositoryRef.current = syncRepository
-  })
-
-  useEffect(() => {
-    const syncAfterFocus = () => {
-      if (!syncPreferencesRef.current.syncOnFocus || document.visibilityState === 'hidden') return
-      const now = Date.now()
-      if (now - lastFocusSync.current < 5_000) return
-      lastFocusSync.current = now
-      void syncRepositoryRef.current()
-    }
-    window.addEventListener('focus', syncAfterFocus)
-    document.addEventListener('visibilitychange', syncAfterFocus)
-    return () => {
-      window.removeEventListener('focus', syncAfterFocus)
-      document.removeEventListener('visibilitychange', syncAfterFocus)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (notebookConfigured && syncPreferencesRef.current.syncOnStartup) void syncRepositoryRef.current()
-  }, [notebookConfigured])
-
-  async function activateClonedNotebook() {
+  async function activateCreatedVault() {
     activeDraft.current = undefined
-    selectedPathRef.current = undefined
-    deletedNotePathRef.current = undefined
-    setDeletedNotePath(undefined)
     setTabs([])
     setSelectedPath(undefined)
     setSelectedItem(undefined)
@@ -800,29 +405,18 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     setNoteError(undefined)
     setSaveStatus('saved')
     setExpandedFolders(new Set())
-		setReceivedChanges([])
-		setReceivedChangesNoticeVisible(false)
-		setLastSyncError(undefined)
-    setHistoryPath(undefined)
     await loadTree()
     await loadNotebookInfo()
     await loadNotebooks()
-    await refreshGitStatus(true)
   }
 
   async function refreshNotebookRegistrations() {
-    const wasLocalOnly = gitStatusRef.current.state === 'local_only'
     const data = await loadNotebooks()
     if (data?.activeId) {
       await loadNotebookInfo()
-      await refreshGitStatus(true)
-      if (wasLocalOnly && gitStatusRef.current.state !== 'local_only') void syncRepository()
       return
     }
     activeDraft.current = undefined
-    selectedPathRef.current = undefined
-    deletedNotePathRef.current = undefined
-    setDeletedNotePath(undefined)
     setTabs([])
     setSelectedPath(undefined)
     setSelectedItem(undefined)
@@ -831,9 +425,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     setNotebookConfigured(false)
     setNotebookName('Notebooks')
     setTreeError(undefined)
-    setGitStatus({ state: 'invalid', message: 'Add a notebook to enable synchronization.' })
-		setReceivedChanges([])
-		setReceivedChangesNoticeVisible(false)
   }
 
   async function switchNotebook(notebook: NotebookInfo) {
@@ -842,17 +433,12 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     setOperationNotice(undefined)
     if (notebook.id === activeNotebookID) return
     if (!(await saveDraft())) return
-    if (syncPreferences.syncOnNotebookSwitch) await syncRepository()
     setOperationBusy(true)
     setOperationError(undefined)
     try {
       const response = await apiFetch(`/api/notebooks/${encodeURIComponent(notebook.id)}/activate`, { method: 'POST' })
       await responseJSON<NotebookInfo>(response)
       activeDraft.current = undefined
-      activeNotebookIDRef.current = notebook.id
-      selectedPathRef.current = undefined
-      deletedNotePathRef.current = undefined
-      setDeletedNotePath(undefined)
       setTabs([])
       setSelectedPath(undefined)
       setSelectedItem(undefined)
@@ -862,18 +448,17 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       setExpandedFolders(new Set())
       setNotebookName(notebook.name)
       setActiveNotebookID(notebook.id)
-		setReceivedChanges([])
-		setReceivedChangesNoticeVisible(false)
-		setLastSyncError(undefined)
-    setHistoryPath(undefined)
-      if (syncPreferences.syncOnNotebookSwitch) await syncRepository()
       await loadTree()
-      await refreshGitStatus()
     } catch (error) {
       setOperationError(messageFrom(error))
     } finally {
       setOperationBusy(false)
     }
+  }
+
+  function updateReadOnly(value: boolean, path = selectedPath) {
+    setReadOnly(value)
+    if (path) setTabs((current) => current.map((tab) => tab.path === path ? { ...tab, readOnly: value } : tab))
   }
 
   async function openNote(path: string, disposition: 'current' | 'new' = 'current') {
@@ -893,10 +478,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         return current.map((tab) => tab.path === selectedPath ? nextTab : tab)
       })
       activeDraft.current = { ...loaded, savedContent: loaded.content }
-      selectedPathRef.current = path
-      deletedNotePathRef.current = undefined
-      setDeletedNotePath(undefined)
-      setDeletedRecoveryError(undefined)
       setNote(loaded)
       setSelectedPath(path)
       const treeEntry = findTreeNode(entries, path)
@@ -912,44 +493,11 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       })
       updateReadOnly(existingTab?.readOnly ?? false, path)
       setSaveStatus('saved')
-      if (syncPreferences.syncBeforeOpeningNote) requestNoteSwitchSync()
     } catch (error) {
       setNoteError(messageFrom(error))
     } finally {
       setNoteLoading(false)
     }
-  }
-
-  async function restoreRecoveryDraft() {
-    if (!recoveryDraft) return
-    if (recoveryDraft.notebookId && activeNotebookID && recoveryDraft.notebookId !== activeNotebookID) {
-      setOperationError('The recovery draft belongs to another notebook. Switch back to that notebook before restoring it.')
-      return
-    }
-    try {
-      const response = await apiFetch(`/api/repository/file?path=${encodeURIComponent(recoveryDraft.path)}`)
-      const current = await responseJSON<FileResponse>(response)
-      if (current.version !== recoveryDraft.version) {
-		setSaveConflict({ server:current,overview:{ token:`save:${current.version}`,items:[{ path:current.path,kind:'markdown',yourExists:true,otherExists:true,yourContent:recoveryDraft.content,otherContent:current.content }] } })
-		setOperationError(undefined)
-        return
-      }
-      activeDraft.current = { ...current, content: recoveryDraft.content, savedContent: current.content }
-      selectedPathRef.current = current.path
-      setNote({ ...current, content: recoveryDraft.content })
-      setSelectedPath(current.path)
-      setTabs((items) => items.some((tab) => tab.path === current.path) ? items : [...items, { path: current.path, readOnly: false }])
-      setReadOnly(false)
-      setSaveStatus('unsaved')
-      setOperationError(undefined)
-    } catch (caught) {
-      setOperationError(messageFrom(caught))
-    }
-  }
-
-  function discardRecoveryDraft() {
-    sessionStorage.removeItem(recoveryDraftStorageKey)
-    setRecoveryDraft(undefined)
   }
 
   async function closeTab(path: string) {
@@ -959,84 +507,16 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       setTabs((current) => current.filter((tab) => tab.path !== path))
       return
     }
-    const isDeleted = deletedNotePathRef.current === path
-    if (!isDeleted && !(await saveDraft())) return
+    if (!(await saveDraft())) return
     const remaining = tabs.filter((tab) => tab.path !== path)
     const next = remaining[Math.min(index, remaining.length - 1)]
     setTabs(remaining)
     activeDraft.current = undefined
-    selectedPathRef.current = undefined
-    if (isDeleted) {
-      deletedNotePathRef.current = undefined
-      setDeletedNotePath(undefined)
-      setDeletedRecoveryError(undefined)
-    }
     setNote(undefined)
     setSelectedPath(undefined)
     setSaveStatus('saved')
     setSaveError(undefined)
     if (next) await openNote(next.path)
-  }
-
-  async function recoverDeletedNote(rawPath: string) {
-    const originalPath = deletedNotePathRef.current
-    const originalDraft = activeDraft.current
-    const notebookID = activeNotebookIDRef.current
-    if (!originalPath || originalDraft?.path !== originalPath) return
-    let path = rawPath.trim()
-    if (!path) return
-    if (!path.toLowerCase().endsWith('.md')) path += '.md'
-    if (path === originalPath) {
-      setDeletedRecoveryError('Choose a new path so the recovered copy does not replace the deleted note.')
-      return
-    }
-
-    setDeletedRecoveryOpen(false)
-    setDeletedRecoveryError(undefined)
-    setOperationBusy(true)
-    const generation = localChangeGeneration.current
-    try {
-      await responseJSON<{ path: string; type: string }>(await apiFetch('/api/repository/entries', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, type: 'file' }),
-      }))
-      const created = await responseJSON<FileResponse>(await apiFetch(`/api/repository/file?path=${encodeURIComponent(path)}`))
-      const content = originalDraft.content
-      const saved = await responseJSON<FileResponse>(await apiFetch(`/api/repository/file?path=${encodeURIComponent(path)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, version: created.version }),
-      }))
-      const stillActive = activeNotebookIDRef.current === notebookID && selectedPathRef.current === originalPath && activeDraft.current?.path === originalPath
-      if (stillActive && localChangeGeneration.current === generation) {
-        setTabs((current) => {
-          if (current.some((tab) => tab.path === path)) return current.filter((tab) => tab.path !== originalPath)
-          return current.map((tab) => tab.path === originalPath ? { ...tab, path } : tab)
-        })
-        activeDraft.current = { ...saved, savedContent: saved.content }
-        selectedPathRef.current = path
-        setSelectedPath(path)
-        setSelectedItem(findTreeNode(entries, path) ?? { name: baseName(path), path, type: 'file' })
-        setNote(saved)
-        setEditorRevision((revision) => revision + 1)
-        deletedNotePathRef.current = undefined
-        setDeletedNotePath(undefined)
-        setSaveStatus('saved')
-        setSaveError(undefined)
-        localChangeGeneration.current += 1
-        setOperationNotice(`Recovered note saved as ${path}.`)
-      } else {
-        setTabs((current) => current.some((tab) => tab.path === path) ? current : [...current, { path, readOnly: false }])
-        setOperationNotice(`A recovered copy was saved as ${path}. Changes made during recovery remain in the deleted note.`)
-      }
-      await loadTree()
-      void refreshGitStatus()
-    } catch (error) {
-      setDeletedRecoveryError(messageFrom(error))
-    } finally {
-      setOperationBusy(false)
-    }
   }
 
   async function activateTab(path: string) {
@@ -1047,7 +527,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     const draft = activeDraft.current
     if (!draft || draft.content === markdown) return
     draft.content = markdown
-    localChangeGeneration.current += 1
+    draftGeneration.current += 1
     setNote((current) => current?.path === draft.path ? { ...current, content: markdown } : current)
     editorActivity.current += 1
     autoLockController.current?.activity()
@@ -1055,10 +535,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     setSaveError(undefined)
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(() => { void saveDraft() }, 800)
-    if (inactivitySyncTimer.current) clearTimeout(inactivitySyncTimer.current)
-    if (syncPreferences.inactivityMinutes > 0) {
-      inactivitySyncTimer.current = setTimeout(() => { void syncRepositoryRef.current() }, syncPreferences.inactivityMinutes * 60_000)
-    }
   }
 
   function createEntry(type: 'file' | 'directory', relativeTo: TreeNode | undefined = selectedItem) {
@@ -1131,7 +607,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       })
       if (affectedPath) {
         activeDraft.current = undefined
-        selectedPathRef.current = undefined
         setNote(undefined)
         setSelectedPath(undefined)
       }
@@ -1203,9 +678,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       setTabs(remainingTabs)
       if (activeDeleted) {
         activeDraft.current = undefined
-        selectedPathRef.current = undefined
-        deletedNotePathRef.current = undefined
-        setDeletedNotePath(undefined)
         setNote(undefined)
         setSelectedPath(undefined)
         setSaveStatus('saved')
@@ -1376,34 +848,6 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     if (await saveDraft()) updateReadOnly(true)
   }
 
-  async function openVersionHistory() {
-    if (!selectedPath || !(await saveDraft())) return
-    setHistoryPath(selectedPath)
-  }
-
-  async function restoreNoteVersion(versionId: string) {
-    const draft = activeDraft.current
-    if (!draft || draft.path !== historyPath) throw new Error('The active note changed. Reopen version history and try again.')
-    const response = await apiFetch('/api/repository/history/restore', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: draft.path, versionId, expectedVersion: draft.version }),
-    })
-    const restored = await responseJSON<FileResponse>(response)
-    activeDraft.current = { ...restored, savedContent: restored.content }
-    setNote(restored)
-    setEditorRevision((current) => current + 1)
-    setSaveStatus('saved')
-    setSaveError(undefined)
-    localChangeGeneration.current += 1
-    await refreshGitStatus()
-  }
-
-  function updateReadOnly(value: boolean, path = selectedPath) {
-    setReadOnly(value)
-    if (path) setTabs((current) => current.map((tab) => tab.path === path ? { ...tab, readOnly: value } : tab))
-  }
-
   const selectedFolderPath = selectedItem?.type === 'directory' ? selectedItem.path : selectedItem ? parentPath(selectedItem.path) : ''
   const createInName = selectedFolderPath ? baseName(selectedFolderPath) : notebookName
 
@@ -1431,7 +875,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
     })
   }
 
-  const editorDocumentKey = note ? `${note.path}:${readOnly ? 'read' : 'edit'}:${editorRevision}` : ''
+  const editorDocumentKey = note ? `${note.path}:${readOnly ? 'read' : 'edit'}` : ''
   const visibleDocumentStats = documentStatsSnapshot?.documentKey === editorDocumentKey ? documentStatsSnapshot.stats : emptyDocumentStats
   const publishDocumentStats = useCallback((stats: DocumentStats) => {
     setDocumentStatsSnapshot((previous) => previous?.documentKey === editorDocumentKey && previous.stats === stats
@@ -1445,7 +889,7 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
       <aside id="notebook-navigation" aria-label="Notebook navigation" className={`fixed inset-y-0 left-0 z-40 flex w-[min(20rem,calc(100vw-3rem))] shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 shadow-2xl transition-[transform,width] duration-200 lg:static lg:z-auto lg:translate-x-0 lg:bg-zinc-900/60 lg:shadow-none ${notebookSidebarCollapsed ? 'lg:w-12' : 'lg:w-80'} ${mobileNavigationOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         {notebookSidebarCollapsed && <div className="hidden flex-1 flex-col items-center pt-2 lg:flex"><button type="button" aria-label="Expand notebook sidebar" aria-controls="notebook-navigation-content" aria-expanded="false" onClick={toggleNotebookSidebar} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500" title="Expand notebook sidebar">›</button></div>}
         <div id="notebook-navigation-content" className={`flex min-h-0 flex-1 flex-col ${notebookSidebarCollapsed ? 'lg:hidden' : ''}`}>
-        <header className="relative border-b border-zinc-800 px-5 py-5"><div className="flex items-center justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-xs font-semibold uppercase tracking-[0.22em] text-amber-400">RepoQuill</p><button type="button" aria-haspopup="menu" aria-expanded={notebookSwitcherOpen} onClick={() => setNotebookSwitcherOpen((open) => !open)} className="mt-1 flex min-h-9 max-w-full items-center gap-2 rounded-md pr-2 text-left text-lg font-semibold outline-none hover:text-amber-200 focus-visible:ring-2 focus-visible:ring-amber-500"><span className="truncate">Notebooks</span><span aria-hidden="true" className="text-sm text-zinc-500">▾</span></button></div><div className="flex items-center gap-2"><button type="button" onClick={() => setSettingsOpen(true)} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Settings" title="Settings"><SettingsIcon /></button>{authMode === 'local' && <button type="button" onClick={() => void logout()} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Sign out" title="Sign out"><LogoutIcon /></button>}<button type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button><button type="button" aria-label="Collapse notebook sidebar" aria-controls="notebook-navigation-content" aria-expanded="true" onClick={toggleNotebookSidebar} className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-md border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 lg:flex" title="Collapse notebook sidebar">‹</button></div></div>{notebookSwitcherOpen && <><button type="button" aria-label="Close notebook switcher" className="fixed inset-0 z-20 cursor-default" onClick={() => setNotebookSwitcherOpen(false)} /><div role="menu" aria-label="Notebooks" className="absolute top-[4.8rem] right-3 left-3 z-30 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl">{notebooks.map((notebook) => <button key={notebook.id} type="button" role="menuitemradio" aria-checked={notebook.id === activeNotebookID} onClick={() => void switchNotebook(notebook)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-zinc-200 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"><span className="w-4 text-amber-400" aria-hidden="true">{notebook.id === activeNotebookID ? '✓' : ''}</span><span className="truncate">{notebook.name}</span></button>)}<div className="my-1 border-t border-zinc-700" /><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setAddNotebookOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-amber-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">+ Add Notebook</button><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setManageNotebooksOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Manage Notebooks</button></div></>}</header>
+        <header className="relative border-b border-zinc-800 px-5 py-5"><div className="flex items-center justify-between gap-3"><div className="min-w-0 flex-1"><p className="text-xs font-semibold uppercase tracking-[0.22em] text-amber-400">RepoQuill</p><button type="button" aria-haspopup="menu" aria-expanded={notebookSwitcherOpen} onClick={() => setNotebookSwitcherOpen((open) => !open)} className="mt-1 flex min-h-9 max-w-full items-center gap-2 rounded-md pr-2 text-left text-lg font-semibold outline-none hover:text-amber-200 focus-visible:ring-2 focus-visible:ring-amber-500"><span className="truncate">Vaults</span><span aria-hidden="true" className="text-sm text-zinc-500">▾</span></button></div><div className="flex items-center gap-2"><button type="button" onClick={() => setSettingsOpen(true)} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Settings" title="Settings"><SettingsIcon /></button>{authMode === 'local' && <button type="button" onClick={() => void logout()} className="rounded-md border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label="Sign out" title="Sign out"><LogoutIcon /></button>}<button type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} className="rounded-md border border-zinc-700 px-2.5 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button><button type="button" aria-label="Collapse notebook sidebar" aria-controls="notebook-navigation-content" aria-expanded="true" onClick={toggleNotebookSidebar} className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-md border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 lg:flex" title="Collapse notebook sidebar">‹</button></div></div>{notebookSwitcherOpen && <><button type="button" aria-label="Close notebook switcher" className="fixed inset-0 z-20 cursor-default" onClick={() => setNotebookSwitcherOpen(false)} /><div role="menu" aria-label="Vaults" className="absolute top-[4.8rem] right-3 left-3 z-30 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl">{notebooks.map((notebook) => <button key={notebook.id} type="button" role="menuitemradio" aria-checked={notebook.id === activeNotebookID} onClick={() => void switchNotebook(notebook)} className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-zinc-200 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"><span className="w-4 text-amber-400" aria-hidden="true">{notebook.id === activeNotebookID ? '✓' : ''}</span><span className="truncate">{notebook.name}</span></button>)}<div className="my-1 border-t border-zinc-700" /><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setAddNotebookOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-amber-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">+ Add Vault</button><button type="button" role="menuitem" onClick={() => { setNotebookSwitcherOpen(false); setManageNotebooksOpen(true) }} className="min-h-11 w-full rounded-md px-3 text-left text-sm text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">Manage Vaults</button></div></>}</header>
         <div className="relative grid grid-cols-[1fr_1fr_auto_auto_auto] gap-1.5 border-b border-zinc-800 p-3">
           <TreeAction disabled={operationBusy || notebookConfigured === false} onClick={() => void createEntry('file')}>New Note</TreeAction>
           <TreeAction disabled={operationBusy || notebookConfigured === false} onClick={() => void createEntry('directory')}>New Folder</TreeAction>
@@ -1468,8 +912,8 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
           {operationNotice && <div role="status" className="mb-3 flex items-start justify-between gap-2 rounded-lg border border-emerald-900/70 bg-emerald-950/20 p-3 text-sm text-emerald-200"><span>{operationNotice}</span><button type="button" aria-label="Dismiss notification" onClick={() => setOperationNotice(undefined)} className="-m-1 min-h-8 min-w-8 shrink-0 rounded text-emerald-300 hover:bg-emerald-900/40">×</button></div>}
           {searchQuery.trim() && <SearchResults query={searchQuery.trim()} results={searchResults} loading={searchLoading} error={searchError} onSelect={selectSearchResult} />}
           {!searchQuery.trim() && <>
-          {treeLoading && <SidebarMessage>Loading notebook…</SidebarMessage>}
-          {notebookConfigured === false && <div className="rounded-lg border border-zinc-700 bg-zinc-950/40 p-4 text-sm text-zinc-300"><p className="font-medium text-zinc-100">No notebook yet</p><p className="mt-1 text-xs leading-5 text-zinc-500">Connect an existing notebook to start taking notes.</p><button type="button" className="mt-3 min-h-10 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 hover:bg-amber-400" onClick={() => setAddNotebookOpen(true)}>Add Notebook</button></div>}
+          {treeLoading && <SidebarMessage>Loading vault…</SidebarMessage>}
+          {notebookConfigured === false && <div className="rounded-lg border border-zinc-700 bg-zinc-950/40 p-4 text-sm text-zinc-300"><p className="font-medium text-zinc-100">No vault yet</p><p className="mt-1 text-xs leading-5 text-zinc-500">Create a vault or adopt an existing folder to start taking notes.</p><button type="button" className="mt-3 min-h-10 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 hover:bg-amber-400" onClick={() => setAddNotebookOpen(true)}>Add Vault</button></div>}
           {treeError && notebookConfigured !== false && <div className="rounded-lg border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200"><p>{treeError}</p><button className="mt-3 rounded-md bg-red-900/60 px-3 py-1.5 text-xs hover:bg-red-800" onClick={() => void loadTree()}>Try again</button></div>}
           {!treeLoading && !treeError && <button type="button" onContextMenu={showRootContextMenu} className={`mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${!selectedItem ? 'bg-amber-400/15 text-amber-200' : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'}`} onClick={() => { setSelectedItem(undefined); setOverflowOpen(false) }}><span aria-hidden="true">⌂</span><span className="truncate">{notebookName}</span></button>}
           {!treeLoading && !treeError && entries.length === 0 && <SidebarMessage>No Markdown files found.</SidebarMessage>}
@@ -1483,227 +927,71 @@ export function App({ authMode = 'disabled', runningVersion = 'dev', onLoggedOut
         <div ref={noteHeaderStack} className="repoquill-note-header-stack sticky top-0 z-10 bg-zinc-950/90 backdrop-blur">
         <header className="flex items-center justify-between gap-2 border-b border-zinc-800 px-3 py-3 sm:gap-4 sm:px-8">
           <div className="flex min-w-0 items-center gap-2"><button type="button" aria-label="Open notebook navigation" aria-controls="notebook-navigation" aria-expanded={mobileNavigationOpen} onClick={() => setMobileNavigationOpen(true)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 lg:hidden">☰</button><p className="min-w-0 truncate text-sm text-zinc-400">{selectedPath ?? 'Select a Markdown file'}</p></div>
-          <div className="flex shrink-0 items-center gap-2">{selectedPath && <><button type="button" onClick={() => void toggleReadOnly()} className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${readOnly ? 'border-amber-500 bg-amber-400/15 text-amber-200' : 'border-zinc-700 text-zinc-200 hover:bg-zinc-800'}`} aria-pressed={readOnly}>{readOnly ? '🔒 Read only' : '✎ Edit'}</button><button type="button" disabled={readOnly || saveStatus === 'saved' || saveStatus === 'saving'} onClick={() => void saveDraft()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">Save</button><button type="button" onClick={() => void openVersionHistory()} aria-label="Version history" title="Version history" className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"><span aria-hidden="true">↶</span><span className="ml-1 hidden sm:inline">History</span></button></>}<button type="button" disabled={notebookConfigured === false || gitSyncing || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict'} onClick={() => void syncRepository()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">{gitSyncing ? gitStatus.state === 'local_only' ? 'Versioning…' : 'Syncing…' : gitStatus.state === 'local_only' ? 'Create version' : 'Sync'}</button></div>
+          <div className="flex shrink-0 items-center gap-2">{selectedPath && <><button type="button" onClick={() => void toggleReadOnly()} className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${readOnly ? 'border-amber-500 bg-amber-400/15 text-amber-200' : 'border-zinc-700 text-zinc-200 hover:bg-zinc-800'}`} aria-pressed={readOnly}>{readOnly ? '🔒 Read only' : '✎ Edit'}</button><button type="button" disabled={readOnly || saveStatus === 'saved' || saveStatus === 'saving'} onClick={() => void saveDraft()} className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:cursor-default disabled:opacity-40">Save</button></>}</div>
         </header>
         {tabs.length > 0 && <NoteTabs tabs={tabs} activePath={selectedPath} onActivate={(path) => void activateTab(path)} onClose={(path) => void closeTab(path)} />}
         </div>
-        {(!browserOnline || health === 'offline') && <div role="status" className="border-b border-amber-800/70 bg-amber-950/40 px-4 py-2 text-sm text-amber-100 sm:px-8"><strong>Offline.</strong> RepoQuill is online-first; viewing may continue, but editing and synchronization require the server connection.</div>}
-        {recoveryDraft && <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-800/70 bg-amber-950/30 px-4 py-2 text-xs text-amber-100 sm:px-8"><span>An unsaved recovery draft for <strong>{recoveryDraft.path}</strong> was preserved after authentication ended.</span><span className="flex gap-2"><button type="button" onClick={()=>void restoreRecoveryDraft()} className="min-h-9 rounded border border-amber-700 px-3 hover:bg-amber-900/40">Review draft</button><button type="button" onClick={discardRecoveryDraft} className="min-h-9 rounded px-3 text-zinc-400 hover:bg-zinc-800">Discard</button></span></div>}
+        {(!browserOnline || health === 'offline') && <div role="status" className="border-b border-amber-800/70 bg-amber-950/40 px-4 py-2 text-sm text-amber-100 sm:px-8"><strong>Server unavailable.</strong> Vault files are online-only. Unsaved text remains only in this open browser session and has not been saved.</div>}
+
         {installPrompt && !installPromptDismissed && <div className="flex items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-300 sm:px-8"><span>Install RepoQuill for a standalone app experience.</span><div className="flex shrink-0 items-center gap-1"><button type="button" onClick={() => void installApplication()} className="min-h-9 rounded-md border border-zinc-600 px-3 font-medium hover:bg-zinc-800">Install app</button><button type="button" onClick={dismissInstallPrompt} aria-label="Dismiss install suggestion" title="Dismiss" className="flex min-h-9 min-w-9 items-center justify-center rounded-md text-lg text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200">×</button></div></div>}
-        {receivedChangesNoticeVisible && receivedChanges.length > 0 && <ReceivedChangesNotice changes={receivedChanges} onOpen={(path) => { setReceivedChangesNoticeVisible(false); void openNote(path, 'new') }} onDismiss={() => setReceivedChangesNoticeVisible(false)} />}
+
         <article className={`mx-auto w-full ${notebookSidebarCollapsed ? 'max-w-none' : 'max-w-4xl'} flex-1 px-5 sm:px-8 ${selectedPath ? 'pt-2 pb-8 sm:pt-2 sm:pb-12' : 'py-8 sm:py-12'}`}>
           {!selectedPath && <EmptyState notebookConfigured={notebookConfigured !== false} onAddNotebook={() => setAddNotebookOpen(true)} />}
           {noteLoading && <p className="text-sm text-zinc-400">Loading note…</p>}
           {noteError && <ErrorMessage>{noteError}</ErrorMessage>}
-		  {deletedNotePath === selectedPath && <div role="status" className="mb-4 rounded-lg border border-amber-800/70 bg-amber-950/30 p-4 text-sm text-amber-100"><p className="font-medium">This note was deleted in another synchronization.</p><p className="mt-1 text-xs leading-5 text-amber-100/75">The editor content is preserved here. Recover it as a new note before saving, or close this tab.</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" disabled={operationBusy} onClick={() => { setDeletedRecoveryError(undefined); setDeletedRecoveryOpen(true) }} className="min-h-9 rounded-md bg-amber-500 px-3 text-xs font-semibold text-zinc-950 disabled:opacity-40">Recover as new note</button><button type="button" onClick={() => { if (selectedPath) void closeTab(selectedPath) }} className="min-h-9 rounded-md border border-amber-800 px-3 text-xs text-amber-100 hover:bg-amber-900/40">Close deleted note</button></div>{deletedRecoveryError && <p role="alert" className="mt-2 text-xs text-red-300">Recovery failed: {deletedRecoveryError}</p>}</div>}
 		  {saveError && <ErrorMessage>{saveStatus === 'conflict' ? 'This note changed elsewhere. Your version is still preserved in this editor and has not overwritten the other version. Review both versions before choosing the result.' : `This note could not be saved on the RepoQuill server. Your current editor content is still visible. Try saving again before leaving the note. Details: ${saveError}`}</ErrorMessage>}
           {!noteLoading && note && <Suspense fallback={<p className="text-sm text-zinc-400">Loading editor…</p>}><MarkdownEditor key={editorDocumentKey} documentKey={editorDocumentKey} notePath={note.path} markdown={note.content} readOnly={readOnly} onChange={updateDraft} onStats={publishDocumentStats} notePaths={markdownPaths(entries)} onOpenNoteLink={openInternalNoteLink} stickyToolbar /></Suspense>}
         </article>
-		{selectedPath && note && <DocumentStatusBar status={saveStatus} gitStatus={gitStatus} gitSyncing={gitSyncing} stats={visibleDocumentStats} onOpenSyncDetails={() => setSyncDetailsOpen(true)} />}
+		{selectedPath && note && <DocumentStatusBar status={saveStatus} stats={visibleDocumentStats} />}
       </main>
       {contextMenu && <div className="fixed inset-0 z-40" onClick={() => setContextMenu(undefined)} onContextMenu={(event) => { event.preventDefault(); setContextMenu(undefined) }}><div className="fixed" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><ActionMenu entry={contextMenu.entry} onNewNote={(entry) => { setContextMenu(undefined); createEntry('file', entry) }} onNewFolder={(entry) => { setContextMenu(undefined); createEntry('directory', entry) }} onOpenNewTab={openEntryInNewTab} onRename={beginRename} onMove={beginMove} onDelete={requestDeleteEntry} /></div></div>}
       {createRequest && <TextInputDialog title={createRequest.type === 'file' ? 'New Note' : 'New Folder'} label={createRequest.type === 'file' ? `Note name${createRequest.parent ? ` in ${createRequest.parent}` : ''}` : `Folder name${createRequest.parent ? ` in ${createRequest.parent}` : ''}`} initialValue={createRequest.suggested} confirmLabel="Create" onCancel={() => setCreateRequest(undefined)} onConfirm={(value) => void submitCreateEntry(value)} />}
-      {deletedRecoveryOpen && deletedNotePath && <TextInputDialog title="Recover deleted note" label="Save the recovered copy as" initialValue={recoveredNotePath(deletedNotePath)} confirmLabel="Recover" onCancel={() => setDeletedRecoveryOpen(false)} onConfirm={(value) => void recoverDeletedNote(value)} />}
       {deleteRequest && <ConfirmationDialog title="Move to Trash?" message={`Move “${deleteRequest.path}” to Trash?${deleteRequest.type === 'file' ? ' Its owned image assets will move with it.' : ' Everything inside this folder will move with it.'} You can restore it later.`} confirmLabel="Move to Trash" danger onCancel={() => setDeleteRequest(undefined)} onConfirm={() => { const entry = deleteRequest; setDeleteRequest(undefined); void deleteEntry(entry) }} />}
       {moveEntry && <FolderPicker entries={entries} notebookName={notebookName} moving={moveEntry} destination={moveDestination} onDestination={setMoveDestination} onCancel={() => setMoveEntry(undefined)} onConfirm={() => void confirmMove()} />}
       {moveLinkPreview && <MoveLinkPreviewDialog preview={moveLinkPreview.preview} onCancel={() => setMoveLinkPreview(undefined)} onConfirm={() => void confirmMoveLinkRewrites()} />}
-      {settingsOpen && <SettingsDialog mode="settings" notebookRemoteConfigured={gitStatus.state !== 'local_only'} authMode={authMode} runningVersion={runningVersion} onLoggedOut={onLoggedOut} autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} syncPreferences={syncPreferences} onSyncPreferences={setSyncPreferences} onClose={() => setSettingsOpen(false)} />}
-      {addNotebookOpen && <SettingsDialog mode="onboarding" autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} onNotebookAdded={async () => { await activateClonedNotebook(); setAddNotebookOpen(false); setManageNotebooksOpen(true) }} onClose={() => setAddNotebookOpen(false)} />}
+      {settingsOpen && <SettingsDialog mode="settings" authMode={authMode} runningVersion={runningVersion} onLoggedOut={onLoggedOut} autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} onClose={() => setSettingsOpen(false)} />}
+      {addNotebookOpen && <SettingsDialog mode="onboarding" autoLockMinutes={autoLockMinutes} onAutoLockMinutes={setAutoLockMinutes} onNotebookAdded={async () => { await activateCreatedVault(); setAddNotebookOpen(false); setManageNotebooksOpen(true) }} onClose={() => setAddNotebookOpen(false)} />}
       {manageNotebooksOpen && <ManageNotebooksDialog notebooks={notebooks} activeNotebookID={activeNotebookID} operationsBlocked={operationBusy || saveStatus === 'saving' || saveStatus === 'unsaved'} onChanged={refreshNotebookRegistrations} onClose={() => setManageNotebooksOpen(false)} />}
-	  {syncDetailsOpen && <SynchronizationDetailsPanel saveStatus={saveStatus} gitStatus={gitStatus} syncing={gitSyncing} browserOnline={browserOnline && health !== 'offline'} lastSuccessfulSyncAt={lastSuccessfulSyncAt} lastSyncAttemptAt={lastSyncAttemptAt} lastSyncError={lastSyncError} nextScheduledSyncAt={nextScheduledSyncAt} receivedChanges={receivedChanges} onSync={() => void syncRepository()} onReviewConflicts={() => void openConflictAssistant()} conflictLoading={conflictLoading} conflictError={conflictError} onOpenNote={(path) => void openNote(path, 'new')} onOpenSettings={() => { setSyncDetailsOpen(false); setSettingsOpen(true) }} onCheckConnection={() => { setSyncDetailsOpen(false); setManageNotebooksOpen(true) }} onClose={() => setSyncDetailsOpen(false)} />}
-	  {conflictOverview && <ConflictResolutionDialog overview={conflictOverview} busy={conflictLoading} error={conflictError} notePaths={markdownPaths(entries)} onPostpone={() => setConflictOverview(undefined)} onApply={(decisions) => void applyConflictResolution(conflictOverview.token,decisions)} />}
-	  {saveConflict && <ConflictResolutionDialog overview={saveConflict.overview} busy={conflictLoading} error={conflictError} notePaths={markdownPaths(entries)} onPostpone={() => setSaveConflict(undefined)} onApply={(decisions) => void applySaveConflict(decisions)} />}
-      {historyPath && note?.path === historyPath && <NoteHistoryDialog notePath={historyPath} currentContent={note.content} onRestore={restoreNoteVersion} onClose={() => setHistoryPath(undefined)} />}
+
+
+	  {saveConflict && <SaveConflictDialog pending={saveConflict} busy={conflictLoading} error={conflictError} onClose={() => setSaveConflict(undefined)} onResolve={(action, content) => void applySaveConflict(action, content)} />}
+
       {trashOpen && <TrashDialog onChanged={loadTree} onClose={() => setTrashOpen(false)} />}
     </div>
   )
 }
 
-export function SettingsDialog({ mode = 'settings', notebook, notebookRemoteConfigured = true, authMode = 'disabled', runningVersion = 'dev', onLoggedOut = () => undefined, autoLockMinutes, onAutoLockMinutes, syncPreferences = defaultSyncPreferences, onSyncPreferences = () => undefined, onNotebookAdded, onClose }: { mode?: 'settings' | 'onboarding' | 'connectRemote'; notebook?: NotebookInfo; notebookRemoteConfigured?: boolean; authMode?:'local'|'disabled'; runningVersion?:string; onLoggedOut?:()=>void; autoLockMinutes: AutoLockMinutes; onAutoLockMinutes: (value: AutoLockMinutes) => void; syncPreferences?: SyncPreferences; onSyncPreferences?: (value: SyncPreferences) => void; onNotebookAdded?: () => Promise<void> | void; onClose: () => void }) {
+export function SettingsDialog({ mode = 'settings', authMode = 'disabled', runningVersion = 'dev', onLoggedOut = () => undefined, autoLockMinutes, onAutoLockMinutes, onNotebookAdded, onClose }: { mode?: 'settings' | 'onboarding'; authMode?: 'local' | 'disabled'; runningVersion?: string; onLoggedOut?: () => void; autoLockMinutes: AutoLockMinutes; onAutoLockMinutes: (value: AutoLockMinutes) => void; onNotebookAdded?: () => Promise<void> | void; onClose: () => void }) {
+  const [vaultKind, setVaultKind] = useState<'new' | 'adopt'>('new')
+  const [vaultName, setVaultName] = useState('')
+  const [folderName, setFolderName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
   const [cleanupAssets, setCleanupAssets] = useState<CleanupAsset[]>()
   const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set())
   const [cleanupBusy, setCleanupBusy] = useState(false)
   const [cleanupError, setCleanupError] = useState<string>()
   const [cleanupFailures, setCleanupFailures] = useState<CleanupFailure[]>([])
   const [confirmCleanup, setConfirmCleanup] = useState(false)
-  const [notebookName, setNotebookName] = useState(notebook?.name ?? '')
-  const [repositoryURL, setRepositoryURL] = useState('')
-  const [repositoryBranch, setRepositoryBranch] = useState(mode === 'connectRemote' ? '' : notebook?.branch ?? '')
-  const [gitAuthType, setGitAuthType] = useState<GitAuthType>('managed-ssh')
-  const [managedKey, setManagedKey] = useState<{ keyId: string; publicKey: string }>()
-  const [keySource, setKeySource] = useState<'new' | 'existing'>('new')
-  const [keyBusy, setKeyBusy] = useState(false)
-  const [copyState, setCopyState] = useState<string>()
-  const [connectionResult, setConnectionResult] = useState<ConnectionResult>()
-  const [connectionBusy, setConnectionBusy] = useState(false)
-  const [hostTrust, setHostTrust] = useState<HostTrustDiscovery>()
-  const [trustBusy, setTrustBusy] = useState(false)
-  const [cloneBusy, setCloneBusy] = useState(false)
-  const [cloneError, setCloneError] = useState<string>()
-  const [managedKeys, setManagedKeys] = useState<ManagedSSHKey[]>()
-  const [managedKeysError, setManagedKeysError] = useState<string>()
-  const [managedKeysBusy, setManagedKeysBusy] = useState(false)
-  const [deleteKey, setDeleteKey] = useState<ManagedSSHKey>()
-  const [onboardingStep,setOnboardingStep]=useState(1)
-  const [provider,setProvider]=useState<GitProvider>()
-  const [localOnlySetup,setLocalOnlySetup]=useState(false)
-  const [localNotebookBusy,setLocalNotebookBusy]=useState(false)
-  const [localNotebookError,setLocalNotebookError]=useState<string>()
 
-  const providerDetails:Record<GitProvider,{name:string;example:string;instructions:string}>={
-    github:{name:'GitHub',example:'git@github.com:owner/notes.git',instructions:'https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys'},
-    gitlab:{name:'GitLab',example:'git@gitlab.com:owner/notes.git',instructions:'https://docs.gitlab.com/user/project/deploy_keys/'},
-    forgejo:{name:'Forgejo / Gitea',example:'git@git.example.com:owner/notes.git',instructions:'https://forgejo.org/docs/latest/user/ssh-key/'},
-    other:{name:'Another Git server',example:'git@git.example.com:owner/notes.git',instructions:'https://git-scm.com/book/en/v2/Git-on-the-Server-The-Protocols'},
-  }
-  function repositoryURLIssue(value:string){
-    const trimmed=value.trim()
-    if(!trimmed)return ''
-    if(trimmed.startsWith('-'))return 'The repository address cannot start with an option character.'
-    if(trimmed.includes('\\'))return 'Remove the backslash from the repository address.'
-    if(/^\[.+\]\(.+\)$/i.test(trimmed))return 'Paste only the repository address, not a Markdown link.'
-    if(/^(?:\.{0,2}\/|[A-Za-z]:[\\/])/i.test(trimmed))return 'Choose a Git server address, not a folder on the RepoQuill server.'
-    if(/^https?:\/\//i.test(trimmed))return provider==='github'?'This looks like a GitHub website or HTTPS address. In GitHub, open your repository, choose Code → SSH, and copy the address that starts with git@github.com:.':'Alpha 2 uses SSH for private repository access. Open your Git service, choose its SSH clone option, and copy that address.'
-    if(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)&&!/^ssh:\/\//i.test(trimmed))return 'This connection type is not supported here. Copy the SSH repository address from your Git service.'
-    if(/^ssh:\/\//i.test(trimmed)){try{const parsed=new URL(trimmed);if(parsed.password)return 'Repository addresses must not contain a password or access token.';if(!parsed.hostname||!parsed.pathname||parsed.pathname==='/')return 'The SSH address must include both the Git server and repository path.'}catch{return 'This SSH repository address is malformed. Copy it again from your Git service.'}}
-    else if(!/^[^@\s]+@[A-Za-z0-9._-]+:[^\s]+$/.test(trimmed))return 'Use an SSH repository address such as git@github.com:username/private-notes.git.'
-    return ''
-  }
-  function repositoryHost(value:string){const trimmed=value.trim();try{if(/^ssh:\/\//i.test(trimmed))return new URL(trimmed).hostname}catch{return 'Invalid host'}const separator=trimmed.indexOf(':');const prefix=separator>=0?trimmed.slice(0,separator):trimmed;return prefix.includes('@')?prefix.slice(prefix.lastIndexOf('@')+1):prefix||'Unknown host'}
-  function connectionAction(){
-    const state=connectionResult?.state
-    if(state==='authentication_failed')return provider==='github'?'GitHub did not accept this key. Check Repository Settings → Deploy keys, confirm that this public key was added to this repository, and enable “Allow write access”.':'The Git server did not accept this key. Confirm that the public key was added to this repository with write access.'
-    if(state==='host_verification_failed')return `RepoQuill has not trusted ${repositoryHost(repositoryURL)} yet. Review the server identity below before continuing.`
-    if(state==='repository_not_found')return 'RepoQuill reached the Git server, but the repository could not be opened. Check that it exists, the address is correct, and this key was added to that repository.'
-    if(state==='branch_not_found'||state==='invalid_branch')return 'The selected branch does not exist. Leave the branch empty to use the repository default, or enter an existing branch name.'
-    if(state==='network_failed')return 'RepoQuill could not reach the Git server from this host. Check DNS, outbound firewall rules, proxy or network configuration, and Internet connectivity.'
-    return connectionResult&&state!=='success'?'Your notebook name, address, access method, and generated key are still here. Correct the failed step and test again.':''
-  }
-
-  const loadManagedKeys = useCallback(async () => {
-    setManagedKeysBusy(true)
-    setManagedKeysError(undefined)
-    try {
-      const response = await apiFetch('/api/notebooks/ssh-keys')
-      const data = await responseJSON<{ keys: ManagedSSHKey[] }>(response)
-      setManagedKeys(data.keys)
-    } catch (error) {
-      setManagedKeysError(messageFrom(error))
-    } finally {
-      setManagedKeysBusy(false)
-    }
-  }, [])
-
-  async function cloneNotebook(event: FormEvent) {
+  async function submitVault(event: FormEvent) {
     event.preventDefault()
-    setCloneBusy(true)
-    setCloneError(undefined)
+    setBusy(true)
+    setError(undefined)
     try {
-      const endpoint = mode === 'connectRemote' && notebook
-        ? `/api/notebooks/${encodeURIComponent(notebook.id)}/remote`
-        : '/api/notebooks'
-      const response = await apiFetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: notebookName, repositoryUrl: repositoryURL, branch: repositoryBranch, authType: gitAuthType, keyId: managedKey?.keyId ?? '' }) })
-      await responseJSON<{ id: string; name: string; localPath: string; branch: string }>(response)
+      const endpoint = vaultKind === 'new' ? '/api/notebooks/local' : '/api/notebooks/adopt'
+      const body = vaultKind === 'new' ? { name: vaultName } : { name: vaultName, folder: folderName }
+      await responseJSON<{ id: string; name: string }>(await apiFetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }))
       await onNotebookAdded?.()
       onClose()
-    } catch (error) {
-      setCloneError(messageFrom(error))
+    } catch (caught) {
+      setError(messageFrom(caught))
     } finally {
-      setCloneBusy(false)
-    }
-  }
-
-  async function createLocalNotebook(event: FormEvent) {
-    event.preventDefault()
-    setLocalNotebookBusy(true)
-    setLocalNotebookError(undefined)
-    try {
-      await responseJSON(await apiFetch('/api/notebooks/local', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: notebookName }) }))
-      await onNotebookAdded?.()
-      onClose()
-    } catch (error) {
-      setLocalNotebookError(messageFrom(error))
-    } finally {
-      setLocalNotebookBusy(false)
-    }
-  }
-
-  function invalidateConnection() { setConnectionResult(undefined); setHostTrust(undefined) }
-
-  async function generateManagedKey() {
-    setKeyBusy(true)
-    setCloneError(undefined)
-    setCopyState(undefined)
-    try {
-      const response = await apiFetch('/api/notebooks/ssh-key', { method: 'POST' })
-      setManagedKey(await responseJSON<{ keyId: string; publicKey: string }>(response))
-      invalidateConnection()
-    } catch (error) {
-      setCloneError(messageFrom(error))
-    } finally {
-      setKeyBusy(false)
-    }
-  }
-
-  async function deleteUnusedManagedKey() {
-    if (!deleteKey || deleteKey.assigned) return
-    setManagedKeysBusy(true)
-    setManagedKeysError(undefined)
-    try {
-      const response = await apiFetch(`/api/notebooks/ssh-keys/${encodeURIComponent(deleteKey.keyId)}`, { method: 'DELETE' })
-      await responseJSON<{ deleted: string }>(response)
-      setDeleteKey(undefined)
-      await loadManagedKeys()
-    } catch (error) {
-      setManagedKeysError(messageFrom(error))
-      setDeleteKey(undefined)
-      setManagedKeysBusy(false)
-    }
-  }
-
-  async function copyPublicKey() {
-    if (!managedKey) return
-    try {
-      await navigator.clipboard.writeText(managedKey.publicKey)
-      setCopyState('Public key copied')
-    } catch {
-      setCopyState('Copy failed. Select and copy the public key manually.')
-    }
-  }
-
-  async function testRepositoryConnection() {
-    setConnectionBusy(true)
-    setCloneError(undefined)
-    setConnectionResult(undefined)
-    try {
-      const response = await apiFetch('/api/notebooks/test-connection', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repositoryUrl: repositoryURL, branch: repositoryBranch, authType: gitAuthType, keyId: managedKey?.keyId ?? '' }) })
-      const result = await responseJSON<ConnectionResult>(response)
-      setConnectionResult(result)
-      if (result.state === 'success' && result.branch) setRepositoryBranch(result.branch)
-      if (result.state === 'host_verification_failed') {
-        const discoveryResponse = await apiFetch('/api/notebooks/ssh-host/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repositoryUrl: repositoryURL }) })
-        setHostTrust(await responseJSON<HostTrustDiscovery>(discoveryResponse))
-      }
-    } catch (error) {
-      setConnectionResult({ state: 'failed', message: messageFrom(error) })
-    } finally {
-      setConnectionBusy(false)
-    }
-  }
-
-  async function trustSSHHost() {
-    if (!hostTrust?.requestId) return
-    setTrustBusy(true)
-    setCloneError(undefined)
-    try {
-      const response = await apiFetch('/api/notebooks/ssh-host/trust', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId: hostTrust.requestId }) })
-      await responseJSON<HostTrustDiscovery>(response)
-      setHostTrust(undefined)
-      await testRepositoryConnection()
-    } catch (error) {
-      setCloneError(messageFrom(error))
-    } finally {
-      setTrustBusy(false)
+      setBusy(false)
     }
   }
 
@@ -1712,12 +1000,11 @@ export function SettingsDialog({ mode = 'settings', notebook, notebookRemoteConf
     setCleanupError(undefined)
     setCleanupFailures([])
     try {
-      const response = await apiFetch('/api/repository/assets/unreferenced')
-      const data = await responseJSON<{ assets: CleanupAsset[] }>(response)
+      const data = await responseJSON<{ assets: CleanupAsset[] }>(await apiFetch('/api/repository/assets/unreferenced'))
       setCleanupAssets(data.assets)
       setSelectedAssets(new Set(data.assets.map((asset) => asset.path)))
-    } catch (error) {
-      setCleanupError(messageFrom(error))
+    } catch (caught) {
+      setCleanupError(messageFrom(caught))
     } finally {
       setCleanupBusy(false)
     }
@@ -1731,110 +1018,65 @@ export function SettingsDialog({ mode = 'settings', notebook, notebookRemoteConf
     setCleanupError(undefined)
     setCleanupFailures([])
     try {
-      const response = await apiFetch('/api/repository/assets/cleanup', {
+      const result = await responseJSON<{ deleted: string[]; failures: CleanupFailure[] }>(await apiFetch('/api/repository/assets/cleanup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paths }),
-      })
-      const result = await responseJSON<{ deleted: string[]; failures: CleanupFailure[] }>(response)
+      }))
       const deleted = new Set(result.deleted)
       setCleanupAssets((current) => current?.filter((asset) => !deleted.has(asset.path)))
       setSelectedAssets(new Set(result.failures.map((failure) => failure.path)))
       setCleanupFailures(result.failures)
-    } catch (error) {
-      setCleanupError(messageFrom(error))
+    } catch (caught) {
+      setCleanupError(messageFrom(caught))
     } finally {
       setCleanupBusy(false)
     }
   }
 
   const selectedCount = selectedAssets.size
-  const totalSize = cleanupAssets?.reduce((total, asset) => total + asset.size, 0) ?? 0
+  const totalSize = cleanupAssets?.filter((asset) => selectedAssets.has(asset.path)).reduce((total, asset) => total + asset.size, 0) ?? 0
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <div role="dialog" aria-modal="true" aria-labelledby="settings-title" className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
-        <header className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-zinc-800 px-5 py-4"><h2 id="settings-title" className="text-lg font-semibold">{mode === 'onboarding' ? 'Add Notebook' : mode === 'connectRemote' ? 'Connect Remote' : 'Settings'}</h2>{mode === 'settings' && <code aria-label="Application version" title={`RepoQuill ${runningVersion || 'dev'}`} className="ml-auto shrink-0 select-text whitespace-nowrap font-mono text-[10px] text-zinc-500 sm:text-xs">{runningVersion || 'dev'}</code>}</header>
-        <div className={`min-h-0 overflow-y-auto p-5 ${mode === 'settings' ? 'flex flex-col' : ''}`}>
-          {(mode === 'onboarding' || mode === 'connectRemote') && <section>
-            <div className="flex items-center justify-between"><div><h3 className="text-sm font-semibold text-zinc-200">{mode === 'connectRemote' ? `Connect a remote to ${notebook?.name ?? 'this notebook'}` : localOnlySetup ? 'Create a local-only notebook' : 'Connect a notebook'}</h3>{!localOnlySetup&&<p className="mt-1 text-xs text-zinc-500">Step {onboardingStep} of 5</p>}</div>{!localOnlySetup&&<div aria-label="Connection progress" className="flex gap-1">{[1,2,3,4,5].map(step=><span key={step} className={`h-1.5 w-6 rounded ${step<=onboardingStep?'bg-amber-500':'bg-zinc-700'}`}><span className="sr-only">Step {step}</span></span>)}</div>}</div>
-            {mode === 'onboarding' && onboardingStep===1 && !localOnlySetup && <button type="button" onClick={()=>{setLocalOnlySetup(true);setLocalNotebookError(undefined)}} className="mt-3 w-full rounded border border-amber-700/60 bg-amber-950/20 p-3 text-left hover:border-amber-500"><span className="block text-sm font-medium text-amber-200">Create a local-only notebook</span><span className="mt-1 block text-xs leading-5 text-zinc-400">Start without a Git service. RepoQuill will keep automatic versions in a local Git repository.</span></button>}
-            {localOnlySetup && <><p className="mt-3 rounded border border-zinc-800 p-3 text-xs leading-5 text-zinc-400">RepoQuill will create a normal Git repository on this server. You can connect an empty or history-compatible remote later from Manage Notebooks.</p><form id="local-notebook-form" className="mt-3 space-y-3" onSubmit={(event)=>void createLocalNotebook(event)}><label className="block text-xs text-zinc-300">Notebook name<input required maxLength={100} value={notebookName} onChange={(event)=>setNotebookName(event.target.value)} className="mt-1.5 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder="My notes" /></label>{localNotebookError&&<p role="alert" className="rounded-md border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{localNotebookError}</p>}</form></>}
-            {!localOnlySetup && <p className="mt-3 rounded border border-zinc-800 p-3 text-xs leading-5 text-zinc-400">{mode === 'connectRemote' ? 'Only an empty remote or one with shared Git history can be connected. Independent history stays untouched.' : 'Connect an existing repository. RepoQuill does not create one through a provider API.'}</p>}
-            {onboardingStep===1&&!localOnlySetup&&<div className="mt-3 grid gap-2 sm:grid-cols-2">{(Object.keys(providerDetails) as GitProvider[]).map(id=><button type="button" key={id} onClick={()=>{setProvider(id);setOnboardingStep(2)}} className="min-h-14 rounded border border-zinc-700 px-3 text-left text-sm hover:border-amber-500">{providerDetails[id].name}</button>)}</div>}
-            <form id="notebook-onboarding-form" data-step={onboardingStep} className={`${onboardingStep===1||localOnlySetup?'hidden':'notebook-wizard mt-3 space-y-3'}`} onSubmit={(event) => void cloneNotebook(event)}>
-              {onboardingStep===2&&provider==='github'&&<div className="rounded-md border border-zinc-700 bg-zinc-950/40 p-3 text-xs leading-5 text-zinc-300"><p className="font-medium text-zinc-100">Start with a GitHub repository</p><p className="mt-2">RepoQuill stores this notebook in a normal Git repository. If you do not already have one for these notes, create a new <strong>private repository</strong> on GitHub first.</p><p className="mt-2 text-zinc-500">RepoQuill connects to the repository without changing its format. Alpha 2 does not create repositories through the GitHub API.</p><a href="https://github.com/new" target="_blank" rel="noreferrer" className="mt-3 inline-flex min-h-10 items-center rounded-md border border-zinc-700 px-3 font-medium text-amber-300 hover:bg-zinc-800">Create a repository on GitHub</a></div>}
-              {onboardingStep===2&&mode==='onboarding'&&<label className="block text-xs text-zinc-300">Notebook name<input required maxLength={100} value={notebookName} onChange={(event) => setNotebookName(event.target.value)} className="mt-1.5 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder="Private" /></label>}
-              {onboardingStep===2&&<label className="block text-xs text-zinc-300">{provider==='github'?'GitHub repository address':'Repository SSH address'}<input required value={repositoryURL} onChange={(event) => { setRepositoryURL(event.target.value); invalidateConnection() }} className="mt-1.5 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder={provider?providerDetails[provider].example:'git@example.com:user/notes.git'} /></label>}
-              {onboardingStep===2&&repositoryURLIssue(repositoryURL)&&<p role="alert" className="text-xs text-amber-300">{repositoryURLIssue(repositoryURL)}</p>}
-              {onboardingStep===2&&provider==='github'&&<div className="rounded-md border border-zinc-800 p-3 text-xs leading-5 text-zinc-400"><p className="font-medium text-zinc-200">Find this address in GitHub</p><ol className="mt-1 list-decimal space-y-1 pl-4"><li>Open the repository on GitHub.</li><li>Choose <strong>Code</strong>.</li><li>Choose <strong>SSH</strong>.</li><li>Copy the address.</li></ol><p className="mt-2">It should look like <code className="break-all text-zinc-300">git@github.com:username/private-notes.git</code>. The address from your browser bar is not the value needed here.</p></div>}
-              {onboardingStep===2&&provider!=='github'&&<p className="text-[11px] text-zinc-500">Example: <code>{provider?providerDetails[provider].example:'git@example.com:user/notes.git'}</code></p>}
-              {onboardingStep===2&&<label className="block text-xs text-zinc-300">Branch <span className="text-zinc-500">(optional; the remote default is discovered when left empty)</span><input value={repositoryBranch} onChange={(event) => { setRepositoryBranch(event.target.value); invalidateConnection() }} className="mt-1.5 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-500" placeholder="Remote default branch" /></label>}
-              {onboardingStep===3&&<div className="rounded-md border border-zinc-800 p-3 text-xs leading-5 text-zinc-400"><p className="font-medium text-zinc-200">Give this notebook secure access</p><p className="mt-1">The recommended option creates a dedicated key for this notebook. Its private part stays on your RepoQuill server. Only the public key is shown here, and it is safe to copy into the repository settings.</p><p className="mt-2">The key gets access only to repositories where you explicitly add it. RepoQuill never asks for or uploads your personal SSH private key.</p></div>}
-              {onboardingStep===3&&<fieldset><legend className="text-xs text-zinc-300">Secure access</legend><label className="mt-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-zinc-800 px-3"><input type="radio" name="git-auth" value="managed-ssh" checked={gitAuthType === 'managed-ssh'} onChange={() => { setGitAuthType('managed-ssh'); invalidateConnection() }} className="h-4 w-4 accent-amber-500" /><span><span className="block text-sm text-zinc-200">RepoQuill-managed SSH key</span><span className="block text-[11px] text-zinc-500">Recommended · the private key stays on this server</span></span></label><label className="mt-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-zinc-800 px-3"><input type="radio" name="git-auth" value="existing-server-ssh" checked={gitAuthType === 'existing-server-ssh'} onChange={() => { setGitAuthType('existing-server-ssh'); invalidateConnection() }} className="h-4 w-4 accent-amber-500" /><span><span className="block text-sm text-zinc-200">Existing server SSH configuration</span><span className="block text-[11px] text-zinc-500">Advanced operator-managed credentials</span></span></label></fieldset>}
-              {onboardingStep===3&&gitAuthType === 'managed-ssh' && <div className="rounded-md border border-zinc-800 p-3"><div><p className="text-xs font-medium text-zinc-200">Dedicated SSH key</p><p className="mt-1 text-[11px] leading-4 text-zinc-500">The private key stays on the RepoQuill server.</p></div><div className="mt-3 grid gap-2 sm:grid-cols-2"><label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200"><input type="radio" name="key-source" checked={keySource === 'new'} onChange={() => { setKeySource('new'); setManagedKey(undefined); invalidateConnection() }} className="accent-amber-500" />Generate new key</label><label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200"><input type="radio" name="key-source" checked={keySource === 'existing'} onChange={() => { setKeySource('existing'); setManagedKey(undefined); invalidateConnection(); void loadManagedKeys() }} className="accent-amber-500" />Use existing key</label></div>{keySource === 'new' && !managedKey && <button type="button" disabled={keyBusy} onClick={() => void generateManagedKey()} className="mt-3 min-h-10 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">{keyBusy ? 'Generating…' : 'Generate key'}</button>}{keySource === 'existing' && <div className="mt-3">{managedKeysBusy && <p className="text-xs text-zinc-500">Loading keys…</p>}{managedKeysError && <p role="alert" className="text-xs text-red-300">{managedKeysError}</p>}{managedKeys && <label className="block text-xs text-zinc-300">Existing unassigned key<select value={managedKey?.keyId ?? ''} onChange={(event) => { const selected = managedKeys.find((key) => key.keyId === event.target.value && !key.assigned); setManagedKey(selected ? { keyId: selected.keyId, publicKey: selected.publicKey } : undefined); invalidateConnection() }} className="mt-1.5 min-h-11 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100"><option value="">Select a key</option>{managedKeys.filter((key) => !key.assigned).map((key) => <option key={key.keyId} value={key.keyId}>{key.keyId.slice(0, 12)}… · {key.fingerprint || 'fingerprint unavailable'} · {new Date(key.createdAt).toLocaleDateString()}</option>)}</select></label>}{managedKeys && managedKeys.every((key) => key.assigned) && <p className="mt-2 text-xs text-zinc-500">No unassigned managed keys are available.</p>}</div>}{managedKey && <div className="mt-3"><p className="text-xs text-emerald-400">{keySource === 'new' ? 'Key generated' : 'Existing key selected'}</p><label className="mt-2 block text-xs text-zinc-300">Public key to add to {provider==='github'?'GitHub':'your Git service'}<textarea readOnly rows={4} value={managedKey.publicKey} className="mt-1.5 w-full resize-none rounded-md border border-zinc-700 bg-zinc-950 p-2 font-mono text-[11px] leading-4 text-zinc-300" /></label><div className="mt-2 flex flex-wrap items-center justify-between gap-2"><span role="status" className="text-[11px] text-zinc-500">{copyState}</span><button type="button" onClick={() => void copyPublicKey()} className="min-h-10 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200 hover:bg-zinc-800">Copy public key</button></div>{provider==='github'?<div className="mt-3 rounded-md border border-amber-800/60 bg-amber-950/20 p-3 text-xs leading-5 text-zinc-300"><p className="font-medium text-zinc-100">Add this public key in GitHub</p><ol className="mt-1 list-decimal space-y-1 pl-4"><li>Open your repository.</li><li>Open <strong>Settings</strong> → <strong>Deploy keys</strong>.</li><li>Choose <strong>Add deploy key</strong>.</li><li>Paste the public key shown above.</li><li><strong className="text-amber-300">Enable “Allow write access”.</strong></li><li>Save the key.</li></ol><p className="mt-2 text-amber-200">Write access is required so RepoQuill can synchronize your changes back to GitHub.</p></div>:<p className="mt-2 text-xs leading-5 text-amber-300">Add this public key as a repository or deploy key with read and write access in your Git provider.</p>}</div>}</div>}
-              {onboardingStep===4&&<div className="space-y-3"><div className="rounded-md border border-zinc-800 p-3 text-xs leading-5 text-zinc-400"><p className="font-medium text-zinc-200">Check the connection</p><p className="mt-1">{provider==='github'?'After adding the deploy key in GitHub, test whether RepoQuill can access this repository.':'After granting repository access, test whether RepoQuill can reach and use this repository.'}</p><p className="mt-2">Repository permission and Git-server identity are checked separately. RepoQuill never disables SSH host verification.</p></div><div className="rounded-md border border-zinc-800 p-3"><div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-medium text-zinc-200">Connection test</p><p className="mt-1 text-[11px] text-zinc-500">Your entered details stay in this wizard if the test fails.</p></div><button type="button" disabled={connectionBusy || !repositoryURL || (gitAuthType === 'managed-ssh' && !managedKey)} onClick={() => void testRepositoryConnection()} className="min-h-11 shrink-0 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-40">{connectionBusy ? 'Testing…' : 'Test connection'}</button></div>{connectionResult && <p role="status" className={`mt-3 text-xs leading-5 ${connectionResult.state === 'success' ? 'text-emerald-400' : 'text-red-300'}`}>{connectionResult.message}</p>}{connectionAction()&&<p className="mt-2 text-xs leading-5 text-amber-300">{connectionAction()}</p>}{hostTrust && <div className={`mt-3 rounded-md border p-3 ${hostTrust.state === 'host_key_changed' ? 'border-red-700 bg-red-950/30' : 'border-amber-700/70 bg-amber-950/20'}`}><h4 className="text-sm font-semibold text-zinc-100">{hostTrust.state === 'host_key_changed' ? 'SSH host key changed' : 'Unknown SSH host'}</h4><p className="mt-2 text-xs text-zinc-300"><span className="text-zinc-500">Git server:</span> {hostTrust.host}{hostTrust.port !== 22 ? `:${hostTrust.port}` : ''}</p><HostFingerprintList title="Presented fingerprints" keys={hostTrust.presentedKeys} />{hostTrust.previouslyTrustedKeys && <HostFingerprintList title="Previously trusted fingerprints" keys={hostTrust.previouslyTrustedKeys} />}<p className="mt-3 text-xs leading-5 text-zinc-400">{hostTrust.state === 'host_key_changed' ? 'The server identity no longer matches the identity previously trusted by RepoQuill. This can indicate a legitimate server-key rotation or a security problem. RepoQuill blocks the connection; review the server independently before changing the trust configuration.' : 'RepoQuill has not connected to this Git server before. Compare these fingerprints with a trusted source before approving them. This check helps prevent connecting to an unexpected server.'}</p>{hostTrust.state === 'unknown_host'&&provider==='github'&&<a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints" target="_blank" rel="noreferrer" className="mt-2 inline-flex min-h-10 items-center rounded px-2 text-xs text-amber-300 hover:bg-zinc-800">Open GitHub’s official SSH fingerprints</a>}{hostTrust.state === 'unknown_host' && <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" onClick={() => setHostTrust(undefined)} className="min-h-11 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" disabled={trustBusy} onClick={() => void trustSSHHost()} className="min-h-11 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-40">{trustBusy ? 'Trusting…' : 'Trust this Git server'}</button></div>}</div>}</div></div>}
-              {onboardingStep===3&&gitAuthType==='managed-ssh'&&managedKey&&provider&&<a href={providerDetails[provider].instructions} target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center rounded px-2 text-xs text-amber-300 hover:bg-zinc-800">Open full {providerDetails[provider].name} key instructions</a>}
-              {onboardingStep===5&&<div className="rounded-md border border-zinc-800 p-3"><h4 className="text-sm font-medium">{mode==='connectRemote'?'Review remote connection':'Review notebook connection'}</h4><dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2"><div><dt className="text-zinc-500">Notebook</dt><dd className="mt-0.5">{notebookName}</dd></div><div><dt className="text-zinc-500">Git service</dt><dd className="mt-0.5">{provider?providerDetails[provider].name:'Git server'}</dd></div><div><dt className="text-zinc-500">Git server</dt><dd className="mt-0.5">{repositoryHost(repositoryURL)}</dd></div><div><dt className="text-zinc-500">Branch</dt><dd className="mt-0.5">{repositoryBranch||'Remote default branch'}</dd></div><div className="sm:col-span-2"><dt className="text-zinc-500">Repository</dt><dd className="mt-0.5 break-all">{repositoryURL}</dd></div><div><dt className="text-zinc-500">Access method</dt><dd className="mt-0.5">{gitAuthType==='managed-ssh'?'Dedicated RepoQuill-managed SSH key':'Existing server SSH configuration'}</dd></div><div><dt className="text-zinc-500">Connection status</dt><dd className="mt-0.5">{connectionResult?.state==='success'?'Connection successful':'Not confirmed'}</dd></div></dl><div className="mt-4 space-y-2 rounded-md bg-zinc-950/50 p-3 text-xs leading-5 text-zinc-400"><p>{mode==='connectRemote'?'RepoQuill will connect this notebook to the remote after checking its history. Empty remotes and remotes with shared history are supported; unrelated history remains untouched.':'RepoQuill will copy this repository to the server and open it as a notebook. Your notes remain normal Markdown files inside the Git repository.'}</p><p><strong className="font-medium text-zinc-300">Saving</strong> writes a note to this RepoQuill server. <strong className="font-medium text-zinc-300">{mode==='connectRemote'?'Local versioning':'Synchronization'}</strong> {mode==='connectRemote'?'continues locally and exchanges changes with the Git service after connection.':'separately sends saved changes to the Git service and receives remote changes.'}</p></div></div>}
-              {cloneError && <p role="alert" className="rounded-md border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{cloneError}</p>}
-            </form>
-          </section>}
-
-		  {mode === 'settings' && <section className="order-5 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="ssh-keys-title">
-			<div className="flex items-start justify-between gap-3"><div><h3 id="ssh-keys-title" className="text-sm font-semibold text-zinc-200">Advanced</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Connection credentials and Git/SSH diagnostics. Most users do not need these controls after notebook setup.</p></div><button type="button" disabled={managedKeysBusy} onClick={() => void loadManagedKeys()} className="min-h-10 shrink-0 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">{managedKeys ? 'Refresh' : 'Load keys'}</button></div>
-            {managedKeysError && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{managedKeysError}</p>}
-            {managedKeysBusy && !managedKeys && <p className="mt-3 text-xs text-zinc-500">Loading managed keys…</p>}
-            {managedKeys && <div className="mt-3 space-y-2">{managedKeys.length === 0 ? <p className="rounded-md border border-zinc-800 p-3 text-xs text-zinc-500">No managed SSH keys found.</p> : managedKeys.map((key) => <div key={key.keyId} className="rounded-md border border-zinc-800 p-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-mono text-xs text-zinc-300">{key.keyId.slice(0, 12)}…</p><p className={`mt-1 text-xs ${key.assigned ? 'text-emerald-400' : 'text-amber-300'}`}>{key.assigned ? `Assigned to ${key.assignments?.map((assignment) => assignment.notebookName).join(', ') || key.notebookName || 'notebook'}` : 'Unused'}</p><p className="mt-1 text-[11px] text-zinc-500">Created {new Date(key.createdAt).toLocaleString()}</p>{key.fingerprint && <p className="mt-1 break-all font-mono text-[10px] text-zinc-500">{key.fingerprint}</p>}</div><div className="flex flex-wrap gap-1"><button type="button" onClick={() => void navigator.clipboard.writeText(key.publicKey)} className="min-h-10 rounded-md px-3 text-xs text-amber-300 hover:bg-zinc-800">Copy public key</button><ManagedKeyRotation keyInfo={key} onChanged={loadManagedKeys} /><button type="button" disabled={key.assigned} title={key.assigned ? 'Assigned keys cannot be deleted' : undefined} onClick={() => setDeleteKey(key)} className="min-h-10 rounded-md px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:cursor-not-allowed disabled:opacity-35">Delete</button></div></div><details className="mt-2"><summary className="cursor-pointer text-xs text-zinc-500">Show public key</summary><code className="mt-2 block break-all rounded bg-zinc-950 p-2 text-[11px] leading-5 text-zinc-400">{key.publicKey}</code></details></div>)}</div>}
-          </section>}
-
-          {mode === 'settings' && <section className="order-1">
-			<h3 className="text-sm font-semibold text-zinc-200">General</h3>
-            <label className="mt-4 block text-sm text-zinc-300">Auto-lock notes<select value={autoLockMinutes} onChange={(event) => onAutoLockMinutes(parseAutoLockMinutes(event.target.value))} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none focus:border-amber-500">{autoLockOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-            <p className="mt-2 text-xs leading-5 text-zinc-500">Switch an editable note to Read only after no document changes. Reading, scrolling, and text selection do not reset the timer.</p>
-			<div className="mt-5 border-t border-zinc-800 pt-5"><h3 className="text-sm font-semibold text-zinc-200">{notebookRemoteConfigured?'Synchronization':'Local versioning'}</h3><p className="mt-1 text-xs leading-5 text-zinc-500">{notebookRemoteConfigured?'Saving writes a note to this RepoQuill server. Synchronization separately exchanges those saved changes with the connected service.':'Saving writes notes on this server. RepoQuill creates Git commits locally and makes no remote connection.'}</p><label className="mt-4 block text-sm text-zinc-300">{notebookRemoteConfigured?'Scheduled synchronization':'Scheduled local versions'}<select aria-label="Scheduled sync" value={syncPreferences.scheduledMinutes} onChange={(event) => onSyncPreferences({ ...syncPreferences, scheduledMinutes: Number(event.target.value) as SyncPreferences['scheduledMinutes'] })} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100"><option value={0}>Off</option><option value={5}>Every 5 minutes</option><option value={15}>Every 15 minutes</option><option value={30}>Every 30 minutes</option><option value={60}>Every hour</option></select></label><label className="mt-4 block text-sm text-zinc-300">{notebookRemoteConfigured?'Synchronize after editing inactivity':'Create a local version after editing inactivity'}<select aria-label="Sync after editing inactivity" value={syncPreferences.inactivityMinutes} onChange={(event) => onSyncPreferences({ ...syncPreferences, inactivityMinutes: Number(event.target.value) as SyncPreferences['inactivityMinutes'] })} className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100"><option value={0}>Off</option><option value={1}>1 minute</option><option value={2}>2 minutes</option><option value={5}>5 minutes</option><option value={10}>10 minutes</option></select></label><p className="mt-3 text-xs leading-5 text-zinc-500">{notebookRemoteConfigured?'RepoQuill also synchronizes at safe transition points such as startup, returning to the app, and changing notes or notebooks. Closing-tab synchronization remains best effort because browsers cannot guarantee its completion.':'RepoQuill also creates local versions at safe transition points such as startup, returning to the app, and changing notes or notebooks. Closing-tab versioning remains best effort because browsers cannot guarantee its completion.'}</p></div>
-          </section>}
-
-          {mode === 'settings' && <SecurityPanel authMode={authMode} onLoggedOut={onLoggedOut} />}
-
-		  {mode === 'settings' && <section className="order-4 mt-6 border-t border-zinc-800 pt-5" aria-labelledby="maintenance-title">
-            <div className="flex items-start justify-between gap-4">
-			  <div><h3 id="maintenance-title" className="text-sm font-semibold text-zinc-200">Storage and recovery</h3><p className="mt-1 text-xs leading-5 text-zinc-500">Review image files in note-specific asset folders that are no longer referenced by Markdown. Nothing is removed without confirmation.</p></div>
-              <button type="button" disabled={cleanupBusy} onClick={() => void scanAssets()} className="min-h-10 shrink-0 rounded-md border border-zinc-700 px-3 text-xs font-medium text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">{cleanupBusy ? 'Scanning…' : cleanupAssets ? 'Scan again' : 'Scan'}</button>
-            </div>
-
-            {cleanupError && <p role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{cleanupError}</p>}
-            {cleanupAssets && <div className="mt-4">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-400"><span>{cleanupAssets.length} {cleanupAssets.length === 1 ? 'file' : 'files'} · {formatBytes(totalSize)}</span>{cleanupAssets.length > 0 && <button type="button" onClick={() => setSelectedAssets(selectedCount === cleanupAssets.length ? new Set() : new Set(cleanupAssets.map((asset) => asset.path)))} className="min-h-9 rounded px-2 text-amber-300 hover:bg-zinc-800">{selectedCount === cleanupAssets.length ? 'Select none' : 'Select all'}</button>}</div>
-              {cleanupAssets.length === 0
-                ? <p className="mt-3 rounded-md border border-zinc-800 p-3 text-sm text-zinc-400">No unreferenced image assets found.</p>
-                : <div className="mt-2 max-h-64 space-y-1 overflow-y-auto rounded-md border border-zinc-800 p-1">{cleanupAssets.map((asset) => <label key={asset.path} className="flex min-h-11 cursor-pointer items-center gap-3 rounded px-2 py-1.5 hover:bg-zinc-800"><input type="checkbox" checked={selectedAssets.has(asset.path)} onChange={(event) => setSelectedAssets((current) => { const next = new Set(current); if (event.target.checked) next.add(asset.path); else next.delete(asset.path); return next })} className="h-5 w-5 shrink-0 accent-amber-500" /><span className="min-w-0 flex-1"><span className="block break-all text-xs text-zinc-200">{asset.path}</span><span className="text-[11px] text-zinc-500">{formatBytes(asset.size)}</span></span></label>)}</div>}
-              {cleanupFailures.length > 0 && <div role="alert" className="mt-3 rounded-md border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200"><p className="font-medium">Some assets were kept:</p><ul className="mt-1 space-y-1">{cleanupFailures.map((failure) => <li key={failure.path} className="break-all">{failure.path}: {failure.error}</li>)}</ul></div>}
-              {cleanupAssets.length > 0 && <div className="mt-3 flex justify-end"><button type="button" disabled={cleanupBusy || selectedCount === 0} onClick={() => setConfirmCleanup(true)} className="min-h-10 rounded-md bg-red-900/70 px-4 text-sm font-medium text-red-100 hover:bg-red-800 disabled:opacity-40">Delete selected ({selectedCount})</button></div>}
-            </div>}
-          </section>}
-        </div>
-        <footer className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-zinc-800 p-4">
-          {(mode === 'onboarding' || mode === 'connectRemote') ? localOnlySetup ? <>
-            <button type="button" onClick={onClose} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button>
-            <button type="button" onClick={()=>setLocalOnlySetup(false)} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Back</button>
-            <button type="submit" form="local-notebook-form" disabled={localNotebookBusy||!notebookName.trim()} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-40">{localNotebookBusy?'Creating…':'Create local-only notebook'}</button>
-          </> : <>
-            <button type="button" onClick={onClose} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button>
-            {onboardingStep > 1 && <button type="button" onClick={()=>setOnboardingStep(step=>Math.max(1,step-1))} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Back</button>}
-            {onboardingStep > 1 && onboardingStep < 5 && <button type="button" disabled={(onboardingStep===2&&(mode==='onboarding'&&!notebookName||!!repositoryURLIssue(repositoryURL)))||(onboardingStep===3&&gitAuthType==='managed-ssh'&&!managedKey)||(onboardingStep===4&&connectionResult?.state!=='success')} onClick={()=>setOnboardingStep(step=>step+1)} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-40">Continue</button>}
-            {onboardingStep === 5 && <button type="submit" form="notebook-onboarding-form" disabled={cloneBusy||connectionResult?.state!=='success'} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-40">{cloneBusy?'Working…':mode==='connectRemote'?'Connect remote':'Connect notebook'}</button>}
-          </> : <button type="button" onClick={onClose} className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-amber-400">Done</button>}
-        </footer>
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <section role="dialog" aria-modal="true" aria-labelledby="settings-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-800 px-5 py-4">
+        <h2 id="settings-title" className="text-lg font-semibold">{mode === 'onboarding' ? 'Add Vault' : 'Settings'}</h2>
+        {mode === 'settings' && <code aria-label="Application version" title={`RepoQuill ${runningVersion || 'dev'}`} className="ml-auto select-text whitespace-nowrap font-mono text-xs text-zinc-500">{runningVersion || 'dev'}</code>}
+        <button type="button" onClick={onClose} aria-label="Close" className="min-h-9 min-w-9 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button>
+      </header>
+      <div className="min-h-0 space-y-5 overflow-y-auto p-5">
+        {mode === 'onboarding' && <section>
+          <h3 className="text-sm font-semibold text-zinc-200">Create a vault or adopt an existing folder</h3>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">Vaults are ordinary folders on this server. Every device reads and saves the same files while online.</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <button type="button" aria-pressed={vaultKind === 'new'} onClick={() => setVaultKind('new')} className={`min-h-12 rounded-md border px-3 text-left text-sm ${vaultKind === 'new' ? 'border-amber-500 bg-amber-400/10 text-amber-100' : 'border-zinc-700 text-zinc-300'}`}>Create an empty vault</button>
+            <button type="button" aria-pressed={vaultKind === 'adopt'} onClick={() => setVaultKind('adopt')} className={`min-h-12 rounded-md border px-3 text-left text-sm ${vaultKind === 'adopt' ? 'border-amber-500 bg-amber-400/10 text-amber-100' : 'border-zinc-700 text-zinc-300'}`}>Adopt an existing folder</button>
+          </div>
+          <form className="mt-4 space-y-3" onSubmit={(event) => void submitVault(event)}>
+            <label className="block text-sm text-zinc-300">Vault name<input required maxLength={100} value={vaultName} onChange={(event) => setVaultName(event.target.value)} className="mt-1.5 min-h-10 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm outline-none focus:border-amber-500" placeholder="Personal" /></label>
+            {vaultKind === 'adopt' && <>
+              <label className="block text-sm text-zinc-300">Folder name under the configured vault directory<input required value={folderName} onChange={(event) => setFolderName(event.target.value)} className="mt-1.5 min-h-10 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm outline-none focus:border-amber-500" placeholder="my-existing-notes" /></label>
+              <p className="rounded-md border border-amber-800/50 bg-amber-950/20 p-3 text-xs leading-5 text-amber-100/80">If this folder has a legacy <code>.git</code> directory, RepoQuill will leave it untouched and will not use it. Old commits inside that folder may still contain deleted notes or secrets.</p>
+            </>}
+            {error && <p role="alert" className="rounded-md border border-red-900/70 bg-red-950/30 p-3 text-sm text-red-200">{error}</p>}
+            <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300">Cancel</button><button disabled={busy || !vaultName.trim() || (vaultKind === 'adopt' && !folderName.trim())} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-40">{busy ? 'Opening vault…' : vaultKind === 'new' ? 'Create vault' : 'Adopt vault'}</button></div>
+          </form>
+        </section>}
+        {mode === 'settings' && <>
+          <section aria-labelledby="settings-storage-title"><h3 id="settings-storage-title" className="text-sm font-semibold text-zinc-200">Storage and recovery</h3><p className="mt-1 text-xs leading-5 text-zinc-400">The server folder is the canonical copy. The operator is responsible for backups and restore. Export a vault from Manage Vaults; an export is a portable copy, not automatic backup.</p><p className="mt-2 text-xs leading-5 text-zinc-500">Note content is online-only. When the server is unavailable, RepoQuill cannot load or save vault files.</p></section>
+          <section aria-labelledby="auto-lock-title"><h3 id="auto-lock-title" className="text-sm font-semibold text-zinc-200">Editor</h3><label className="mt-2 block text-sm text-zinc-300">Auto-lock notes<select value={autoLockMinutes} onChange={(event) => onAutoLockMinutes(parseAutoLockMinutes(event.target.value))} className="mt-1.5 min-h-10 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm outline-none focus:border-amber-500">{autoLockOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></section>
+          {authMode === 'local' && <SecurityPanel authMode={authMode} onLoggedOut={onLoggedOut} />}
+          <section aria-labelledby="asset-cleanup-title" className="rounded-md border border-zinc-800 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div><h3 id="asset-cleanup-title" className="text-sm font-semibold text-zinc-200">Unused image assets</h3><p className="mt-1 text-xs text-zinc-500">Review unreferenced image files before removing them from this vault.</p></div><button type="button" disabled={cleanupBusy} onClick={() => void scanAssets()} className="min-h-9 rounded border border-zinc-700 px-3 text-xs text-zinc-200">{cleanupBusy ? 'Scanning…' : cleanupAssets ? 'Scan again' : 'Scan vault'}</button></div>
+            {cleanupError && <p role="alert" className="mt-3 text-xs text-red-300">{cleanupError}</p>}
+            {cleanupAssets && <><p className="mt-3 text-xs text-zinc-400">{cleanupAssets.length} unused {cleanupAssets.length === 1 ? 'asset' : 'assets'} found.</p><ul className="mt-2 max-h-48 space-y-1 overflow-y-auto">{cleanupAssets.map((asset) => <li key={asset.path}><label className="flex min-h-9 items-center gap-2 rounded px-2 text-xs hover:bg-zinc-800"><input type="checkbox" checked={selectedAssets.has(asset.path)} onChange={() => setSelectedAssets((current) => { const next = new Set(current); if (next.has(asset.path)) next.delete(asset.path); else next.add(asset.path); return next })} className="h-4 w-4 accent-amber-500"/><span className="min-w-0 flex-1 truncate">{asset.path}</span><span className="text-zinc-500">{formatBytes(asset.size)}</span></label></li>)}</ul>{cleanupFailures.map((failure) => <p key={failure.path} className="mt-1 text-xs text-red-300">{failure.path}: {failure.error}</p>)}<button type="button" disabled={cleanupBusy || selectedCount === 0} onClick={() => setConfirmCleanup(true)} className="mt-3 min-h-9 rounded border border-red-900 px-3 text-xs text-red-300 disabled:opacity-40">Remove {selectedCount} selected ({formatBytes(totalSize)})</button></>}
+          </section>
+        </>}
       </div>
-
-      {confirmCleanup && <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/75 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmCleanup(false) }}><div role="alertdialog" aria-modal="true" aria-labelledby="cleanup-confirm-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="cleanup-confirm-title" className="text-lg font-semibold">Delete {selectedCount} unreferenced {selectedCount === 1 ? 'asset' : 'assets'}?</h2><p className="mt-3 text-sm leading-6 text-zinc-400">These files will be removed from the active notebook. Files included in an earlier synchronization may be recoverable from its version history; newly added files may not be.</p><div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" onClick={() => setConfirmCleanup(false)} className="min-h-11 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => void deleteSelectedAssets()} className="min-h-11 rounded-md bg-red-800 px-4 text-sm font-medium text-white hover:bg-red-700">Delete assets</button></div></div></div>}
-      {deleteKey && <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/75 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setDeleteKey(undefined) }}><div role="alertdialog" aria-modal="true" aria-labelledby="delete-key-title" className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl"><h2 id="delete-key-title" className="text-lg font-semibold">Delete unused SSH key?</h2><p className="mt-3 text-sm leading-6 text-zinc-400">The private and public key files for <span className="font-mono text-zinc-300">{deleteKey.keyId.slice(0, 12)}…</span> will be permanently removed from RepoQuill. Also remove its deploy-key entry from the Git provider if it was added there.</p><div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" onClick={() => setDeleteKey(undefined)} className="min-h-11 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Cancel</button><button type="button" onClick={() => void deleteUnusedManagedKey()} className="min-h-11 rounded-md bg-red-800 px-4 text-sm font-medium text-white hover:bg-red-700">Delete key</button></div></div></div>}
-    </div>
-  )
+      {mode === 'settings' && <footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950">Done</button></footer>}
+    </section>
+    {confirmCleanup && <ConfirmationDialog title="Remove unused assets?" message={`Permanently remove ${selectedCount} unreferenced image assets (${formatBytes(totalSize)}) from the active vault?`} confirmLabel="Remove assets" danger busy={cleanupBusy} onCancel={() => setConfirmCleanup(false)} onConfirm={() => void deleteSelectedAssets()} />}
+  </div>
 }
-
-type SecuritySession = { id:string; createdAt:string; lastActivityAt:string; idleExpiresAt:string; absoluteExpiresAt:string; revokedAt?:string; clientDescription:string; current:boolean }
-type ServerSessionSettings = { idleHours:number; lifetimeHours:number; rememberDays:number }
 
 function SecurityPanel({ authMode, onLoggedOut }: { authMode:'local'|'disabled'; onLoggedOut:()=>void }) {
   const [settings, setSettings] = useState<ServerSessionSettings>()
@@ -1906,10 +1148,6 @@ function formatBytes(bytes: number): string {
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`
 }
 
-function HostFingerprintList({ title, keys }: { title: string; keys: HostKeyInfo[] }) {
-  return <div className="mt-3"><p className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">{title}</p><ul className="mt-1 space-y-2">{keys.map((key) => <li key={`${key.keyType}:${key.fingerprint}`} className="rounded border border-zinc-700/80 bg-zinc-950/60 p-2"><div className="flex items-center justify-between gap-2"><span className="text-xs font-medium uppercase text-zinc-300">{key.keyType}</span><button type="button" onClick={() => void navigator.clipboard.writeText(key.fingerprint)} className="min-h-9 rounded px-2 text-xs text-amber-300 hover:bg-zinc-800" aria-label={`Copy ${key.keyType} fingerprint`}>Copy</button></div><code className="mt-1 block break-all text-[11px] leading-5 text-zinc-300">{key.fingerprint}</code></li>)}</ul></div>
-}
-
 function ManageNotebooksDialog({ notebooks, activeNotebookID, operationsBlocked, onChanged, onClose }: { notebooks: NotebookInfo[]; activeNotebookID: string; operationsBlocked: boolean; onChanged: () => Promise<void>; onClose: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
@@ -1917,15 +1155,12 @@ function ManageNotebooksDialog({ notebooks, activeNotebookID, operationsBlocked,
   const [editing, setEditing] = useState<NotebookInfo>()
   const [name, setName] = useState('')
   const [removing, setRemoving] = useState<NotebookInfo>()
-  const [disconnecting, setDisconnecting] = useState<NotebookInfo>()
-  const [connecting, setConnecting] = useState<NotebookInfo>()
   const [deleteLocal, setDeleteLocal] = useState(false)
   const [confirmation, setConfirmation] = useState('')
 
-  const checkHealth = useCallback(async (notebook: NotebookInfo, remote = false) => {
+  const checkHealth = useCallback(async (notebook: NotebookInfo) => {
     try {
-      const response = await apiFetch(`/api/notebooks/${encodeURIComponent(notebook.id)}/health${remote ? '?remote=true' : ''}`)
-      const result = await responseJSON<NotebookHealth>(response)
+      const result = await responseJSON<NotebookHealth>(await apiFetch(`/api/notebooks/${encodeURIComponent(notebook.id)}/health`))
       setHealth((current) => ({ ...current, [notebook.id]: result }))
     } catch (caught) {
       setError(messageFrom(caught))
@@ -1965,18 +1200,21 @@ function ManageNotebooksDialog({ notebooks, activeNotebookID, operationsBlocked,
     }
   }
 
-  async function disconnectRemote() {
-    if (!disconnecting) return
+  async function exportVault(notebook: NotebookInfo) {
     setBusy(true)
     setError(undefined)
     try {
-      const response = await apiFetch(`/api/notebooks/${encodeURIComponent(disconnecting.id)}/remote/disconnect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true }) })
-      await responseJSON(response)
-      setDisconnecting(undefined)
-      await onChanged()
+      const response = await apiFetch(`/api/notebooks/${encodeURIComponent(notebook.id)}/export`)
+      if (!response.ok) await responseJSON(response)
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${notebook.name.replace(/[\\/:*?"<>|]/g, '_') || 'Vault'}.zip`
+      anchor.click()
+      URL.revokeObjectURL(url)
     } catch (caught) {
       setError(messageFrom(caught))
-      setDisconnecting(undefined)
     } finally {
       setBusy(false)
     }
@@ -1984,33 +1222,32 @@ function ManageNotebooksDialog({ notebooks, activeNotebookID, operationsBlocked,
 
   return <>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <div role="dialog" aria-modal="true" aria-labelledby="manage-notebooks-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
-        <header className="border-b border-zinc-800 px-5 py-4"><h2 id="manage-notebooks-title" className="text-lg font-semibold">Manage Notebooks</h2><p className="mt-1 text-xs text-zinc-500">Names, connection health, and safe local registration controls.</p></header>
+      <section role="dialog" aria-modal="true" aria-labelledby="manage-notebooks-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+        <header className="border-b border-zinc-800 px-5 py-4"><h2 id="manage-notebooks-title" className="text-lg font-semibold">Manage Vaults</h2><p className="mt-1 text-xs text-zinc-500">All vaults live in folders on this server. Export a ZIP or remove a registration.</p></header>
         <div className="overflow-y-auto p-4 sm:p-5">
           {error && <ErrorMessage>{error}</ErrorMessage>}
-          {operationsBlocked && <p role="status" className="mb-3 rounded border border-amber-800/60 p-3 text-xs text-amber-200">Finish the current save or notebook operation before changing notebook connections.</p>}
+          {operationsBlocked && <p role="status" className="mb-3 rounded border border-amber-800/60 p-3 text-xs text-amber-200">Finish the current save or vault operation before changing vaults.</p>}
           <div className="space-y-3">{notebooks.map((notebook) => {
             const item = health[notebook.id]
-            const hasRemote = Boolean(notebook.remoteUrl)
             return <section key={notebook.id} className="rounded-lg border border-zinc-800 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">{editing?.id === notebook.id ? <form onSubmit={(event) => void saveName(event)} className="flex flex-1 gap-2"><label className="sr-only" htmlFor={`notebook-name-${notebook.id}`}>Notebook name</label><input id={`notebook-name-${notebook.id}`} autoFocus required maxLength={100} value={name} onChange={(event) => setName(event.target.value)} className="min-h-10 flex-1 rounded border border-zinc-700 bg-zinc-950 px-2 text-sm"/><button disabled={busy || operationsBlocked} className="rounded border border-zinc-700 px-3 text-xs">Save</button><button type="button" onClick={() => setEditing(undefined)} className="px-2 text-xs text-zinc-400">Cancel</button></form> : <><div><h3 className="font-medium text-zinc-100">{notebook.name}</h3><p className="text-[11px] text-zinc-500">{notebook.id === activeNotebookID ? 'Currently open' : 'Not currently open'}</p></div><button type="button" disabled={busy || operationsBlocked} onClick={() => { setEditing(notebook); setName(notebook.name) }} className="min-h-10 rounded px-3 text-xs text-amber-300 hover:bg-zinc-800">Rename</button></>}</div>
-              <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">{item ? <><HealthLine label="Local files" check={item.localFiles}/><HealthLine label="Write access" check={item.writeAccess}/><HealthLine label={hasRemote ? 'Connected service' : 'Remote'} check={item.connection}/><HealthLine label="Pending work" check={item.pendingWork}/></> : <p className="text-zinc-500">Checking notebook…</p>}</div>
-              <div className="mt-3 flex flex-wrap items-center gap-2">{hasRemote ? <><button type="button" disabled={busy} onClick={() => void checkHealth(notebook, true)} className="min-h-10 rounded border border-zinc-700 px-3 text-xs">{item?.connection.state === 'failed' ? 'Check connection' : 'Test connection'}</button><button type="button" disabled={busy || operationsBlocked} onClick={() => setDisconnecting(notebook)} className="min-h-10 rounded border border-zinc-700 px-3 text-xs text-amber-300">Use local-only</button><span className="text-[11px] text-zinc-500">Last synchronized: {item?.lastSyncedAt ? new Date(item.lastSyncedAt).toLocaleString() : 'Not recorded'}</span></> : <button type="button" disabled={busy || operationsBlocked} onClick={() => setConnecting(notebook)} className="min-h-10 rounded border border-amber-700/60 px-3 text-xs text-amber-200 hover:bg-amber-950/30">Connect remote…</button>}{item?.writeAccess.state === 'failed' && <span className="text-xs text-amber-300">Repair the mounted folder permissions, then retry.</span>}</div>
-              <details className="mt-3 text-xs"><summary className="cursor-pointer text-zinc-500">Technical details</summary><dl className="mt-2 grid gap-1 break-all text-zinc-400"><div><dt className="inline text-zinc-500">Address: </dt><dd className="inline">{notebook.remoteUrl || 'Local-only; no remote configured'}</dd></div><div><dt className="inline text-zinc-500">Branch: </dt><dd className="inline">{notebook.branch || 'main'}</dd></div><div><dt className="inline text-zinc-500">Credentials: </dt><dd className="inline">{notebook.authType === 'managed-ssh' ? `Managed key ${notebook.keyId?.slice(0, 12) || ''}…` : hasRemote ? 'Existing server SSH configuration' : 'None'}</dd></div></dl></details>
-              {(notebook.id !== activeNotebookID || notebooks.length === 1) && <button type="button" disabled={busy || operationsBlocked} onClick={() => { setRemoving(notebook); setDeleteLocal(false); setConfirmation('') }} className="mt-3 min-h-10 rounded border border-red-900/70 px-3 text-xs text-red-300">Remove…</button>}
+              <div className="flex flex-wrap items-center justify-between gap-2">{editing?.id === notebook.id ? <form onSubmit={(event) => void saveName(event)} className="flex flex-1 gap-2"><label className="sr-only" htmlFor={`vault-name-${notebook.id}`}>Vault name</label><input id={`vault-name-${notebook.id}`} autoFocus required maxLength={100} value={name} onChange={(event) => setName(event.target.value)} className="min-h-10 flex-1 rounded border border-zinc-700 bg-zinc-950 px-2 text-sm"/><button disabled={busy || operationsBlocked} className="rounded border border-zinc-700 px-3 text-xs">Save</button><button type="button" onClick={() => setEditing(undefined)} className="px-2 text-xs text-zinc-400">Cancel</button></form> : <><div><h3 className="font-medium text-zinc-100">{notebook.name}</h3><p className="text-[11px] text-zinc-500">{notebook.id === activeNotebookID ? 'Currently open' : 'Not currently open'}</p></div><button type="button" disabled={busy || operationsBlocked} onClick={() => { setEditing(notebook); setName(notebook.name) }} className="min-h-10 rounded px-3 text-xs text-amber-300 hover:bg-zinc-800">Rename</button></>}</div>
+              <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">{item ? <><HealthLine label="Vault files" check={item.localFiles}/><HealthLine label="Write access" check={item.writeAccess}/></> : <p className="text-zinc-500">Checking vault…</p>}</div>
+              <div className="mt-3 flex flex-wrap gap-2"><button type="button" disabled={busy} onClick={() => void exportVault(notebook)} className="min-h-10 rounded border border-amber-700/60 px-3 text-xs text-amber-200 hover:bg-amber-950/30">Export ZIP</button>{(notebook.id !== activeNotebookID || notebooks.length === 1) && <button type="button" disabled={busy || operationsBlocked} onClick={() => { setRemoving(notebook); setDeleteLocal(false); setConfirmation('') }} className="min-h-10 rounded border border-red-900/70 px-3 text-xs text-red-300">Remove…</button>}{item?.writeAccess.state === 'failed' && <span className="self-center text-xs text-amber-300">Check the mounted folder permissions.</span>}</div>
             </section>
           })}</div>
+          {notebooks.length === 0 && <p className="rounded-md border border-zinc-800 p-4 text-sm text-zinc-400">No registered vaults.</p>}
         </div>
         <footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-zinc-950">Done</button></footer>
-      </div>
+      </section>
     </div>
-    {removing && <div role="alertdialog" aria-modal="true" aria-labelledby="remove-notebook-title" className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4"><div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-5"><h3 id="remove-notebook-title" className="font-semibold">Remove {removing.name}?</h3><p className="mt-2 text-xs leading-5 text-zinc-400">The safe default only removes this registration from RepoQuill. The local files and remote repository stay unchanged.</p><label className="mt-4 flex items-start gap-2 text-xs text-red-200"><input type="checkbox" checked={deleteLocal} onChange={(event) => { setDeleteLocal(event.target.checked); setConfirmation('') }} className="mt-0.5"/>Also permanently delete this local working copy. The remote repository is never deleted.</label>{deleteLocal && <label className="mt-3 block text-xs text-zinc-300">Type <strong>{removing.name}</strong> to confirm<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} className="mt-1 min-h-10 w-full rounded border border-red-800 bg-zinc-950 px-2"/></label>}<div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setRemoving(undefined)} className="min-h-10 px-3 text-xs">Cancel</button><button type="button" disabled={busy || operationsBlocked || (deleteLocal && confirmation !== removing.name)} onClick={() => void remove()} className="min-h-10 rounded border border-red-800 px-3 text-xs text-red-200">{deleteLocal ? 'Delete local copy' : 'Remove registration'}</button></div></div></div>}
-    {disconnecting && <ConfirmationDialog title={`Use ${disconnecting.name} as local-only?`} message="RepoQuill will stop synchronization and commit any saved local changes. The remote repository stays unchanged. Changes RepoQuill has not retrieved remain there and can be fetched if you reconnect later." confirmLabel="Use local-only" busy={busy} onCancel={() => setDisconnecting(undefined)} onConfirm={() => void disconnectRemote()}/>}
-    {connecting && <SettingsDialog key={connecting.id} mode="connectRemote" notebook={connecting} autoLockMinutes={0} onAutoLockMinutes={() => undefined} onNotebookAdded={onChanged} onClose={() => setConnecting(undefined)}/>}
+    {removing && <div role="alertdialog" aria-modal="true" aria-labelledby="remove-vault-title" className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4"><div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-5"><h3 id="remove-vault-title" className="font-semibold">Remove {removing.name}?</h3><p className="mt-2 text-xs leading-5 text-zinc-400">The safe default removes only the registration. Vault files remain on disk.</p><label className="mt-4 flex items-start gap-2 text-xs text-red-200"><input type="checkbox" checked={deleteLocal} onChange={(event) => { setDeleteLocal(event.target.checked); setConfirmation('') }} className="mt-0.5"/>Also permanently delete this local vault folder.</label>{deleteLocal && <><p className="mt-2 text-xs leading-5 text-amber-200">This permanently removes every file in the folder, including notes, assets, Trash, and any legacy <code>.git</code> history. Operator backups may retain copies.</p><label className="mt-3 block text-xs text-zinc-300">Type <strong>{removing.name}</strong> to confirm<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} className="mt-1 min-h-10 w-full rounded border border-red-800 bg-zinc-950 px-2"/></label></>}<div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setRemoving(undefined)} className="min-h-10 px-3 text-xs">Cancel</button><button type="button" disabled={busy || operationsBlocked || (deleteLocal && confirmation !== removing.name)} onClick={() => void remove()} className="min-h-10 rounded border border-red-800 px-3 text-xs text-red-200">{deleteLocal ? 'Delete vault folder' : 'Remove registration'}</button></div></div></div>}
   </>
 }
 
-function HealthLine({label,check}:{label:string;check:NotebookCheck}){const okay=check.state==='ok'||check.state==='clean'||check.state==='synced'||check.state==='success'||check.state==='local_only';return <div title={check.message} className="flex items-center justify-between gap-2 rounded bg-zinc-950/60 px-2 py-2"><span className="text-zinc-400">{label}</span><span className={okay?'text-emerald-400':check.state==='not_checked'?'text-zinc-500':'text-amber-300'}>{check.state==='local_only'?'Local-only':okay?'Ready':check.state==='not_checked'?'Not checked':'Needs attention'}</span></div>}
+function HealthLine({ label, check }: { label: string; check: NotebookCheck }) {
+  const okay = check.state === 'ok'
+  return <div title={check.message} className="flex items-center justify-between gap-2 rounded bg-zinc-950/60 px-2 py-2"><span className="text-zinc-400">{label}</span><span className={okay ? 'text-emerald-400' : 'text-amber-300'}>{okay ? 'Ready' : 'Needs attention'}</span></div>
+}
 
 function SettingsIcon() {
   return <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 15.25a3.25 3.25 0 1 0 0-6.5 3.25 3.25 0 0 0 0 6.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.1A1.7 1.7 0 0 0 8.4 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2.2V9.55h.1A1.7 1.7 0 0 0 4 8.4a1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.46 3.6l.06.06A1.7 1.7 0 0 0 8.4 4a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1v-.1h4.05v.1A1.7 1.7 0 0 0 15 4a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.4 8.4a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1.1.4h.1v4.05h-.1A1.7 1.7 0 0 0 19.4 15Z"/></svg>
@@ -2183,207 +1420,55 @@ export function TrashDialog({ onChanged, onClose }: { onChanged:()=>Promise<void
   const selectedItems = items?.filter((item) => selectedIDs.has(item.id)) ?? []
   const allSelected = Boolean(items?.length && selectedIDs.size === items.length)
 
-  return <><div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="trash-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-5 py-4"><div><h2 id="trash-title" className="text-lg font-semibold">Trash</h2><p className="mt-1 text-xs leading-5 text-zinc-500">Deleted notes, folders, and their owned image assets remain ordinary notebook files until permanently deleted.</p></div><button type="button" autoFocus onClick={onClose} aria-label="Close Trash" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header>{items && items.length > 0 && <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2"><label className="flex min-h-10 items-center gap-2 text-xs text-zinc-300"><input type="checkbox" aria-label="Select all Trash items" checked={allSelected} onChange={() => setSelectedIDs(allSelected ? new Set() : new Set(items.map((item) => item.id)))} className="h-4 w-4 accent-amber-500"/>Select all</label><span className="text-xs text-zinc-500">{selectedIDs.size} selected</span><div className="ml-auto flex flex-wrap gap-2"><button type="button" disabled={busy || selectedItems.length === 0} onClick={() => void run(selectedItems, 'restore')} className="min-h-9 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">Restore selected</button><button type="button" disabled={busy || selectedItems.length === 0} onClick={() => setDeleteConfirmation(selectedItems)} className="min-h-9 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Delete selected</button><button type="button" disabled={busy} onClick={() => setDeleteConfirmation(items)} className="min-h-9 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Empty Trash</button></div></div>}<div className="overflow-y-auto p-4 sm:p-5">{error && <ErrorMessage>{error}</ErrorMessage>}{notice && <p role="status" className="mb-4 rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3 text-sm text-emerald-300">{notice}</p>}{items === undefined && !error && <p className="text-sm text-zinc-500">Loading Trash…</p>}{items?.length === 0 && <div className="rounded-md border border-zinc-800 p-5 text-center"><p className="text-sm text-zinc-300">Trash is empty.</p><p className="mt-1 text-xs text-zinc-500">Items you delete from the notebook tree will appear here.</p></div>}<ul className="space-y-2">{items?.map((item) => <li key={item.id} className="rounded-md border border-zinc-800 p-3"><label className="flex cursor-pointer items-start gap-3"><input type="checkbox" aria-label={`Select ${item.originalPath}`} checked={selectedIDs.has(item.id)} onChange={() => toggleSelection(item.id)} className="mt-1 h-4 w-4 shrink-0 accent-amber-500"/><span className="min-w-0 flex-1"><span className="break-all text-sm text-zinc-200"><span aria-hidden="true" className="mr-2">{item.type === 'directory' ? '📁' : '◇'}</span>{item.originalPath}</span><span className="mt-1 block text-xs text-zinc-500">Deleted {new Date(item.deletedAt).toLocaleString()} · {formatBytes(item.size)}</span></span></label><div className="mt-2 flex justify-end gap-2"><button type="button" disabled={busy} onClick={() => void run([item], 'restore')} className="min-h-9 rounded-md px-3 text-xs text-amber-300 hover:bg-zinc-800 disabled:opacity-40">Restore</button><button type="button" disabled={busy} onClick={() => setDeleteConfirmation([item])} className="min-h-9 rounded-md px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Permanently delete</button></div></li>)}</ul></div><footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Done</button></footer></section></div>{deleteConfirmation && <ConfirmationDialog title="Permanently delete?" message={"Permanently delete "+deleteConfirmation.length+" "+(deleteConfirmation.length === 1 ? "item" : "items")+"? This cannot be undone in RepoQuill."} confirmLabel="Permanently delete" danger busy={busy} onCancel={() => setDeleteConfirmation(undefined)} onConfirm={() => { const pending=deleteConfirmation; setDeleteConfirmation(undefined); void run(pending,'delete') }}/>}</>
+  return <><div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="trash-title" className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-5 py-4"><div><h2 id="trash-title" className="text-lg font-semibold">Trash</h2><p className="mt-1 text-xs leading-5 text-zinc-500">Deleted notes, folders, and their owned image assets remain ordinary notebook files until permanently deleted.</p></div><button type="button" autoFocus onClick={onClose} aria-label="Close Trash" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header>{items && items.length > 0 && <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2"><label className="flex min-h-10 items-center gap-2 text-xs text-zinc-300"><input type="checkbox" aria-label="Select all Trash items" checked={allSelected} onChange={() => setSelectedIDs(allSelected ? new Set() : new Set(items.map((item) => item.id)))} className="h-4 w-4 accent-amber-500"/>Select all</label><span className="text-xs text-zinc-500">{selectedIDs.size} selected</span><div className="ml-auto flex flex-wrap gap-2"><button type="button" disabled={busy || selectedItems.length === 0} onClick={() => void run(selectedItems, 'restore')} className="min-h-9 rounded-md border border-zinc-700 px-3 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">Restore selected</button><button type="button" disabled={busy || selectedItems.length === 0} onClick={() => setDeleteConfirmation(selectedItems)} className="min-h-9 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Delete selected</button><button type="button" disabled={busy} onClick={() => setDeleteConfirmation(items)} className="min-h-9 rounded-md border border-red-900 px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Empty Trash</button></div></div>}<div className="overflow-y-auto p-4 sm:p-5">{error && <ErrorMessage>{error}</ErrorMessage>}{notice && <p role="status" className="mb-4 rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3 text-sm text-emerald-300">{notice}</p>}{items === undefined && !error && <p className="text-sm text-zinc-500">Loading Trash…</p>}{items?.length === 0 && <div className="rounded-md border border-zinc-800 p-5 text-center"><p className="text-sm text-zinc-300">Trash is empty.</p><p className="mt-1 text-xs text-zinc-500">Items you delete from the vault tree will appear here.</p></div>}<ul className="space-y-2">{items?.map((item) => <li key={item.id} className="rounded-md border border-zinc-800 p-3"><label className="flex cursor-pointer items-start gap-3"><input type="checkbox" aria-label={`Select ${item.originalPath}`} checked={selectedIDs.has(item.id)} onChange={() => toggleSelection(item.id)} className="mt-1 h-4 w-4 shrink-0 accent-amber-500"/><span className="min-w-0 flex-1"><span className="break-all text-sm text-zinc-200"><span aria-hidden="true" className="mr-2">{item.type === 'directory' ? '📁' : '◇'}</span>{item.originalPath}</span><span className="mt-1 block text-xs text-zinc-500">Deleted {new Date(item.deletedAt).toLocaleString()} · {formatBytes(item.size)}</span></span></label><div className="mt-2 flex justify-end gap-2"><button type="button" disabled={busy} onClick={() => void run([item], 'restore')} className="min-h-9 rounded-md px-3 text-xs text-amber-300 hover:bg-zinc-800 disabled:opacity-40">Restore</button><button type="button" disabled={busy} onClick={() => setDeleteConfirmation([item])} className="min-h-9 rounded-md px-3 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-40">Permanently delete</button></div></li>)}</ul></div><footer className="flex justify-end border-t border-zinc-800 p-4"><button type="button" onClick={onClose} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Done</button></footer></section></div>{deleteConfirmation && <ConfirmationDialog title="Permanently delete?" message={"Permanently delete "+deleteConfirmation.length+" "+(deleteConfirmation.length === 1 ? "item" : "items")+"? This cannot be undone in RepoQuill."} confirmLabel="Permanently delete" danger busy={busy} onCancel={() => setDeleteConfirmation(undefined)} onConfirm={() => { const pending=deleteConfirmation; setDeleteConfirmation(undefined); void run(pending,'delete') }}/>}</>
 }
 
-type NoteDiffLine = { kind: 'same' | 'removed' | 'added'; text: string }
-
-function NoteHistoryDialog({ notePath, currentContent, onRestore, onClose }: { notePath:string; currentContent:string; onRestore:(versionId:string)=>Promise<void>; onClose:()=>void }) {
-  const [entries, setEntries] = useState<NoteHistoryEntry[]>()
-  const [limited, setLimited] = useState(false)
-  const [selected, setSelected] = useState<NoteHistoryVersion>()
-  const [loadingVersion, setLoadingVersion] = useState(false)
-  const [restoring, setRestoring] = useState(false)
-  const [confirmRestore, setConfirmRestore] = useState(false)
-  const [error, setError] = useState<string>()
-
-  useEffect(() => {
-    const controller = new AbortController()
-    void apiFetch(`/api/repository/history?path=${encodeURIComponent(notePath)}`, { signal: controller.signal })
-      .then(responseJSON<NoteHistoryResult>)
-      .then((result) => { setEntries(result.entries); setLimited(result.limited) })
-      .catch((caught:unknown) => { if (!controller.signal.aborted) setError(messageFrom(caught)) })
-    const closeOnEscape = (event:globalThis.KeyboardEvent) => { if (event.key === 'Escape') onClose() }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => { controller.abort(); window.removeEventListener('keydown', closeOnEscape) }
-  }, [notePath, onClose])
-
-  async function loadVersion(entry:NoteHistoryEntry) {
-    setLoadingVersion(true)
-    setError(undefined)
-    try {
-      const response = await apiFetch(`/api/repository/history/version?path=${encodeURIComponent(notePath)}&version=${encodeURIComponent(entry.versionId)}`)
-      setSelected(await responseJSON<NoteHistoryVersion>(response))
-    } catch (caught) {
-      setError(messageFrom(caught))
-    } finally {
-      setLoadingVersion(false)
-    }
-  }
-
-  async function restoreSelected() {
-    if (!selected) return
-    setConfirmRestore(false)
-    setRestoring(true)
-    setError(undefined)
-    try {
-      await onRestore(selected.versionId)
-      onClose()
-    } catch (caught) {
-      setError(messageFrom(caught))
-    } finally {
-      setRestoring(false)
-    }
-  }
-
-  const diff = selected ? readableNoteDiff(selected.content, currentContent) : []
-  return <><div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-2 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="note-history-title" className="flex max-h-[94vh] w-full max-w-5xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3 sm:px-5"><div className="min-w-0"><h2 id="note-history-title" className="text-lg font-semibold">Version history</h2><p className="truncate text-xs text-zinc-500">{notePath}</p></div><button type="button" autoFocus onClick={onClose} aria-label="Close version history" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header><div className="grid min-h-0 flex-1 md:grid-cols-[17rem_1fr]"><aside aria-label="Note versions" className="max-h-56 overflow-y-auto border-b border-zinc-800 p-3 md:max-h-none md:border-r md:border-b-0">{entries === undefined && !error && <p className="p-2 text-sm text-zinc-500">Loading versions…</p>}{limited && <p role="status" className="mb-2 rounded border border-amber-800/60 bg-amber-950/25 p-2 text-xs leading-5 text-amber-200">This notebook has a shallow Git history, so older versions may not be available on this server.</p>}{entries?.length === 0 && <p className="p-2 text-sm leading-6 text-zinc-400">No synchronized versions are available for this note yet.</p>}<ul className="space-y-1">{entries?.map((entry) => <li key={entry.versionId}><button type="button" aria-pressed={selected?.versionId === entry.versionId} onClick={() => void loadVersion(entry)} className={`w-full rounded-md px-3 py-2 text-left ${selected?.versionId === entry.versionId ? 'bg-amber-400/15 text-amber-100' : 'text-zinc-300 hover:bg-zinc-800'}`}><span className="block text-xs font-medium">{new Date(entry.timestamp).toLocaleString()}</span><span className="mt-1 block truncate text-[11px] text-zinc-500">{entry.summary}</span>{entry.path !== notePath && <span className="mt-1 block truncate text-[11px] text-zinc-600">Previously: {entry.path}</span>}</button></li>)}</ul></aside><div className="min-h-0 overflow-y-auto p-4 sm:p-5">{error && <ErrorMessage>{error}</ErrorMessage>}{loadingVersion && <p className="text-sm text-zinc-500">Loading this version…</p>}{!selected && !loadingVersion && <div className="flex min-h-48 items-center justify-center text-center text-sm text-zinc-500">Choose a version to view its changes.</div>}{selected && !loadingVersion && <><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-medium text-zinc-200">Changes compared with the current note</h3><p className="mt-1 text-xs text-zinc-500">Removed lines use − and added lines use +. The underlying note remains ordinary Markdown.</p></div><button type="button" disabled={restoring} onClick={() => setConfirmRestore(true)} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 hover:bg-amber-400 disabled:opacity-50">{restoring ? 'Restoring…' : 'Restore this version'}</button></div><div role="region" aria-label="Version comparison" className="mt-4 overflow-x-auto rounded-md border border-zinc-800 bg-zinc-950"><pre className="min-w-max p-3 font-mono text-xs leading-5">{diff.map((line,index) => <span key={`${index}:${line.kind}`} className={`block whitespace-pre-wrap break-words ${line.kind === 'removed' ? 'bg-red-950/35 text-red-200' : line.kind === 'added' ? 'bg-emerald-950/30 text-emerald-200' : 'text-zinc-500'}`}><span aria-hidden="true" className="mr-2 inline-block w-3 select-none text-zinc-600">{line.kind === 'removed' ? '−' : line.kind === 'added' ? '+' : ' '}</span>{line.text || ' '}</span>)}</pre></div><details className="mt-4 rounded-md border border-zinc-800 p-3"><summary className="cursor-pointer text-sm text-zinc-300">View this complete Markdown version</summary><pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-400">{selected.content}</pre></details></>}</div></div></section></div>{confirmRestore && selected && <ConfirmationDialog title="Restore this version?" message={"Restore the version from "+new Date(selected.timestamp).toLocaleString()+"? Your current saved note will remain available in version history after the next synchronization."} confirmLabel="Restore version" onCancel={() => setConfirmRestore(false)} onConfirm={() => void restoreSelected()}/>}</>
+function SaveConflictDialog({ pending, busy, error, onClose, onResolve }: {
+  pending: { server: FileResponse; yourContent: string }
+  busy: boolean
+  error?: string
+  onClose: () => void
+  onResolve: (action: 'keep_mine' | 'use_server' | 'edit_combined', content?: string) => void
+}) {
+  const [combinedDraft, setCombinedDraft] = useState(() => ({
+    serverVersion: pending.server.version,
+    yourContent: pending.yourContent,
+    value: pending.yourContent,
+  }))
+  const combinedContent = combinedDraft.serverVersion === pending.server.version && combinedDraft.yourContent === pending.yourContent
+    ? combinedDraft.value
+    : pending.yourContent
+  return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-3 sm:p-5">
+    <section role="dialog" aria-modal="true" aria-labelledby="save-conflict-title" className="flex max-h-[92vh] w-full max-w-5xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+      <header className="border-b border-zinc-800 px-5 py-4">
+        <h2 id="save-conflict-title" className="text-lg font-semibold">This note changed on the server</h2>
+        <p className="mt-1 break-all text-xs text-zinc-400">{pending.server.path}</p>
+        <p className="mt-2 text-sm leading-6 text-zinc-400">Your browser draft and the current server version are both preserved. Choose which content to save, or edit a combined version.</p>
+      </header>
+      <div className="grid min-h-0 gap-3 overflow-y-auto p-4 lg:grid-cols-2">
+        <section className="min-w-0 rounded border border-zinc-800 bg-zinc-950/50 p-3"><h3 className="text-sm font-medium text-zinc-200">Your browser draft</h3><pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-zinc-400">{pending.yourContent}</pre></section>
+        <section className="min-w-0 rounded border border-zinc-800 bg-zinc-950/50 p-3"><h3 className="text-sm font-medium text-zinc-200">Current server version</h3><pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-zinc-400">{pending.server.content}</pre></section>
+        <label className="min-w-0 text-sm font-medium text-zinc-200 lg:col-span-2">Combined version<textarea value={combinedContent} onChange={(event) => setCombinedDraft({ serverVersion: pending.server.version, yourContent: pending.yourContent, value: event.target.value })} rows={12} className="mt-2 w-full rounded border border-zinc-700 bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-300" /></label>
+      </div>
+      <footer className="border-t border-zinc-800 p-4">
+        {error && <p role="alert" className="mb-3 text-sm text-red-300">{error}</p>}
+        <div className="flex flex-wrap justify-end gap-2">
+          <button type="button" disabled={busy} onClick={onClose} className="min-h-10 rounded border border-zinc-700 px-3 text-sm text-zinc-300">Decide later</button>
+          <button type="button" disabled={busy} onClick={() => onResolve('use_server')} className="min-h-10 rounded border border-zinc-700 px-3 text-sm text-zinc-200">Use server version</button>
+          <button type="button" disabled={busy} onClick={() => onResolve('keep_mine')} className="min-h-10 rounded border border-amber-700 px-3 text-sm text-amber-200">Save my version</button>
+          <button type="button" disabled={busy} onClick={() => onResolve('edit_combined', combinedContent)} className="min-h-10 rounded bg-amber-500 px-3 text-sm font-medium text-zinc-950 disabled:opacity-40">Save combined version</button>
+        </div>
+      </footer>
+    </section>
+  </div>
 }
 
-function readableNoteDiff(previous:string, current:string):NoteDiffLine[] {
-  const before = previous.split('\n')
-  const after = current.split('\n')
-  if (before.length * after.length > 160_000 || before.length > 800 || after.length > 800) return coarseNoteDiff(before, after)
-  const columns = after.length + 1
-  const table = new Uint16Array((before.length + 1) * columns)
-  for (let left = before.length - 1; left >= 0; left -= 1) {
-    for (let right = after.length - 1; right >= 0; right -= 1) {
-      table[left * columns + right] = before[left] === after[right]
-        ? table[(left + 1) * columns + right + 1] + 1
-        : Math.max(table[(left + 1) * columns + right], table[left * columns + right + 1])
-    }
-  }
-  const result:NoteDiffLine[] = []
-  let left = 0
-  let right = 0
-  while (left < before.length && right < after.length && result.length < 1600) {
-    if (before[left] === after[right]) {
-      result.push({ kind:'same', text:before[left] }); left += 1; right += 1
-    } else if (table[(left + 1) * columns + right] >= table[left * columns + right + 1]) {
-      result.push({ kind:'removed', text:before[left] }); left += 1
-    } else {
-      result.push({ kind:'added', text:after[right] }); right += 1
-    }
-  }
-  while (left < before.length && result.length < 1600) result.push({ kind:'removed', text:before[left++] })
-  while (right < after.length && result.length < 1600) result.push({ kind:'added', text:after[right++] })
-  if (left < before.length || right < after.length) result.push({ kind:'same', text:'… comparison truncated …' })
-  return result
-}
-
-function coarseNoteDiff(before:string[], after:string[]):NoteDiffLine[] {
-  let prefix = 0
-  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1
-  let suffix = 0
-  while (suffix < before.length-prefix && suffix < after.length-prefix && before[before.length-1-suffix] === after[after.length-1-suffix]) suffix += 1
-  const result:NoteDiffLine[] = before.slice(0, Math.min(prefix, 100)).map((text) => ({ kind:'same', text }))
-  if (prefix > 100) result.push({ kind:'same', text:'… unchanged lines omitted …' })
-  result.push(...before.slice(prefix, before.length-suffix).slice(0, 700).map((text):NoteDiffLine => ({ kind:'removed', text })))
-  result.push(...after.slice(prefix, after.length-suffix).slice(0, 700).map((text):NoteDiffLine => ({ kind:'added', text })))
-  if (before.length-prefix-suffix > 700 || after.length-prefix-suffix > 700) result.push({ kind:'same', text:'… comparison truncated …' })
-  result.push(...before.slice(before.length-Math.min(suffix,100)).map((text):NoteDiffLine => ({ kind:'same', text })))
-  return result
-}
-
-type SyncPresentation = { label:string; happened:string; safety:string; next:string; attention:boolean }
-
-function synchronizationPresentation(status: GitStatus, syncing: boolean): SyncPresentation {
-	if (syncing && status.state === 'local_only') return { label: 'Creating local version…', happened: 'RepoQuill is committing saved notebook changes to this local Git repository.', safety: 'Your notes remain stored on this server and the Git history stays in the notebook.', next: 'No action is needed.', attention: false }
-	if (syncing) return { label: 'Synchronizing…', happened: 'RepoQuill is exchanging saved notebook changes with the connected service.', safety: 'Changes already saved on this server remain safe while this runs.', next: 'No action is needed.', attention: false }
-	switch (status.state) {
-	case 'local_only':
-		return status.localChanges
-			? { label: 'Local changes ready to version', happened: 'Saved changes are waiting for the next local Git commit.', safety: 'The notes are saved on this server.', next: 'Create a local version or wait for automatic versioning.', attention: false }
-			: { label: 'Local-only notebook', happened: 'This notebook is versioned in its local Git repository.', safety: 'Notes and assets remain ordinary files on this server.', next: 'Connect a remote later from Manage Notebooks if you want a second copy.', attention: false }
-	case 'clean':
-	case 'synced':
-		return { label: 'Everything is up to date', happened: 'The server and connected service have the same saved changes.', safety: 'Your synchronized notes are available in both places.', next: 'No action is needed.', attention: false }
-	case 'local_changes':
-		return { label: 'Changes waiting to synchronize', happened: 'This RepoQuill server contains saved changes that have not reached the connected service yet.', safety: 'The changes are saved on this server.', next: 'Choose Sync now or wait for the next automatic attempt.', attention: false }
-	case 'remote_changes':
-		return { label: 'New changes available', happened: 'The connected service contains newer notebook changes.', safety: 'RepoQuill has not overwritten your local files.', next: 'Choose Sync now to receive them.', attention: false }
-	case 'diverged':
-	case 'conflict':
-		return { label: 'Your decision is required', happened: 'Two sets of changes overlap and automatic synchronization has paused.', safety: 'RepoQuill has preserved the available versions instead of choosing one silently.', next: 'Review the affected notes before synchronization continues.', attention: true }
-	case 'sync_failed':
-		return { label: 'Synchronization could not finish', happened: 'RepoQuill could not complete the exchange with the connected service.', safety: 'Notes already saved on this RepoQuill server remain saved here.', next: 'Retry or check the notebook connection.', attention: true }
-	default:
-		return { label: 'Notebook is currently unavailable', happened: 'RepoQuill cannot inspect the notebook connection right now.', safety: 'No note content was deliberately removed.', next: 'Check the notebook connection and server storage.', attention: true }
-	}
-}
-
-export function ReceivedChangesNotice({ changes, onOpen, onDismiss }: { changes:ReceivedChange[]; onOpen:(path:string)=>void; onDismiss:()=>void }) {
-	const [hovered,setHovered] = useState(false)
-	const [focused,setFocused] = useState(false)
-	const [pointerActive,setPointerActive] = useState(false)
-	const dismissRef = useRef(onDismiss)
-	useEffect(() => {
-		dismissRef.current = onDismiss
-	}, [onDismiss])
-	useEffect(() => {
-		if (hovered || focused || pointerActive) return
-		const timer = globalThis.setTimeout(() => dismissRef.current(), receivedChangesNoticeDurationMs)
-		return () => globalThis.clearTimeout(timer)
-	}, [changes,focused,hovered,pointerActive])
-	useEffect(() => {
-		if (!pointerActive) return
-		const release = () => setPointerActive(false)
-		globalThis.addEventListener('pointerup',release)
-		globalThis.addEventListener('pointercancel',release)
-		return () => {
-			globalThis.removeEventListener('pointerup',release)
-			globalThis.removeEventListener('pointercancel',release)
-		}
-	}, [pointerActive])
-	const counts = changes.reduce<Record<string, number>>((result, change) => ({ ...result, [change.kind]: (result[change.kind] ?? 0) + 1 }), {})
-	const summary = (['added', 'updated', 'moved', 'deleted'] as const).filter((kind) => counts[kind]).map((kind) => `${counts[kind]} ${kind}`).join(', ')
-	return <section role="status" aria-label="New notebook changes received" onPointerEnter={(event)=>{if(event.pointerType==='mouse')setHovered(true)}} onPointerLeave={(event)=>{if(event.pointerType==='mouse')setHovered(false)}} onFocusCapture={()=>setFocused(true)} onBlurCapture={(event)=>{const next=event.relatedTarget;setFocused(next instanceof Node&&event.currentTarget.contains(next))}} onPointerDown={()=>setPointerActive(true)} onPointerUp={()=>setPointerActive(false)} onPointerCancel={()=>setPointerActive(false)} className="border-b border-sky-900/60 bg-sky-950/20 px-4 py-2 text-xs text-zinc-200 sm:px-8"><div className="flex items-center justify-between gap-3"><span><strong>New changes were received.</strong> {summary}.</span><button type="button" onClick={onDismiss} aria-label="Dismiss received changes" className="min-h-9 min-w-9 rounded text-zinc-500 hover:bg-zinc-800">×</button></div><ul className="mt-1 flex flex-wrap gap-1.5">{changes.slice(0, 6).map((change) => <li key={`${change.kind}:${change.fromPath ?? ''}:${change.path}`}>{change.kind !== 'deleted' && change.path.toLowerCase().endsWith('.md') ? <button type="button" onClick={() => onOpen(change.path)} title="Open in a note tab" className="min-h-8 rounded border border-zinc-700 px-2 text-zinc-300 hover:bg-zinc-800">{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</button> : <span className="inline-flex min-h-8 items-center rounded border border-zinc-800 px-2 text-zinc-500">{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</span>}</li>)}</ul></section>
-}
-
-function SynchronizationDetailsPanel({ saveStatus, gitStatus, syncing, browserOnline, lastSuccessfulSyncAt, lastSyncAttemptAt, lastSyncError, nextScheduledSyncAt, receivedChanges, onSync, onReviewConflicts, conflictLoading, conflictError, onOpenNote, onOpenSettings, onCheckConnection, onClose }: { saveStatus:SaveStatus; gitStatus:GitStatus; syncing:boolean; browserOnline:boolean; lastSuccessfulSyncAt?:string; lastSyncAttemptAt?:string; lastSyncError?:string; nextScheduledSyncAt?:string; receivedChanges:ReceivedChange[]; onSync:()=>void; onReviewConflicts:()=>void; conflictLoading:boolean; conflictError?:string; onOpenNote:(path:string)=>void; onOpenSettings:()=>void; onCheckConnection:()=>void; onClose:()=>void }) {
-	const presentation = synchronizationPresentation(gitStatus, syncing)
-	const locallySafe = saveStatus === 'saved'
-	return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section role="dialog" aria-modal="true" aria-labelledby="sync-details-title" className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="flex items-center justify-between border-b border-zinc-800 px-5 py-4"><div><h2 id="sync-details-title" className="text-lg font-semibold">Synchronization</h2><p className="mt-1 text-xs text-zinc-500">Notebook save and connection details</p></div><button type="button" onClick={onClose} aria-label="Close synchronization details" className="min-h-10 min-w-10 rounded text-xl text-zinc-500 hover:bg-zinc-800">×</button></header><div className="overflow-y-auto p-5"><div role="status" className={`rounded-lg border p-4 ${presentation.attention ? 'border-amber-800/70 bg-amber-950/20' : 'border-zinc-800 bg-zinc-950/30'}`}><p className="font-medium text-zinc-100">{presentation.label}</p><p className="mt-2 text-sm leading-6 text-zinc-300">{presentation.happened}</p><p className="mt-2 text-sm leading-6 text-zinc-400"><strong className="text-zinc-300">Your notes:</strong> {presentation.safety}</p><p className="mt-2 text-sm leading-6 text-zinc-400"><strong className="text-zinc-300">Next:</strong> {presentation.next}</p></div><dl className="mt-4 grid gap-2 text-sm sm:grid-cols-2"><StatusDetail label="Saved on this server" value={locallySafe ? 'Yes' : saveStatus === 'saving' ? 'Saving…' : saveStatus === 'unsaved' ? 'Not yet' : 'Needs attention'} /><StatusDetail label="RepoQuill server" value={browserOnline ? 'Reachable' : 'Offline or unavailable'} /><StatusDetail label="Connected service" value={gitStatus.state === 'local_only' ? 'Local-only' : gitStatus.state === 'sync_failed' || gitStatus.state === 'invalid' ? 'Connection needs attention' : 'Available'} /><StatusDetail label="Synchronization" value={presentation.label} /><StatusDetail label="Last successful synchronization" value={formatStatusTime(lastSuccessfulSyncAt)} /><StatusDetail label={gitStatus.state === 'local_only' ? 'Next local version' : 'Next scheduled attempt'} value={formatStatusTime(nextScheduledSyncAt, 'Not scheduled')} /></dl>{receivedChanges.length > 0 && <section className="mt-5"><h3 className="text-sm font-medium text-zinc-200">Recently received changes</h3><ul className="mt-2 space-y-1">{receivedChanges.map((change) => <li key={`${change.kind}:${change.fromPath ?? ''}:${change.path}`} className="flex min-h-10 items-center justify-between gap-2 rounded border border-zinc-800 px-3 text-xs"><span className="min-w-0 truncate text-zinc-400"><span className="mr-2 capitalize text-zinc-300">{change.kind}</span>{change.kind === 'moved' ? `${change.fromPath} → ${change.path}` : change.path}</span>{change.kind !== 'deleted' && change.path.toLowerCase().endsWith('.md') && <button type="button" onClick={() => onOpenNote(change.path)} className="shrink-0 rounded px-2 py-1.5 text-amber-300 hover:bg-zinc-800">Open in tab</button>}</li>)}</ul></section>}{(gitStatus.state === 'conflict' || gitStatus.state === 'diverged') && <section className="mt-5 rounded border border-amber-800/60 p-3"><h3 className="text-sm font-medium text-amber-200">Changes need your review</h3><p className="mt-1 text-xs leading-5 text-zinc-400">Automatic synchronization stays paused. RepoQuill has not silently selected either version.</p>{gitStatus.conflictFiles?.length ? <ul className="mt-2 space-y-1 text-xs text-zinc-300">{gitStatus.conflictFiles.map((path) => <li key={path} className="rounded border border-zinc-800 px-3 py-2"><span className="min-w-0 truncate">{path}</span></li>)}</ul> : null}<button type="button" disabled={conflictLoading} onClick={onReviewConflicts} className="mt-3 min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 disabled:opacity-40">{conflictLoading ? 'Loading preserved versions…' : 'Review affected items'}</button>{conflictError && <p role="alert" className="mt-2 text-xs text-red-300">{conflictError}</p>}</section>}<div className="mt-5 flex flex-wrap gap-2"><button type="button" disabled={syncing || !browserOnline || saveStatus === 'saving' || saveStatus === 'error' || saveStatus === 'conflict' || gitStatus.state === 'conflict' || gitStatus.state === 'diverged'} onClick={onSync} className="min-h-10 rounded-md bg-amber-500 px-4 text-sm font-medium text-zinc-950 disabled:opacity-40">{syncing ? gitStatus.state === 'local_only' ? 'Creating version…' : 'Synchronizing…' : gitStatus.state === 'local_only' ? 'Create local version' : gitStatus.state === 'sync_failed' ? 'Retry synchronization' : 'Sync now'}</button>{gitStatus.state !== 'local_only' && (gitStatus.state === 'sync_failed' || gitStatus.state === 'invalid') && <button type="button" onClick={onCheckConnection} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-200 hover:bg-zinc-800">Check connection</button>}<button type="button" onClick={onOpenSettings} className="min-h-10 rounded-md border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Open notebook settings</button></div><details className="mt-5 rounded border border-zinc-800 p-3 text-xs text-zinc-500"><summary className="cursor-pointer text-zinc-400">Technical details</summary><dl className="mt-3 grid gap-2"><StatusDetail label="Branch" value={gitStatus.branch || 'Unavailable'} /><StatusDetail label="Local commits ahead" value={String(gitStatus.ahead ?? 0)} /><StatusDetail label="Remote commits behind" value={String(gitStatus.behind ?? 0)} /><StatusDetail label="Last attempt" value={formatStatusTime(lastSyncAttemptAt)} />{(lastSyncError || gitStatus.message) && <StatusDetail label="Sanitized diagnostic" value={lastSyncError || gitStatus.message || ''} />}</dl></details></div></section></div>
-}
-
-function ConflictResolutionDialog({ overview, busy, error, notePaths, onPostpone, onApply }: { overview:ConflictOverview; busy:boolean; error?:string; notePaths:string[]; onPostpone:()=>void; onApply:(decisions:ConflictDecision[])=>void }) {
-	const [activePath,setActivePath] = useState(overview.items[0]?.path ?? '')
-	const [decisions,setDecisions] = useState<Record<string,ConflictDecision>>(() => {
-		try {
-			const saved = JSON.parse(readConflictDecisionDraft(sessionStorage, overview.token) ?? '{}') as Record<string,ConflictDecision>
-			if (saved && typeof saved === 'object') return saved
-		} catch { /* begin with conservative defaults */ }
-		const defaults:Record<string,ConflictDecision> = {}
-		for (const item of overview.items) {
-			if (item.kind === 'modify_delete') defaults[item.path] = { path:item.path,action:item.yourExists ? 'keep_note' : item.otherExists ? 'use_other' : 'confirm_deletion' }
-		}
-		return defaults
-	})
-	useEffect(() => { writeConflictDecisionDraft(sessionStorage,overview.token,JSON.stringify(decisions)) },[decisions,overview.token])
-	const item = overview.items.find((candidate) => candidate.path === activePath) ?? overview.items[0]
-	const decision = item ? decisions[item.path] : undefined
-	const complete = overview.items.length > 0 && overview.items.every((candidate) => Boolean(decisions[candidate.path]))
-	function choose(action:string, content?:string) {
-		if (!item) return
-		setDecisions((current) => ({ ...current,[item.path]:{ path:item.path,action,...(content !== undefined ? { content } : {}) } }))
-	}
-	return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-2 sm:p-4"><section role="dialog" aria-modal="true" aria-labelledby="conflict-title" className="flex h-[95vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"><header className="border-b border-zinc-800 px-4 py-3 sm:px-5"><h2 id="conflict-title" className="text-lg font-semibold text-zinc-100">Choose the resulting content</h2><p className="mt-1 text-sm text-zinc-400">Two versions overlap. RepoQuill preserved both and paused synchronization. Review every affected item before anything is changed.</p></header><div className="grid min-h-0 flex-1 md:grid-cols-[16rem_1fr]"><nav aria-label="Affected notebook items" className="max-h-48 overflow-y-auto border-b border-zinc-800 p-2 md:max-h-none md:border-b-0 md:border-r"><p className="px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-500">Affected items ({overview.items.length})</p>{overview.items.map((candidate) => <button key={candidate.path} type="button" onClick={()=>setActivePath(candidate.path)} className={`mt-1 flex min-h-11 w-full items-center justify-between gap-2 rounded px-2 text-left text-sm ${candidate.path===item?.path?'bg-amber-400/15 text-amber-100':'text-zinc-300 hover:bg-zinc-800'}`}><span className="min-w-0 truncate">{candidate.path}</span><span aria-label={decisions[candidate.path]?'Decision selected':'Decision required'}>{decisions[candidate.path]?'✓':'!'}</span></button>)}</nav>{item && <main className="min-h-0 overflow-y-auto p-3 sm:p-5"><h3 className="break-all font-medium text-zinc-100">{item.path}</h3>{item.kind === 'markdown' && <><div className="mt-4 grid gap-3 lg:grid-cols-2"><VersionCard title="Your version" exists={item.yourExists} content={item.yourContent} /><VersionCard title="Other version" exists={item.otherExists} content={item.otherContent} /></div><details className="mt-3 rounded border border-zinc-800 p-3"><summary className="cursor-pointer text-sm text-zinc-300">Readable text comparison</summary><div className="mt-3 max-h-72 overflow-auto rounded bg-zinc-950 p-3 font-mono text-xs">{readableNoteDiff(item.otherContent ?? '',item.yourContent ?? '').map((line,index)=><div key={index} className={line.kind==='added'?'bg-emerald-950/40 text-emerald-200':line.kind==='removed'?'bg-red-950/40 text-red-200':'text-zinc-500'}><span aria-hidden="true" className="mr-2">{line.kind==='added'?'+':line.kind==='removed'?'−':' '}</span>{line.text || ' '}</div>)}</div></details><div className="mt-4 flex flex-wrap gap-2">{item.yourExists && <DecisionButton selected={decision?.action==='use_yours'} onClick={()=>choose('use_yours')}>Use your version</DecisionButton>}{item.otherExists && <DecisionButton selected={decision?.action==='use_other'} onClick={()=>choose('use_other')}>Use other version</DecisionButton>}{item.yourExists && item.otherExists && <DecisionButton selected={decision?.action==='edit_combined'} onClick={()=>choose('edit_combined',decision?.content ?? item.yourContent ?? '')}>Edit combined version</DecisionButton>}</div>{decision?.action==='edit_combined' && <div className="mt-4 rounded-lg border border-amber-800/50 p-3"><p className="mb-3 text-sm text-zinc-300">Combined result — this is the content that will be saved.</p><Suspense fallback={<p className="text-sm text-zinc-500">Loading editor…</p>}><MarkdownEditor documentKey={`conflict:${overview.token}:${item.path}`} notePath={item.path} markdown={decision.content ?? ''} readOnly={false} notePaths={notePaths} onChange={(content)=>choose('edit_combined',content)} /></Suspense></div>}</>}{item.kind === 'modify_delete' && <><p className="mt-4 rounded border border-amber-900/60 bg-amber-950/20 p-3 text-sm leading-6 text-zinc-300">{item.yourExists||item.otherExists?'One side kept this item while the other removed it. Keeping the available note or file is the safe default.':'This is an earlier path from an overlapping rename. The renamed copies remain listed separately; removing this obsolete path does not delete either renamed copy.'}</p><div className="mt-4 flex flex-wrap gap-2">{(item.yourExists||item.otherExists)&&<DecisionButton selected={decision?.action==='keep_note'||decision?.action==='use_other'} onClick={()=>choose(item.yourExists?'keep_note':'use_other')}>Keep {item.path.toLowerCase().endsWith('.md')?'note':'file'}</DecisionButton>}<DecisionButton danger selected={decision?.action==='confirm_deletion'} onClick={()=>choose('confirm_deletion')}>Confirm deletion</DecisionButton></div></>}{item.kind === 'image' && <><div className="mt-4 grid gap-3 sm:grid-cols-2"><ImageVersion title="Your image" path={item.path} side="yours" /><ImageVersion title="Other image" path={item.path} side="other" /></div><div className="mt-4 flex flex-wrap gap-2"><DecisionButton selected={decision?.action==='use_yours'} onClick={()=>choose('use_yours')}>Use your image</DecisionButton><DecisionButton selected={decision?.action==='use_other'} onClick={()=>choose('use_other')}>Use other image</DecisionButton><DecisionButton selected={decision?.action==='keep_both'} onClick={()=>choose('keep_both')}>Keep both</DecisionButton></div></>}{item.kind === 'binary' && <><p className="mt-4 text-sm text-zinc-400">This file cannot be compared as text. Choose which complete file should remain.</p><div className="mt-4 flex gap-2"><DecisionButton selected={decision?.action==='use_yours'} onClick={()=>choose('use_yours')}>Use your file</DecisionButton><DecisionButton selected={decision?.action==='use_other'} onClick={()=>choose('use_other')}>Use other file</DecisionButton></div></>}</main>}</div><footer className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800 p-3 sm:px-5"><div>{error && <p role="alert" className="text-sm text-red-300">{error}</p>}<p className="text-xs text-zinc-500">You can postpone safely; Git keeps both source versions.</p></div><div className="flex gap-2"><button type="button" disabled={busy} onClick={onPostpone} className="min-h-10 rounded border border-zinc-700 px-4 text-sm text-zinc-300 hover:bg-zinc-800">Postpone</button><button type="button" disabled={busy||!complete} onClick={()=>onApply(overview.items.map((candidate)=>decisions[candidate.path]))} className="min-h-10 rounded bg-amber-500 px-4 text-sm font-medium text-zinc-950 disabled:opacity-40">{busy?'Revalidating and applying…':'Review complete — apply'}</button></div></footer></section></div>
-}
-
-function VersionCard({ title,exists,content }: { title:string; exists:boolean; content?:string }) { return <section className="rounded border border-zinc-800 bg-zinc-950/50 p-3"><h4 className="text-sm font-medium text-zinc-200">{title}</h4>{exists?<pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-zinc-400">{content}</pre>:<p className="mt-2 text-xs text-zinc-500">This version removed the note.</p>}</section> }
-function ImageVersion({ title,path,side }: { title:string; path:string; side:'yours'|'other' }) { return <section className="rounded border border-zinc-800 bg-zinc-950/50 p-3"><h4 className="text-sm font-medium text-zinc-200">{title}</h4><img src={`/api/repository/git/conflict-version?path=${encodeURIComponent(path)}&side=${side}`} alt={`${title} for ${path}`} className="mt-3 max-h-80 w-full object-contain" /></section> }
-function DecisionButton({ children,selected,danger=false,onClick }: { children:ReactNode; selected:boolean; danger?:boolean; onClick:()=>void }) { return <button type="button" aria-pressed={selected} onClick={onClick} className={`min-h-11 rounded border px-4 text-sm ${selected?'border-amber-500 bg-amber-400/15 text-amber-100':danger?'border-red-900 text-red-300 hover:bg-red-950/40':'border-zinc-700 text-zinc-300 hover:bg-zinc-800'}`}>{children}</button> }
-
-function StatusDetail({ label, value }: { label:string; value:string }) { return <div className="rounded border border-zinc-800 p-3"><dt className="text-[11px] uppercase tracking-wide text-zinc-600">{label}</dt><dd className="mt-1 break-words text-xs text-zinc-300">{value}</dd></div> }
-function formatStatusTime(value?:string, fallback='Not yet'):string { if (!value) return fallback; const date=new Date(value); return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString() }
-
-export function DocumentStatusBar({ status, gitStatus, gitSyncing, stats = emptyDocumentStats, onOpenSyncDetails = () => undefined }: { status: SaveStatus; gitStatus: GitStatus; gitSyncing: boolean; stats?: DocumentStats; onOpenSyncDetails?:()=>void }) {
+export function DocumentStatusBar({ status, stats = emptyDocumentStats }: { status: SaveStatus; stats?: DocumentStats }) {
   const labels: Record<SaveStatus, string> = { saved: 'Saved on this server', unsaved: 'Changes not saved yet', saving: 'Saving on this server…', error: 'Save could not finish', conflict: 'Your decision is required' }
   const colors: Record<SaveStatus, string> = { saved: 'text-emerald-400', unsaved: 'text-amber-300', saving: 'text-zinc-400', error: 'text-red-400', conflict: 'text-red-400' }
-	const synchronization = synchronizationPresentation(gitStatus, gitSyncing)
-  return <footer aria-label="Document status" className="sticky bottom-0 z-10 flex h-7 shrink-0 items-center gap-2.5 border-t border-zinc-800 bg-zinc-950/90 px-5 text-[11px] leading-none text-zinc-500 backdrop-blur sm:px-8"><span role="status" className={`truncate font-medium ${colors[status]}`}>{labels[status]}</span><span aria-hidden="true" className="text-zinc-700">•</span><button type="button" onClick={onOpenSyncDetails} aria-label={`Synchronization: ${synchronization.label}. Open details`} title={`${synchronization.happened} ${synchronization.safety}`} className={`truncate rounded px-1 py-1 font-medium hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-amber-500 ${synchronization.attention ? 'text-red-400' : gitStatus.state === 'synced' || gitStatus.state === 'clean' ? 'text-emerald-400' : 'text-zinc-400'}`}>{synchronization.label}</button><span aria-hidden="true" className="hidden text-zinc-700 sm:inline">•</span><span className="hidden sm:inline" aria-label={`${stats.words} words`}>{stats.words} words</span><span className="hidden md:inline" aria-label={`${stats.characters} characters`}>{stats.characters} characters</span><span className="hidden md:inline" aria-label={`${stats.lines} lines`}>{stats.lines} lines</span></footer>
+  return <footer aria-label="Document status" className="sticky bottom-0 z-10 flex h-7 shrink-0 items-center gap-2.5 border-t border-zinc-800 bg-zinc-950/90 px-5 text-[11px] leading-none text-zinc-500 backdrop-blur sm:px-8"><span role="status" className={`truncate font-medium ${colors[status]}`}>{labels[status]}</span><span aria-hidden="true" className="text-zinc-700">•</span><span className="hidden sm:inline" aria-label={`${stats.words} words`}>{stats.words} words</span><span className="hidden md:inline" aria-label={`${stats.characters} characters`}>{stats.characters} characters</span><span className="hidden md:inline" aria-label={`${stats.lines} lines`}>{stats.lines} lines</span></footer>
 }
 
 function SidebarMessage({ children }: { children: ReactNode }) { return <p className="px-2 py-3 text-sm text-zinc-500">{children}</p> }
 function ErrorMessage({ children }: { children: ReactNode }) { return <p className="mb-5 rounded-lg border border-red-900/70 bg-red-950/30 p-4 text-sm text-red-200">{children}</p> }
-function EmptyState({ notebookConfigured, onAddNotebook }: { notebookConfigured: boolean; onAddNotebook: () => void }) { return <div className="flex min-h-80 flex-col items-center justify-center text-center"><div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-2xl" aria-hidden="true">◇</div><h2 className="mt-5 text-xl font-semibold">{notebookConfigured ? 'Your Markdown stays yours' : 'Connect your first notebook'}</h2><p className="mt-2 max-w-md text-sm leading-6 text-zinc-400">{notebookConfigured ? 'Choose a note from the notebook tree to edit it with Milkdown. Changes are autosaved after a short pause.' : 'RepoQuill works with ordinary Git repositories. Add one to browse and edit its portable Markdown notes.'}</p>{!notebookConfigured && <button type="button" onClick={onAddNotebook} className="mt-5 min-h-11 rounded-md bg-amber-500 px-4 text-sm font-semibold text-zinc-950 hover:bg-amber-400">Add Notebook</button>}</div> }
+function EmptyState({ notebookConfigured, onAddNotebook }: { notebookConfigured: boolean; onAddNotebook: () => void }) { return <div className="flex min-h-80 flex-col items-center justify-center text-center"><div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-2xl" aria-hidden="true">◇</div><h2 className="mt-5 text-xl font-semibold">{notebookConfigured ? 'Your Markdown stays yours' : 'Create your first vault'}</h2><p className="mt-2 max-w-md text-sm leading-6 text-zinc-400">{notebookConfigured ? 'Choose a note from the vault tree to edit it with Milkdown. Changes are autosaved after a short pause.' : 'Create a vault or adopt an existing folder to browse and edit ordinary Markdown notes.'}</p>{!notebookConfigured && <button type="button" onClick={onAddNotebook} className="mt-5 min-h-11 rounded-md bg-amber-500 px-4 text-sm font-semibold text-zinc-950 hover:bg-amber-400">Add Vault</button>}</div> }
