@@ -21,10 +21,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/fred-head/repoquill/internal/auth"
-	"github.com/fred-head/repoquill/internal/envcompat"
-	"github.com/fred-head/repoquill/internal/files"
-	frontend "github.com/fred-head/repoquill/web"
+	"github.com/fred-head/varianotes/internal/auth"
+	"github.com/fred-head/varianotes/internal/files"
+	frontend "github.com/fred-head/varianotes/web"
 )
 
 func NewHandler(logger *slog.Logger, repositoryRoot string, versions ...string) (http.Handler, error) {
@@ -51,29 +50,9 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 	if len(versions) > 0 && strings.TrimSpace(versions[0]) != "" {
 		version = strings.TrimSpace(versions[0])
 	}
-	environmentValue := func(name string) (string, error) {
-		value, _, err := envcompat.Lookup(os.LookupEnv, name)
-		return value, err
-	}
-	metadataPath, err := environmentValue("VARIANOTES_NOTEBOOK_METADATA")
-	if err != nil {
-		return nil, err
-	}
-	notebooksDirectory, err := environmentValue("VARIANOTES_NOTEBOOKS_DIR")
-	if err != nil {
-		return nil, err
-	}
-	notebookName, err := environmentValue("VARIANOTES_NOTEBOOK_NAME")
-	if err != nil {
-		return nil, err
-	}
-	trustedOrigins, err := environmentValue("VARIANOTES_TRUSTED_ORIGINS")
-	if err != nil {
-		return nil, err
-	}
-	if err := migrateLegacyNotebookRegistry(metadataPath); err != nil {
-		return nil, fmt.Errorf("migrate legacy vault registry: %w", err)
-	}
+	metadataPath := os.Getenv("VARIANOTES_NOTEBOOK_METADATA")
+	notebooksDirectory := os.Getenv("VARIANOTES_NOTEBOOKS_DIR")
+	trustedOrigins := os.Getenv("VARIANOTES_TRUSTED_ORIGINS")
 	requestIdentity := auth.NewRequestIdentity(nil)
 	var loginThrottle *auth.LoginThrottle
 	if authService != nil {
@@ -81,7 +60,7 @@ func newHandlerWithSessions(logger *slog.Logger, repositoryRoot string, authServ
 		loginThrottle = auth.NewLoginThrottle(authService)
 	}
 	activeRecord, activeLoadErr := loadActiveNotebook(metadataPath)
-	activeNotebookName := strings.TrimSpace(notebookName)
+	activeNotebookName := ""
 	if activeLoadErr == nil {
 		repositoryRoot = activeRecord.LocalPath
 		activeNotebookName = activeRecord.Name

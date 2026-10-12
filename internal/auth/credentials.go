@@ -43,7 +43,7 @@ var commonPasswords = map[string]struct{}{
 	"adminadminadmin": {}, "administrator": {}, "changemechangeme": {},
 	"correcthorsebatterystaple": {}, "iloveyouiloveyou": {}, "letmeinletmeinletmein": {},
 	"passwordpassword": {}, "password123456": {}, "password123456789": {},
-	"qwertyqwertyqwerty": {}, "repoquillrepoquill": {}, "varianotesvarianotes": {}, "welcomewelcome": {},
+	"qwertyqwertyqwerty": {}, "varianotesvarianotes": {}, "welcomewelcome": {},
 }
 
 type PasswordParameters struct {

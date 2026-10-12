@@ -2,6 +2,8 @@
 .github
 .agents
 .codex
+.varianotes-data
+# Keep pre-existing workstation data out of future build contexts.
 .repoquill-data
 data
 testada

@@ -1,102 +1,80 @@
 # VariaNotes alpha release and recovery guide
 
-This checklist is for operators evaluating and upgrading VariaNotes. CI remains
-the publication gate; do not promote an image that has not passed the release
-workflow and security checks.
+This guide covers clean VariaNotes installations and releases. CI and the
+release workflow are publication gates; do not promote an image that has not
+passed the exact-digest and security checks.
 
-## Before an upgrade
+## New repository setup
 
-1. Record the current immutable image tag or digest.
-2. In the old browser app, save open notes and resolve any recovery-draft or
-   conflict prompt. The rebooted app clears legacy browser-stored note drafts at
-   startup, and browser storage is not included in `/data` backups.
-3. Stop the service and back up the complete `/data` volume.
-4. Confirm the backup includes all vault directories, `/data/app/notebooks.json`,
-   `/data/app/auth.db`, and `/data/app/auth.key` when present.
-5. Verify that the backup can be listed and that a restore procedure is
-   available.
+VariaNotes is prepared for the independent repository
+[`fred-head/varianotes`](https://github.com/fred-head/varianotes). Before its
+first release, an operator must create that repository, transfer the source
+tree with a fresh initial commit, and configure the GitHub and GHCR settings in
+the [new repository setup guide](docs/development/new-repository-setup.md).
+Do not transfer prior Git history, branches, pull requests, or release tags.
+This source preparation does not create the repository, publish an image, or
+make a release.
 
-Operators choose backup schedule, retention, off-site storage, and restore
-testing. VariaNotes's ZIP export is an owner-triggered portable copy of a vault,
-not a backup service.
+## Clean installation
 
-## Git-free storage transition
+1. Use the independent VariaNotes source repository or a published immutable
+   VariaNotes image.
+2. Start the Compose service with a new `varianotes-data` volume mounted at
+   `/data`. The container runs as the unprivileged `varianotes` account and
+   keeps its root filesystem read-only.
+3. Create the initial owner with the one-time token from
+   `docker compose exec varianotes varianotes auth bootstrap-token`.
+4. Create a vault or adopt a plain Markdown folder beneath the configured vault
+   root. Confirm notes and assets open and save correctly.
+5. Configure HTTPS at a trusted reverse proxy before exposing the service to
+   the Internet. Keep `VARIANOTES_SESSION_COOKIE_SECURE=true`.
 
-The rebooted application stores each vault as an ordinary directory under the
-configured vault root. Existing registered directories remain registered and
-are opened in place. Markdown and asset files are not rewritten during
-adoption. New vaults are created as plain folders; there is no Git or SSH
-runtime requirement.
+VariaNotes expects fresh authentication metadata and VariaNotes browser
+identifiers. It does not migrate authentication databases, sessions, MFA
+secrets, recovery codes, or browser state from another application build.
+Ordinary Markdown files can still be opened as a vault by placing a folder
+beneath the configured root and adopting it.
 
-Before starting the new image, preserve the old `/data` volume. Existing `.git`
-directories and managed SSH key files are left on disk; VariaNotes no longer
-reads, uses, or deletes them. Old commits may contain deleted notes or secrets.
-On first startup, obsolete remote URLs, branch settings, and SSH-key
-assignments are removed from the vault registry; the key files themselves are
-left untouched.
-The application cannot erase copies in old commits or operator backups. Treat
-their review and any cleanup as a separate operator migration with its own
-verified backup.
+## Persistent data and recovery
 
-## Rebranding compatibility
+Back up the complete `/data` volume, including all vault directories,
+`/data/app/notebooks.json`, `/data/app/auth.db`, and `/data/app/auth.key` when
+present. The encryption key and authentication database are a pair. Operators
+choose backup schedule, retention, off-site storage, and restore testing.
+VariaNotes's ZIP export is an owner-triggered portable vault copy, not a backup
+service.
 
-VariaNotes prefers `VARIANOTES_*` settings and continues to accept matching
-`REPOQUILL_*` names. An empty new value falls back to the old name. If both are
-non-empty and differ, startup reports the conflicting names. Compose resolves
-the new host variable first, passes both values through, and lets the
-application reject conflicting settings.
+Password and MFA recovery commands change only authentication metadata:
 
-The rebrand does not move or rename `/data`, notebook directories,
-`/data/app/notebooks.json`, `/data/app/auth.db`, or `/data/app/auth.key`. Keep
-the existing Compose project name, `repoquill` service key, `repoquill-data`
-volume key, `repoquill` container user (and its volume ownership), and `/data`
-mount during deployment. The PWA
-manifest ID (`/`), browser preference keys, cross-tab authentication event
-names, session cookie names, MFA encryption context, and recovery-code hashing
-domain also remain stable.
-The container exposes `repoquill` as a temporary command alias for `varianotes`
-so existing operator scripts continue to work during the transition.
+```sh
+docker compose exec -it varianotes varianotes auth reset-password
+docker compose exec varianotes varianotes auth reset-mfa
+```
 
-The GitHub repository, workflow image path, and existing GHCR package stay at
-`fred-head/repoquill` until an operator performs those external migrations.
-After a repository checkout is renamed, reuse its recorded Compose project
-name, or explicitly attach the existing volume by its inspected name. Back up
-the complete volume first and never use `docker compose down -v` to upgrade.
-
-After the upgrade, sign in and verify the registered vault list, representative
-notes, assets, Trash, and export. Confirm that each device sees the same server
-vault while online. The PWA must not load or save note content when the server
-is unavailable.
-
-## Rollback
-
-Do not start an older image against new application metadata without checking
-compatibility. If a rollback needs the earlier registry or auth state, stop
-the service and restore the matching full `/data` backup before starting the
-previous immutable image. Vault Markdown and assets remain ordinary files,
-but old app versions may expect Git or SSH configuration that the new runtime
-no longer uses.
+Restore the matching full `/data` backup before rolling back to a build that
+expects different authentication metadata. A rollback is not a data migration.
+Markdown vaults remain ordinary files, but VariaNotes does not provide an
+in-app version history or remote backup.
 
 ## Release verification
 
 For each exact candidate image, verify:
 
-- local authentication setup, sign-in, MFA, session expiry, and password/MFA
-  recovery;
+- first-run owner setup, sign-in, MFA enrollment and verification, session
+  expiry, and password/MFA recovery;
+- single-use recovery-code verification and rejection when a code is reused;
 - vault creation, existing-folder adoption, activation, rename, removal, and
   ZIP export;
-- create, open, edit, and save Markdown notes and ordinary assets;
-- a stale browser save preserves both the browser draft and current server
-  version for an explicit decision;
-- Trash restore and permanent deletion, including the documented backup
-  retention semantics;
-- no note or asset API response is served from a browser or service-worker
-  cache;
-- the production image operates without Git, OpenSSH, repository remotes,
-  SSH credentials, or SSH configuration;
-- the image remains unprivileged, read-only at the container root, and
-  persistent through the documented `/data` volume.
+- creating, opening, editing, and saving Markdown notes and ordinary assets;
+- stale-save behavior preserves both the browser draft and current server file
+  until the owner chooses a result;
+- Trash restore and permanent deletion, including operator backup semantics;
+- the PWA caches only the application shell and never note or authentication
+  responses;
+- the image operates without Git, OpenSSH, remotes, or SSH credentials;
+- the image remains non-root, read-only at the container root, and persistent
+  through the documented `/data` volume.
 
-Verify the image digest and release attestation, then update the release notes,
-upgrade instructions, [README](README.md), [Known Limitations](KNOWN-LIMITATIONS.md),
-and [Changelog](CHANGELOG.md) before publication.
+Verify the OCI digest, SBOM, and release attestation. Update release notes,
+known limitations, and the changelog before publication. Never move an
+immutable version tag; promote the Alpha channel only after all gates pass.

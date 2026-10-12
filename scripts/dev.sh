@@ -21,12 +21,12 @@ if [[ ! -d "${requested_notebook}" ]]; then
 fi
 notebook_root="$(cd -- "${requested_notebook}" && pwd -P)"
 
-development_data="${project_root}/.repoquill-data"
+development_data="${project_root}/.varianotes-data"
 app_directory="${development_data}/app"
 notebooks_directory="${development_data}/notebooks"
 go_build_cache="${GOCACHE:-${HOME}/.cache/go-build}"
 go_module_cache="${GOMODCACHE:-${HOME}/go/pkg/mod}"
-go_temp_directory="${GOTMPDIR:-${HOME}/.cache/repoquill/go-tmp}"
+go_temp_directory="${GOTMPDIR:-${HOME}/.cache/varianotes/go-tmp}"
 
 mkdir -p -- \
   "${app_directory}" \
@@ -64,11 +64,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if [[ -n "${VARIANOTES_AUTH_MODE:-}" && -n "${REPOQUILL_AUTH_MODE:-}" && "${VARIANOTES_AUTH_MODE}" != "${REPOQUILL_AUTH_MODE}" ]]; then
-  echo "VARIANOTES_AUTH_MODE conflicts with legacy REPOQUILL_AUTH_MODE." >&2
-  exit 1
-fi
-auth_mode="${VARIANOTES_AUTH_MODE:-${REPOQUILL_AUTH_MODE:-local}}"
+auth_mode="${VARIANOTES_AUTH_MODE:-local}"
 
 echo "Starting VariaNotes backend on http://localhost:8080"
 echo "Notebook: ${notebook_root}"

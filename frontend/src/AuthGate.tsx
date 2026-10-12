@@ -1,14 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { App } from './App'
 import { apiFetch, authStatus, AuthStatusError, listenForAuthEvents, notifyAuthChanged, setCSRFToken, type AuthStatus } from './api'
-import { clearLegacySessionDrafts } from './app/legacySessionCleanup'
 
 type GateState = 'checking' | 'ready' | 'setup' | 'login' | 'mfa' | 'offline' | 'backend' | 'update'
-
-function clearLegacyBrowserDrafts() {
-  try { clearLegacySessionDrafts(sessionStorage) } catch { /* Browser storage may be disabled. */ }
-  try { clearLegacySessionDrafts(localStorage) } catch { /* Browser storage may be disabled. */ }
-}
 
 export function AuthGate() {
   const [state, setState] = useState<GateState>('checking')
@@ -20,7 +14,6 @@ export function AuthGate() {
 
   const endBrowserSession = useCallback(() => {
     setCSRFToken()
-    clearLegacyBrowserDrafts()
     setState('login')
   }, [])
 
@@ -43,7 +36,6 @@ export function AuthGate() {
   }, [])
 
   useEffect(() => {
-    clearLegacyBrowserDrafts()
     queueMicrotask(() => void check())
     let lastCheck = 0
     const retry = () => { const now = Date.now(); if (now-lastCheck < 1000 || document.visibilityState === 'hidden') return; lastCheck=now; void check() }

@@ -50,7 +50,7 @@ history. For behavior and deployment, see [README](../README.md).
   `internal/app/handler.go`. See the security guides for session, TLS, and
   trusted-proxy constraints.
 
-The Git-free product transition is described in the
-[reboot roadbook](roadmap/git-free-reboot.md). During upgrades, old `.git`
-directories are ignored and left in place; they may still contain earlier
-copies of deleted notes or secrets.
+The Git-free product direction is described in the
+[reboot roadbook](roadmap/git-free-reboot.md). When adopting a vault folder,
+VariaNotes ignores any `.git` directory and leaves it untouched; export omits
+that metadata.

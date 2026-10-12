@@ -89,7 +89,7 @@ and coordinated-disclosure process is documented in
 
 Do not open a public issue containing credentials, private repository details,
 note contents, or an exploitable proof of concept. Use
-[GitHub private vulnerability reporting](https://github.com/fred-head/repoquill/security/advisories/new)
+[GitHub private vulnerability reporting](https://github.com/fred-head/varianotes/security/advisories/new)
 and include the affected version, impact, reproduction conditions, and suggested
 mitigation if known. Remove real credentials and private note contents from the
 report whenever they are not essential to reproduction.

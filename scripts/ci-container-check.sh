@@ -46,7 +46,7 @@ if [[ -z "${configured_user}" || "${configured_user}" == "0" || "${configured_us
   exit 1
 fi
 configured_entrypoint="$(docker image inspect --format '{{json .Config.Entrypoint}}' "${image}")"
-if [[ "${configured_entrypoint}" != '["/usr/local/bin/varianotes"]' ]]; then
+if [[ "${configured_entrypoint}" != '["varianotes"]' ]]; then
   echo "Image entrypoint is not the VariaNotes CLI: ${configured_entrypoint}" >&2
   exit 1
 fi
@@ -103,10 +103,6 @@ wait_for_health() {
 start_container local
 if [[ "$(docker exec "${container_name}" varianotes --version)" != "varianotes ${expected_version}" ]]; then
   echo "Container CLI did not report the expected VariaNotes version" >&2
-  exit 1
-fi
-if [[ "$(docker exec "${container_name}" repoquill --version)" != "varianotes ${expected_version}" ]]; then
-  echo "Legacy container CLI alias did not forward to the VariaNotes CLI" >&2
   exit 1
 fi
 port="$(wait_for_health)"

@@ -49,8 +49,8 @@ func TestAuthCommandRejectsUnknownAndDisabledBootstrap(t *testing.T) {
 	if err := runAuthCommand(context.Background(), logger, []string{"auth", "unknown"}); err == nil || !strings.Contains(err.Error(), "usage: varianotes auth") {
 		t.Fatal("unknown auth command was accepted")
 	}
-	t.Setenv("REPOQUILL_AUTH_MODE", "disabled")
-	t.Setenv("REPOQUILL_AUTH_METADATA", filepath.Join(t.TempDir(), "auth.db"))
+	t.Setenv("VARIANOTES_AUTH_MODE", "disabled")
+	t.Setenv("VARIANOTES_AUTH_METADATA", filepath.Join(t.TempDir(), "auth.db"))
 	if err := runAuthCommand(context.Background(), logger, []string{"auth", "bootstrap-token"}); err == nil {
 		t.Fatal("bootstrap token was generated with authentication disabled")
 	}

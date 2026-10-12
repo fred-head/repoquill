@@ -22,22 +22,21 @@ ARG VCS_REF=""
 LABEL org.opencontainers.image.title="VariaNotes" \
       org.opencontainers.image.description="Self-hosted Markdown notes with full control over your data" \
       org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.source="https://github.com/fred-head/repoquill" \
-      org.opencontainers.image.url="https://github.com/fred-head/repoquill" \
-      org.opencontainers.image.documentation="https://github.com/fred-head/repoquill/blob/main/README.md" \
+      org.opencontainers.image.source="https://github.com/fred-head/varianotes" \
+      org.opencontainers.image.url="https://github.com/fred-head/varianotes" \
+      org.opencontainers.image.documentation="https://github.com/fred-head/varianotes/blob/main/README.md" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="${VCS_REF}"
 RUN apk upgrade --no-cache \
     && apk add --no-cache ca-certificates \
-    && addgroup -S repoquill \
-    && adduser -S -G repoquill -h /data repoquill \
+    && addgroup -S varianotes \
+    && adduser -S -G varianotes -h /data varianotes \
     && mkdir -p /data/app /data/notebooks \
-    && chown -R repoquill:repoquill /data
+    && chown -R varianotes:varianotes /data
 COPY --from=backend /out/varianotes /usr/local/bin/varianotes
-RUN ln -s /usr/local/bin/varianotes /usr/local/bin/repoquill
 COPY LICENSE /usr/share/licenses/varianotes/LICENSE
 COPY THIRD-PARTY-NOTICES.md /usr/share/licenses/varianotes/THIRD-PARTY-NOTICES.md
-USER repoquill
+USER varianotes
 VOLUME ["/data"]
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/varianotes"]
+ENTRYPOINT ["varianotes"]

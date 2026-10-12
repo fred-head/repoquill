@@ -12,9 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fred-head/repoquill/internal/app"
-	"github.com/fred-head/repoquill/internal/auth"
-	"github.com/fred-head/repoquill/internal/envcompat"
+	"github.com/fred-head/varianotes/internal/app"
+	"github.com/fred-head/varianotes/internal/auth"
 	"golang.org/x/term"
 )
 
@@ -57,11 +56,7 @@ func main() {
 	if authState.Mode == auth.ModeDisabled {
 		logger.Warn("authentication is explicitly disabled; restrict access with a trusted network or external protection")
 	}
-	devVaultPath, _, err := envcompat.Lookup(os.LookupEnv, "VARIANOTES_DEV_VAULT_PATH")
-	if err != nil {
-		logger.Error("configure application", "error", err)
-		os.Exit(1)
-	}
+	devVaultPath := os.Getenv("VARIANOTES_DEV_VAULT_PATH")
 	handler, err := app.NewHandlerWithAuth(logger, devVaultPath, authService, version)
 	if err != nil {
 		logger.Error("configure application", "error", err)
@@ -76,10 +71,7 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 	}
-	if address, _, lookupErr := envcompat.Lookup(os.LookupEnv, "VARIANOTES_ADDR"); lookupErr != nil {
-		logger.Error("configure server address", "error", lookupErr)
-		os.Exit(1)
-	} else if address != "" {
+	if address := os.Getenv("VARIANOTES_ADDR"); address != "" {
 		server.Addr = address
 	}
 

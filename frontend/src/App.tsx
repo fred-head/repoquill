@@ -27,10 +27,10 @@ type SecuritySession = { id: string; clientDescription?: string; current: boolea
 type NoteTab = { path: string; readOnly: boolean }
 type CreateEntryRequest = { type:'file'|'directory'; parent:string; suggested:string }
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }
-const expandedFoldersStorageKey = 'repoquill.expanded-folders'
-const themeStorageKey = 'repoquill.theme'
-const installPromptDismissedStorageKey = 'repoquill.install-prompt-dismissed'
-const notebookSidebarCollapsedStorageKey = 'repoquill.notebook-sidebar-collapsed'
+const expandedFoldersStorageKey = 'varianotes.expanded-folders'
+const themeStorageKey = 'varianotes.theme'
+const installPromptDismissedStorageKey = 'varianotes.install-prompt-dismissed'
+const notebookSidebarCollapsedStorageKey = 'varianotes.notebook-sidebar-collapsed'
 
 function loadTheme(): Theme {
   const stored = localStorage.getItem(themeStorageKey)

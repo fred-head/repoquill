@@ -18,7 +18,7 @@ beforeEach(() => {
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
   localStorage.clear()
   sessionStorage.clear()
-  localStorage.setItem('repoquill.auto-lock-minutes', '1')
+  localStorage.setItem('varianotes.auto-lock-minutes', '1')
   let active = 'personal'
   let notebooks = [{ id: 'local', name: 'repos' }, { id: 'personal', name: 'Personal Notes', branch: 'main' }, { id: 'work', name: 'Work', branch: 'main' }]
   const noteContent = '# Auto-lock note'
@@ -162,7 +162,7 @@ describe('App auto-lock integration', () => {
     expect(sidebar.classList.contains('lg:w-12')).toBe(true)
     expect(sidebar.classList.contains('lg:invisible')).toBe(false)
     expect(view.container.querySelector('article')?.classList.contains('max-w-none')).toBe(true)
-    expect(localStorage.getItem('repoquill.notebook-sidebar-collapsed')).toBe('true')
+    expect(localStorage.getItem('varianotes.notebook-sidebar-collapsed')).toBe('true')
     expect(view.getAllByRole('tab')).toHaveLength(2)
     expect(view.getByRole('tab', { name: 'Second' })).toBeTruthy()
     expect(view.getByRole('tab', { name: 'Note' }).getAttribute('aria-selected')).toBe('true')
@@ -174,7 +174,7 @@ describe('App auto-lock integration', () => {
     expect(within(sidebar).getByRole('button', { name: 'Collapse notebook sidebar' }).getAttribute('aria-expanded')).toBe('true')
     expect(sidebar.classList.contains('lg:w-80')).toBe(true)
     expect(view.container.querySelector('article')?.classList.contains('max-w-4xl')).toBe(true)
-    expect(localStorage.getItem('repoquill.notebook-sidebar-collapsed')).toBeNull()
+    expect(localStorage.getItem('varianotes.notebook-sidebar-collapsed')).toBeNull()
     expect(view.container.querySelector('.ProseMirror')).toBe(editor)
     expect(editor.innerHTML).toBe(draftHTML)
 
@@ -185,7 +185,7 @@ describe('App auto-lock integration', () => {
   })
 
   it('keeps the mobile navigation drawer available when the desktop sidebar preference is collapsed', async () => {
-    localStorage.setItem('repoquill.notebook-sidebar-collapsed', 'true')
+    localStorage.setItem('varianotes.notebook-sidebar-collapsed', 'true')
     const view = render(<App />)
     const openNavigation = await view.findByRole('button', { name: 'Open notebook navigation' })
     expect(openNavigation.getAttribute('aria-expanded')).toBe('false')
@@ -475,7 +475,7 @@ describe('App auto-lock integration', () => {
     event.userChoice = Promise.resolve({ outcome: 'dismissed' })
     window.dispatchEvent(event)
     fireEvent.click(await view.findByRole('button', { name: 'Dismiss install suggestion' }))
-    expect(localStorage.getItem('repoquill.install-prompt-dismissed')).toBe('true')
+    expect(localStorage.getItem('varianotes.install-prompt-dismissed')).toBe('true')
     expect(view.queryByText('Install VariaNotes for a standalone app experience.')).toBeNull()
 
     cleanup()
@@ -491,8 +491,6 @@ describe('App auto-lock integration', () => {
     editor.focus()
     await userEvent.type(editor, ' private draft', { skipClick: true })
     await waitFor(() => expect(editor.textContent).toContain('private draft'))
-    expect(sessionStorage.getItem('repoquill.recovery-draft')).toBeNull()
-    expect(localStorage.getItem('repoquill.recovery-draft')).toBeNull()
   })
 })
 

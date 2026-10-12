@@ -1,9 +1,9 @@
 # Local authentication and recovery
 
-Status: Milestone 19 Phases 2-9. Setup/login, protected sessions, browser/PWA
-reauthentication, password/session administration, optional TOTP, and explicit
-disabled-mode migration are implemented and security-reviewed. Each exact Alpha
-2 candidate remains release-blocked until the complete CI and scan gate passes.
+Setup/login, protected sessions, browser/PWA reauthentication,
+password/session administration, optional TOTP, and explicit disabled-mode
+configuration are implemented and security-reviewed. Every release candidate
+must pass the complete CI and security gate.
 
 ## Operator-controlled bootstrap
 
@@ -17,7 +17,7 @@ setup endpoint remain reachable.
 The operator creates a one-time token from a trusted container or host terminal:
 
 ```sh
-docker compose exec repoquill varianotes auth bootstrap-token
+docker compose exec varianotes varianotes auth bootstrap-token
 ```
 
 The command writes the plaintext token exactly once to its own terminal. The
@@ -29,7 +29,7 @@ has completed or while authentication is disabled.
 The setup screen submits the token and the chosen password to
 `POST /api/auth/setup`. `GET /api/auth/status` exposes only the configured
 mode and whether setup is required. Neither endpoint exposes credential,
-notebook, SSH, host, or owner metadata.
+notebook, host, or owner metadata.
 
 ## Browser and PWA sessions
 
@@ -42,20 +42,12 @@ failure.
 Other open VariaNotes tabs and installed PWA windows are notified without
 sharing credentials between them.
 
-If reauthentication interrupts an unsaved note, VariaNotes keeps one temporary,
-per-tab recovery draft in `sessionStorage`. The draft includes notebook ID,
-path, and loaded file version. After login it can be restored only when the
-server version still matches; otherwise VariaNotes preserves it for deliberate
-review instead of overwriting the note. It is removed only after a successful
-save or explicit discard. This is crash/reauthentication protection, not an
-offline editing queue or backup.
-
-Guided stale-save decisions use the same tab-scoped storage boundary. A
-manually combined result can contain complete note text, so it is never written
-to persistent `localStorage`. It may survive a reload in the same tab, but is
-removed on logout or session expiry and disappears when the browser session
-ends. The current server file and the open browser draft remain available for
-an explicit choice; VariaNotes does not create an in-app save history.
+Unsaved note text and stale-save decisions remain in the active application
+tab's memory; note content is not written to `localStorage` or
+`sessionStorage`. While a stale-save decision is open, both the browser draft
+and current server file remain available until the owner chooses a result.
+Closing or reloading the tab discards its unsaved in-memory draft. This is not
+an offline editing queue or backup.
 
 The service worker caches only the application shell. Authentication and all
 `/api/` responses remain network-only.
@@ -81,7 +73,7 @@ An operator with access to the container terminal can replace a forgotten owner
 password without touching notebook content:
 
 ```sh
-docker compose exec -it repoquill varianotes auth reset-password
+docker compose exec -it varianotes varianotes auth reset-password
 ```
 
 The command refuses non-interactive input, reads and confirms the password with
@@ -90,7 +82,7 @@ metadata. MFA recovery is intentionally separate so password recovery cannot
 silently weaken the second factor:
 
 ```sh
-docker compose exec repoquill varianotes auth reset-mfa
+docker compose exec varianotes varianotes auth reset-mfa
 ```
 
 That command revokes every session and removes MFA/recovery codes without
@@ -124,12 +116,11 @@ factor and recovery codes valid until the new authenticator is confirmed. A
 pending enrollment expires after 15 minutes, is bound to the browser session
 that began it, and can be cancelled explicitly from Settings.
 
-## Explicit disabled mode and upgrades
+## Explicit disabled mode
 
-Omitting `VARIANOTES_AUTH_MODE` always selects fail-closed `local` mode. During
-an upgrade from an unauthenticated Alpha 1 installation, existing notebooks
-remain untouched while the application enters setup-required state until the
-operator creates a bootstrap token and owner password.
+Omitting `VARIANOTES_AUTH_MODE` always selects fail-closed `local` mode. A fresh
+installation remains setup-required until the operator creates a bootstrap
+token and owner password.
 
 `VARIANOTES_AUTH_MODE=disabled` must be written explicitly. Use it only for
 localhost, a private LAN, VPN/Tailscale, or a deliberately secured external
@@ -202,7 +193,6 @@ through the transparent upgrade path.
 ## Release gate
 
 Local password authentication, optional TOTP, recovery, and explicit disabled
-mode have passed the Milestone 19 implementation review. Every exact Alpha 2
-candidate remains blocked until its source commit and built container pass the
-full CI, scan, and manual release preflight. Do not treat an arbitrary
-development-branch build as a published Alpha 2 release.
+mode have passed the Milestone 19 implementation review. Every exact candidate
+must pass backend tests, frontend tests, race detection, static analysis,
+security scans, container build, and the release runtime preflight.

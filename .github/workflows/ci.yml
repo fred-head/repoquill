@@ -33,7 +33,7 @@ jobs:
         run: go test ./...
 
       - name: Milestone 19 adversarial authentication gate
-        run: go test -count=1 ./internal/auth ./internal/app ./internal/envcompat ./cmd/varianotes
+        run: go test -count=1 ./internal/auth ./internal/app ./cmd/varianotes
 
       - name: Static analysis
         run: go vet ./...

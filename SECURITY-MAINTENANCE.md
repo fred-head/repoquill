@@ -6,6 +6,9 @@ maintenance procedure, not a claim that automation can find every defect.
 
 ## Continuous signals
 
+Before the first VariaNotes release, complete the independent GitHub repository
+and GHCR setup in [new repository setup](docs/development/new-repository-setup.md).
+
 VariaNotes uses independent signals so a source commit is not required to detect
 a newly disclosed vulnerability:
 
@@ -27,10 +30,11 @@ not clean results. GitHub workflow notifications are the initial maintainer
 signal; the run summary identifies the reference or digest, component,
 advisory, severity, installed version, and fixed version where known.
 
-The existing repository variable `REPOQUILL_LATEST_ALPHA_VERSION` identifies
-the newest immutable image tag for scheduled rescanning. Its name is retained
-until the repository settings are migrated; update it only after a new
-immutable Alpha release completes successfully.
+The new repository variable `VARIANOTES_LATEST_ALPHA_VERSION` identifies the
+newest immutable image tag for scheduled rescanning. Configure it after the
+first immutable Alpha release completes successfully. Until then, the scheduled
+workflow skips the immutable-image rescan while continuing source and fresh
+image checks.
 
 ## Dependency pull-request policy
 
@@ -40,8 +44,9 @@ publish automatically.
 For every dependency pull request:
 
 1. Identify whether the dependency affects development only, production,
-   authentication/session/MFA, cryptography, SQLite, Git execution, the editor,
-   PWA/service-worker behavior, or the container runtime.
+   authentication/session/MFA, cryptography, SQLite, vault filesystem access,
+   the editor, PWA/service-worker behavior, proxy trust, or the container
+   runtime.
 2. Read upstream release notes and advisories. Check the maintainer and release
    status, license, changed transitive dependencies, and known breaking changes.
 3. Keep major upgrades and security-sensitive updates separate from unrelated
@@ -53,11 +58,11 @@ For every dependency pull request:
    `go vet`, `gosec`, `govulncheck`, frontend lint/tests/build, `npm audit`, secret scan,
    CodeQL, container build, Trivy, and runtime/persistence smoke tests.
 6. For changes affecting authentication, session handling, MFA, cryptography,
-   persistence, Git credentials, or PWA sessions, also run the dedicated
+   persistence, proxy trust, or PWA sessions, also run the dedicated
    Milestone 19 unit, integration, adversarial, expiry, recovery, and PWA tests.
 7. Perform focused manual behavior testing when an update can change editor
-   serialization, PWA caching, Git operations, persistence, authentication, or
-   browser compatibility.
+   serialization, PWA caching, persistence, authentication, or browser
+   compatibility.
 8. Merge only after a human maintainer accepts the risk and the branch is
    current. A green CI result is necessary but not sufficient.
 
@@ -81,8 +86,8 @@ report receives the following assessment:
 4. Classify the response as affected, not affected, mitigated, false positive,
    or under investigation. Any dismissal must contain a specific technical
    rationale in the scanner's audit trail.
-5. Identify supported releases and whether credentials, notebook data, Git
-   remotes, hosts, or deployment boundaries may be compromised.
+5. Identify supported releases and whether credentials, notebook data, hosts,
+   or deployment boundaries may be compromised.
 6. Choose remediation, temporary mitigation, upgrade/migration needs, and a
    rollback plan before publishing a replacement image.
 
@@ -99,12 +104,10 @@ flow and all intervening checks have been reviewed. The audit comment must name
 the concrete control that makes the flow safe. For VariaNotes filesystem flows,
 that means confirming normalization, absolute/parent rejection, reserved-name
 rejection where applicable, resolved-parent or resolved-target symlink checks,
-root containment, expected file type, and a destructive-operation revalidation.
-For Git process flows, confirm direct process arguments, an option terminator,
-strict URL/ref validation, fixed executable and subcommand, disabled hooks, and
-an application-generated destination. A shared validator's tests must cover the
-rejected attacker inputs. Never dismiss a finding merely because it is noisy or
-because another scanner is green.
+root containment, expected file type, and a destructive-operation
+revalidation. A shared validator's tests must cover the rejected attacker
+inputs. Never dismiss a finding merely because it is noisy or because another
+scanner is green.
 
 ## Time-limited exceptions
 
@@ -153,12 +156,11 @@ its SBOM and provenance; immutable version aliases must continue to resolve to
 that digest. Dependabot reviews Docker tag changes, while daily fresh-image and
 published-image scans detect newly disclosed runtime vulnerabilities.
 
-If persistence, notebook metadata, authentication schemas, sessions, or Git
-credentials are involved, validate the release with both fresh storage and a
-representative copy of existing persistent data. Back up `/data` before testing
-migration. Rollback must restore compatible application metadata from the backup
-when a schema is not backward-compatible; canonical Markdown repositories remain
-ordinary Git working trees throughout.
+If persistence, notebook metadata, authentication schemas, or sessions are
+involved, validate the release with fresh storage and a representative copy of
+application data. Back up `/data` before testing schema migration. Rollback must
+restore compatible application metadata from the backup when a schema is not
+backward-compatible; canonical Markdown vaults remain ordinary files.
 
 ## Credential and disclosure response
 

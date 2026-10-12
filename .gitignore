@@ -6,7 +6,6 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 
 # Go
-/repoquill
 /varianotes
 coverage.out
 
@@ -24,6 +23,8 @@ id_ed25519
 
 # Runtime data
 data/
+.varianotes-data/
+# Keep pre-existing workstation data out of source control; the app no longer uses this path.
 .repoquill-data/
 testada/
 testdata/

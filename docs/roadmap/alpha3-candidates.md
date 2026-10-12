@@ -7,8 +7,8 @@ shipped work from work that remains, is superseded by the reboot, or is
 explicitly deferred. Historical milestone requirements remain below so their
 decisions and acceptance criteria are not lost.
 
-The current product name is VariaNotes. `RepoQuill` references below are kept
-as written in historical milestone specifications and completion records.
+This roadmap retains historical milestone decisions and acceptance criteria.
+Its current product and runtime references use the VariaNotes identity.
 
 ---
 
@@ -26,8 +26,8 @@ The original milestones and reboot have these current dispositions:
 | M25 behavior-preserving frontend decomposition | Incomplete; continue as a focused maintainability task |
 | M26 expanded user documentation | Incomplete; complete as part of the reboot documentation phase |
 | M27 direct OIDC authentication | Deferred; retain as an Alpha 3 feature after the reboot |
-| M28 local-only Git notebooks | Shipped in the current Git-backed product; superseded by filesystem vaults in the reboot |
-| M29 managed SSH key rotation | Shipped in the current Git-backed product; removed with Git and SSH runtime support |
+| M28 local-only Git notebooks | Shipped before the reboot; superseded by filesystem vaults |
+| M29 managed SSH key rotation | Shipped before the reboot; removed with Git and SSH runtime support |
 | M30 visible application version | Shipped; keep |
 | Git-free notebook reboot | Inserted here, after M30 and before M31 |
 | M31 selective encryption | Deferred until the new storage, export, and recovery model is established |
@@ -107,7 +107,7 @@ maintained copy of essential operational or recovery documentation.
 Completion criteria:
 
 - a new user can deploy, secure, use, back up, and troubleshoot
-  RepoQuill without reading milestone specifications,
+  VariaNotes without reading milestone specifications,
 - documentation distinguishes saved server state from unsaved browser text,
 - security-sensitive guidance matches the exact released behavior,
 - README links clearly to the expanded documentation.
@@ -117,7 +117,7 @@ Completion criteria:
 Add standards-based OIDC authentication for providers such as Authentik,
 Authelia, Keycloak, and other compatible identity providers.
 
-The IdP authenticates the owner. After a successful callback, RepoQuill creates
+The IdP authenticates the owner. After a successful callback, VariaNotes creates
 and manages its own normal application session. Do not implement this as classic
 forward-auth in front of every browser or API request.
 
@@ -131,7 +131,7 @@ Requirements:
   the IdP must not become open registration or multi-user access,
 - keep client secrets and tokens out of frontend storage, URLs, logs, notebook
   repositories, and diagnostics,
-- issue the same hardened RepoQuill application-session boundary used by local
+- issue the same hardened VariaNotes application-session boundary used by local
   authentication after successful OIDC authentication,
 - make MFA, password recovery, and identity lifecycle the IdP's responsibility
   in OIDC mode,
@@ -145,7 +145,7 @@ OAuth/OIDC implementation.
 Completion criteria:
 
 - representative Authentik, Authelia, and Keycloak configurations are tested,
-- an unbound IdP identity cannot become the RepoQuill owner,
+- an unbound IdP identity cannot become the VariaNotes owner,
 - replay, callback tampering, invalid issuer/audience, expired tokens, and login
   CSRF are rejected by focused tests,
 - local and disabled modes continue to work unchanged,
@@ -177,7 +177,7 @@ Requirements:
 Completion criteria:
 
 - a local-only notebook can be created, edited, versioned, restored, restarted,
-  backed up, and removed from RepoQuill safely,
+  backed up, and removed from VariaNotes safely,
 - absence of `origin` never produces a misleading synchronization error,
 - adding a compatible remote later preserves existing history and never force
   pushes or discards either side silently,
@@ -218,7 +218,7 @@ Completion criteria:
 
 ## Milestone 30 - Visible application version
 
-Show the exact running RepoQuill version in a discoverable, unobtrusive place in
+Show the exact running VariaNotes version in a discoverable, unobtrusive place in
 the application UI, such as an About area in Settings and a compact application
 footer or equivalent mobile-safe location.
 
@@ -246,18 +246,18 @@ Completion criteria:
 This milestone remains deferred until the Git-free storage, export, and
 operator-recovery model is established. It requires an explicit design and
 threat-model review before code is implemented because opaque ciphertext
-changes RepoQuill's ordinary-Markdown portability guarantee. The goal is
+changes VariaNotes's ordinary-Markdown portability guarantee. The goal is
 deliberate extra protection for selected notes or folders, independent of
 authentication and MFA.
 
 Design gates:
 
 - define whether encryption protects copied vault files and operator backups,
-  the server's disk, or also a compromised running RepoQuill server; server-side
+  the server's disk, or also a compromised running VariaNotes server; server-side
   decryption cannot protect plaintext from a compromised running server,
 - select a documented, interoperable encrypted file format that can be decrypted
-  with maintained tools outside RepoQuill; recovery must never require the
-  RepoQuill application itself,
+  with maintained tools outside VariaNotes; recovery must never require the
+  VariaNotes application itself,
 - document which metadata remains visible, including filenames, folder layout,
   file sizes, modification patterns, and asset relationships,
 - define password/key creation, unlocking, rotation, backup, export, and loss
@@ -293,7 +293,7 @@ Completion criteria:
 - selected notes and complete folder trees can be encrypted, unlocked, edited,
   backed up, restored, and deliberately decrypted without data loss,
 - an external documented tool can recover the Markdown and assets without
-  RepoQuill,
+  VariaNotes,
 - losing the encryption secret is clearly explained as unrecoverable and cannot
   silently damage unencrypted notebooks,
 - encrypted content never appears in plaintext in application metadata, logs,
@@ -374,7 +374,7 @@ Requirements:
 - serialize the selected language through the ordinary fenced-code info string,
   for example ` ```python ` or ` ```bash `,
 - preserve valid unknown language identifiers already present in imported
-  Markdown even when RepoQuill cannot highlight them,
+  Markdown even when VariaNotes cannot highlight them,
 - apply syntax highlighting as presentation only; it must never rewrite code,
   execute code, fetch language definitions from untrusted locations, or persist
   generated HTML into Markdown,
@@ -586,7 +586,7 @@ structure instead of always inserting its syntax as ordinary text.
 Current behavior and cause:
 
 - Milkdown's CommonMark and GFM parsers are used when a note document is
-  loaded, but RepoQuill does not currently pass pasted plain text through that
+  loaded, but VariaNotes does not currently pass pasted plain text through that
   Markdown parser,
 - ProseMirror therefore preserves plain clipboard text literally; input rules
   that react while typing do not retrospectively parse a pasted block,
@@ -636,7 +636,7 @@ Completion criteria:
 - conversion, selection replacement, undo/redo, autosave serialization,
   mobile/PWA access, and ambiguous clipboard inputs have focused tests.
 
-Status: completed on 2026-09-29. RepoQuill now provides an explicit
+Status: completed on 2026-09-29. VariaNotes now provides an explicit
 touch-accessible Paste as Markdown dialog, handles unambiguous `text/markdown`
 clipboard data, preserves ordinary paste paths, inserts conversions as one
 undoable transaction, refuses active raw HTML without discarding its source,
@@ -739,7 +739,7 @@ Current behavior and cause:
 
 - Milkdown's GFM schema already parses `- [ ]` and `- [x]` into a `checked`
   list-item attribute and serializes that attribute back to Markdown correctly,
-- RepoQuill currently draws the visible checkbox only with a CSS `::before`
+- VariaNotes currently draws the visible checkbox only with a CSS `::before`
   pseudo-element,
 - that pseudo-element is not a focusable or actionable control and no editor
   pointer, touch, or keyboard handler changes the `checked` attribute,
@@ -768,7 +768,7 @@ Required behavior:
 - preserve existing task state across save, reload, external editors, Git
   synchronization, history, and conflict resolution,
 - evaluate Milkdown's list-item block component where useful, but do not adopt
-  it blindly if it changes ordinary-list behavior or fails RepoQuill's keyboard,
+  it blindly if it changes ordinary-list behavior or fails VariaNotes's keyboard,
   accessibility, mobile, or Read only requirements,
 - use the same implementation in browser and installed PWA layouts.
 
@@ -787,7 +787,7 @@ Completion criteria:
   autosave, desktop, mobile/PWA, and assistive-technology semantics have focused
   regression tests.
 
-Status: completed on 2026-09-29. RepoQuill now renders GFM task items with a
+Status: completed on 2026-09-29. VariaNotes now renders GFM task items with a
 real accessible checkbox control, toggles their standard Markdown state through
 undoable editor transactions, retains state after serialization and reload, and
 keeps normal and Read only list behavior intact. Focused regression coverage

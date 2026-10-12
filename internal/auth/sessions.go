@@ -52,9 +52,9 @@ func NewSessions(service *Service, options SessionOptions) (*Sessions, error) {
 	manager.Store = &sqliteSessionStore{db: service.db, codec: manager.Codec, defaultIdle: options.IdleTimeout}
 	manager.Lifetime = options.RememberLifetime
 	manager.IdleTimeout = 30 * 24 * time.Hour
-	manager.Cookie.Name = "repoquill_session"
+	manager.Cookie.Name = "varianotes_session"
 	if options.CookieSecure {
-		manager.Cookie.Name = "__Secure-repoquill_session"
+		manager.Cookie.Name = "__Secure-varianotes_session"
 	}
 	manager.Cookie.Domain = ""
 	manager.Cookie.HttpOnly = true

@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fred-head/repoquill/internal/auth"
+	"github.com/fred-head/varianotes/internal/auth"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -84,7 +84,7 @@ func TestSecureOwnerSetupAPI(t *testing.T) {
 	}
 	var sessionCookie *http.Cookie
 	for _, cookie := range setup.Result().Cookies() {
-		if strings.Contains(cookie.Name, "repoquill_session") {
+		if strings.Contains(cookie.Name, "varianotes_session") {
 			sessionCookie = cookie
 		}
 	}
@@ -166,7 +166,7 @@ func TestLoginSessionPersistsAndCanBeRevoked(t *testing.T) {
 	}
 	var cookie *http.Cookie
 	for _, candidate := range login.Result().Cookies() {
-		if strings.Contains(candidate.Name, "repoquill_session") {
+		if strings.Contains(candidate.Name, "varianotes_session") {
 			cookie = candidate
 		}
 	}
@@ -337,7 +337,7 @@ func TestPasswordFirstMFALoginAndRecoveryCode(t *testing.T) {
 	}
 	var pendingCookie *http.Cookie
 	for _, candidate := range login.Result().Cookies() {
-		if strings.Contains(candidate.Name, "repoquill_session") {
+		if strings.Contains(candidate.Name, "varianotes_session") {
 			pendingCookie = candidate
 		}
 	}
@@ -471,7 +471,7 @@ func authRequestContextFromResponse(t *testing.T, response *httptest.ResponseRec
 	}
 	var cookie *http.Cookie
 	for _, candidate := range response.Result().Cookies() {
-		if strings.Contains(candidate.Name, "repoquill_session") {
+		if strings.Contains(candidate.Name, "varianotes_session") {
 			cookie = candidate
 		}
 	}
@@ -671,7 +671,7 @@ func TestRepositoryAPIRequiresConfiguration(t *testing.T) {
 
 func TestFreshInstallationDoesNotRegisterDefaultNotebook(t *testing.T) {
 	metadataPath := filepath.Join(t.TempDir(), "app", "notebooks.json")
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadataPath)
+	t.Setenv("VARIANOTES_NOTEBOOK_METADATA", metadataPath)
 	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	if err != nil {
 		t.Fatal(err)
@@ -717,7 +717,7 @@ func TestInactiveLegacyNotebookCanBeUnregisteredWithoutDeletingFiles(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadataPath)
+	t.Setenv("VARIANOTES_NOTEBOOK_METADATA", metadataPath)
 	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	if err != nil {
 		t.Fatal(err)
@@ -768,7 +768,7 @@ func TestOnlyActiveNotebookCanBeUnregisteredWithoutDeletingFiles(t *testing.T) {
 	if err := registerActiveNotebook(metadataPath, notebookRecord{ID: "only", Name: "Only", LocalPath: notebookRoot}); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadataPath)
+	t.Setenv("VARIANOTES_NOTEBOOK_METADATA", metadataPath)
 	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	if err != nil {
 		t.Fatal(err)
@@ -808,8 +808,8 @@ func TestInactiveNotebookLocalDeletionRequiresExactNameAndConfinedWorkingTree(t 
 	if err := writeNotebookRegistry(metadataPath, notebookRegistry{ActiveID: "active", Entries: []notebookRecord{{ID: "archive", Name: "Archive", LocalPath: workingTree}, {ID: "active", Name: "Active", LocalPath: activeRoot}}}); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadataPath)
-	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", notebookBase)
+	t.Setenv("VARIANOTES_NOTEBOOK_METADATA", metadataPath)
+	t.Setenv("VARIANOTES_NOTEBOOKS_DIR", notebookBase)
 	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	if err != nil {
 		t.Fatal(err)
@@ -1088,89 +1088,6 @@ func TestLocalNotebookCreatesFilesystemVaultAndGitRoutesAreGone(t *testing.T) {
 	}
 }
 
-func TestHandlerMigratesLegacyVaultRegistryWithoutDeletingVaultOrSSHFiles(t *testing.T) {
-	base := t.TempDir()
-	vault := filepath.Join(base, "notebooks", "legacy-id")
-	gitConfig := filepath.Join(vault, ".git", "config")
-	keyPath := filepath.Join(base, "keys", "old-key")
-	metadata := filepath.Join(base, "app", "notebooks.json")
-	for _, directory := range []string{filepath.Dir(gitConfig), filepath.Dir(keyPath)} {
-		if err := os.MkdirAll(directory, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(vault, "Note.md"), []byte("# Keep this note"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	legacyGit := []byte("legacy commits")
-	if err := os.WriteFile(gitConfig, legacyGit, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	legacyKey := []byte("legacy private key")
-	if err := os.WriteFile(keyPath, legacyKey, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	legacyRegistry := map[string]any{
-		"activeId":          "legacy-id",
-		"unrelatedMetadata": map[string]string{"keep": "yes"},
-		"notebooks": []map[string]string{{
-			"id": "legacy-id", "name": "Legacy", "localPath": vault,
-			"remoteUrl": "https://owner:secret@example.invalid/private.git",
-			"branch":    "main", "authType": "managed-ssh", "keyId": "old-key",
-			"lastSyncedAt": "2026-09-01T12:00:00Z",
-		}},
-	}
-	registryBytes, err := json.Marshal(legacyRegistry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(metadata), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(metadata, registryBytes, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
-	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", filepath.Join(base, "notebooks"))
-
-	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	migrated, err := os.ReadFile(metadata)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, legacyField := range []string{"remoteUrl", "branch", "authType", "keyId", "lastSyncedAt", "secret@example.invalid"} {
-		if strings.Contains(string(migrated), legacyField) {
-			t.Errorf("migrated registry retained legacy value %q: %s", legacyField, migrated)
-		}
-	}
-	var document map[string]any
-	if err := json.Unmarshal(migrated, &document); err != nil {
-		t.Fatal(err)
-	}
-	if document["activeId"] != "legacy-id" || document["unrelatedMetadata"].(map[string]any)["keep"] != "yes" {
-		t.Fatalf("migration did not preserve active vault and unrelated metadata: %#v", document)
-	}
-	registrations := document["notebooks"].([]any)
-	registration := registrations[0].(map[string]any)
-	if registration["id"] != "legacy-id" || registration["name"] != "Legacy" || registration["localPath"] != vault {
-		t.Fatalf("migration changed the vault registration: %#v", registration)
-	}
-	for path, want := range map[string][]byte{gitConfig: legacyGit, keyPath: legacyKey, filepath.Join(vault, "Note.md"): []byte("# Keep this note")} {
-		got, err := os.ReadFile(path)
-		if err != nil || !bytes.Equal(got, want) {
-			t.Errorf("migration changed preserved data at %q: %q, %v", path, got, err)
-		}
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/notebooks", nil))
-	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "secret@example.invalid") || !strings.Contains(response.Body.String(), `"name":"Legacy"`) {
-		t.Fatalf("unexpected migrated vault response: %d %s", response.Code, response.Body.String())
-	}
-}
-
 func TestAdoptVaultPreservesLegacyGitDirectoryAndExportOmitsIt(t *testing.T) {
 	base := t.TempDir()
 	notebookBase := filepath.Join(base, "notebooks")
@@ -1191,8 +1108,8 @@ func TestAdoptVaultPreservesLegacyGitDirectoryAndExportOmitsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	metadata := filepath.Join(base, "app", "notebooks.json")
-	t.Setenv("REPOQUILL_NOTEBOOKS_DIR", notebookBase)
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	t.Setenv("VARIANOTES_NOTEBOOKS_DIR", notebookBase)
+	t.Setenv("VARIANOTES_NOTEBOOK_METADATA", metadata)
 	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	if err != nil {
 		t.Fatal(err)
@@ -1258,19 +1175,6 @@ func TestAdoptVaultPreservesLegacyGitDirectoryAndExportOmitsIt(t *testing.T) {
 	}
 }
 
-func TestActiveNotebookNameAPIUsesConfiguredName(t *testing.T) {
-	t.Setenv("REPOQUILL_NOTEBOOK_NAME", "Personal Notes")
-	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/notebook", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"Personal Notes"`) {
-		t.Fatalf("unexpected notebook info: %d %s", response.Code, response.Body.String())
-	}
-}
-
 func TestNotebookRegistryPreservesEntriesAndChangesActiveNotebook(t *testing.T) {
 	base := t.TempDir()
 	metadata := filepath.Join(base, "notebooks.json")
@@ -1292,7 +1196,7 @@ func TestNotebookRegistryPreservesEntriesAndChangesActiveNotebook(t *testing.T) 
 	if err != nil || len(registry.Entries) != 2 || registry.ActiveID != "second" {
 		t.Fatalf("registry did not preserve notebooks: %#v, %v", registry, err)
 	}
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", metadata)
+	t.Setenv("VARIANOTES_NOTEBOOK_METADATA", metadata)
 	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	if err != nil {
 		t.Fatal(err)
@@ -1342,7 +1246,7 @@ func TestImagePresentationAPIValidatesAndPersistsOutsideTheRepository(t *testing
 		t.Fatal(err)
 	}
 	metadataDirectory := t.TempDir()
-	t.Setenv("REPOQUILL_NOTEBOOK_METADATA", filepath.Join(metadataDirectory, "notebooks.json"))
+	t.Setenv("VARIANOTES_NOTEBOOK_METADATA", filepath.Join(metadataDirectory, "notebooks.json"))
 	metadataPath := filepath.Join(metadataDirectory, "image-presentations.json")
 	handler, err := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), root)
 	if err != nil {

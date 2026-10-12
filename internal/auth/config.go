@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/fred-head/repoquill/internal/envcompat"
 )
 
 type Mode string
@@ -32,21 +30,14 @@ type Config struct {
 
 type EnvironmentLookup func(string) (string, bool)
 
-// ConfigFromEnvironment defines fail-closed migration from an installation
-// without built-in authentication. An absent mode selects local authentication
-// and setup-required rather than silently retaining unauthenticated access.
+// ConfigFromEnvironment selects local authentication unless the operator
+// explicitly configures disabled mode.
 func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 	if lookup == nil {
 		return Config{}, errors.New("authentication environment lookup is required")
 	}
 
-	read := func(name string) (string, bool, error) {
-		return envcompat.Lookup(envcompat.LookupFunc(lookup), name)
-	}
-	rawMode, explicit, err := read("VARIANOTES_AUTH_MODE")
-	if err != nil {
-		return Config{}, err
-	}
+	rawMode, explicit := lookup("VARIANOTES_AUTH_MODE")
 	if strings.TrimSpace(rawMode) == "" {
 		rawMode = string(ModeLocal)
 		explicit = false
@@ -56,16 +47,10 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 		return Config{}, err
 	}
 
-	metadataPath, _, err := read("VARIANOTES_AUTH_METADATA")
-	if err != nil {
-		return Config{}, err
-	}
+	metadataPath, _ := lookup("VARIANOTES_AUTH_METADATA")
 	metadataPath = strings.TrimSpace(metadataPath)
 	if metadataPath == "" {
-		notebookMetadata, ok, lookupErr := read("VARIANOTES_NOTEBOOK_METADATA")
-		if lookupErr != nil {
-			return Config{}, lookupErr
-		}
+		notebookMetadata, ok := lookup("VARIANOTES_NOTEBOOK_METADATA")
 		if ok && strings.TrimSpace(notebookMetadata) != "" {
 			metadataPath = filepath.Join(filepath.Dir(strings.TrimSpace(notebookMetadata)), "auth.db")
 		} else {
@@ -75,10 +60,7 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 	if !filepath.IsAbs(metadataPath) {
 		return Config{}, errors.New("authentication metadata path must be absolute")
 	}
-	encryptionKeyPath, _, err := read("VARIANOTES_AUTH_ENCRYPTION_KEY_FILE")
-	if err != nil {
-		return Config{}, err
-	}
+	encryptionKeyPath, _ := lookup("VARIANOTES_AUTH_ENCRYPTION_KEY_FILE")
 	encryptionKeyPath = strings.TrimSpace(encryptionKeyPath)
 	if encryptionKeyPath == "" {
 		encryptionKeyPath = filepath.Join(filepath.Dir(metadataPath), "auth.key")
@@ -88,26 +70,21 @@ func ConfigFromEnvironment(lookup EnvironmentLookup) (Config, error) {
 	}
 
 	cookieSecure := true
-	if raw, ok, lookupErr := read("VARIANOTES_SESSION_COOKIE_SECURE"); lookupErr != nil {
-		return Config{}, lookupErr
-	} else if ok && strings.TrimSpace(raw) != "" {
+	if raw, ok := lookup("VARIANOTES_SESSION_COOKIE_SECURE"); ok && strings.TrimSpace(raw) != "" {
 		cookieSecure, err = strconv.ParseBool(strings.TrimSpace(raw))
 		if err != nil {
 			return Config{}, errors.New("VARIANOTES_SESSION_COOKIE_SECURE must be true or false")
 		}
 	}
-	trustedProxies, err := parseTrustedProxies(read)
+	trustedProxies, err := parseTrustedProxies(lookup)
 	if err != nil {
 		return Config{}, err
 	}
 	return Config{Mode: mode, ModeExplicit: explicit, MetadataPath: filepath.Clean(metadataPath), EncryptionKeyPath: filepath.Clean(encryptionKeyPath), CookieSecure: cookieSecure, TrustedProxies: trustedProxies}, nil
 }
 
-func parseTrustedProxies(lookup func(string) (string, bool, error)) ([]netip.Prefix, error) {
-	raw, _, err := lookup("VARIANOTES_TRUSTED_PROXIES")
-	if err != nil {
-		return nil, err
-	}
+func parseTrustedProxies(lookup EnvironmentLookup) ([]netip.Prefix, error) {
+	raw, _ := lookup("VARIANOTES_TRUSTED_PROXIES")
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}

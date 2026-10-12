@@ -14,17 +14,16 @@ email addresses, invitations, organizations, or email recovery.
 
 Supported modes are:
 
-- `local`: recommended and fail-closed default. A new or migrated database has
+- `local`: recommended and fail-closed default. A new database has
   `setup_completed = false` until operator-authorized bootstrap setup.
 - `disabled`: accepted only when the operator explicitly sets
   `VARIANOTES_AUTH_MODE=disabled`. The application shows a persistent warning
   and invalidates local authentication artifacts when modes change.
 
-An absent or empty mode never means public access. It resolves to `local`, so an
-installation upgraded from unauthenticated Alpha 1 enters the restricted setup
-migration path. A missing database is recreated only in this
-setup-required state. An unreadable, corrupt, unsupported, or newer database
-stops startup instead of falling back to unauthenticated operation.
+An absent or empty mode never means public access. It resolves to `local`, and
+a new database starts in the restricted setup-required state. An unreadable,
+corrupt, unsupported, or newer database stops startup instead of falling back
+to unauthenticated operation.
 
 ## Trust boundaries and threat model
 
@@ -76,11 +75,10 @@ expired API authentication returns stable JSON `401`, never an HTML redirect.
 
 ## Persistent metadata boundary
 
-The `VARIANOTES_*` namespace is preferred. Matching `REPOQUILL_*` aliases
-remain accepted during the transition. If both non-empty names are configured
-with different values, startup fails and identifies the conflicting pair.
-Changing the prefix does not move or migrate the configured authentication
-database or encryption-key file.
+The `VARIANOTES_*` namespace is the only supported application environment
+namespace. Authentication settings have no alternate prefix or fallback.
+Database and key paths are operator-configured and are not inferred from
+product-specific directory names.
 
 `VARIANOTES_AUTH_METADATA` defaults to `/data/app/auth.db` or to `auth.db` beside
 the configured notebook registry. The directory and database use modes `0700`
@@ -95,10 +93,10 @@ The database is limited to:
 - security events that contain neither credentials nor note content,
 - versioned migration records.
 
-It must never contain Markdown, asset bytes, vault trees, Git repositories,
-SSH private keys, remote tokens, password plaintext, session plaintext, TOTP
-codes, or recovery-code plaintext. Deleting it can remove VariaNotes access
-configuration but cannot make ordinary Markdown vaults unreadable.
+It must never contain Markdown, asset bytes, vault trees, external credentials,
+password plaintext, session plaintext, TOTP codes, or recovery-code plaintext.
+Deleting it can remove VariaNotes access configuration but cannot make ordinary
+Markdown vaults unreadable.
 
 ## Migration and recovery model
 
@@ -117,7 +115,7 @@ rewrites notebook repositories.
 ## Authentication implementation history
 
 The following M19 entries record how the current authentication boundary was
-introduced. Git-specific examples describe the former product and are not part
+introduced. Git-specific examples describe removed workflows and are not part
 of the current runtime API.
 
 M19P1 initializes and validates this metadata service. M19P2 adds the
@@ -153,6 +151,6 @@ warnings and migration guidance; every mode transition invalidates all local
 authentication artifacts and never alters notebook repositories. M19P9 adds
 the complete unauthenticated-route matrix, adversarial MFA/session tests,
 browser/PWA lifecycle tests, authenticated container persistence/recovery smoke
-coverage, and the documented OWASP-oriented review. No Alpha 2 image may be
-released unless those checks and the vulnerability gates pass for the exact
-candidate.
+coverage, and the documented OWASP-oriented review. No VariaNotes release
+candidate may be published unless those checks and the vulnerability gates
+pass for the exact candidate.

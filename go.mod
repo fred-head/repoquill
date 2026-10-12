@@ -1,4 +1,4 @@
-module github.com/fred-head/repoquill
+module github.com/fred-head/varianotes
 
 go 1.26.0
 

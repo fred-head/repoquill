@@ -2,7 +2,7 @@
 
 GOCACHE ?= $(HOME)/.cache/go-build
 GOMODCACHE ?= $(HOME)/go/pkg/mod
-GOTMPDIR ?= $(HOME)/.cache/repoquill/go-tmp
+GOTMPDIR ?= $(HOME)/.cache/varianotes/go-tmp
 
 export GOCACHE
 export GOMODCACHE
